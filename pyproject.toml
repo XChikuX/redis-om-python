@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "redis-om"
-version = "0.2.1"
+version = "0.2.2"
 description = "Object mappings, and more, for Redis."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Redis OSS <oss@redis.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
-repository = "https://github.com/redis/redis-om-python"
+repository = "https://github.com/anton-petrov/redis-om-python"
 packages = [
     { "include" = "aredis_om" },
 ]
@@ -31,8 +31,8 @@ include=[
 ]
 
 [tool.poetry.urls]
-"Code" = "https://github.com/redis/redis-om-python"
-"Issue tracker" = "https://github.com/redis/redis-om-python/issues"
+"Code" = "https://github.com/anton-petrov/redis-om-python"
+"Issue tracker" = "https://github.com/anton-petrov/redis-om-python/issues"
 
 [tool.poetry.dependencies]
 python = ">=3.7,<4.0"
