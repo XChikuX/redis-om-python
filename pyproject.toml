@@ -11,15 +11,12 @@ packages = [
     { "include" = "redis_om" },
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 3 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Topic :: Database",
     'License :: OSI Approved :: BSD License',
-    'Programming Language :: Python :: 3.7',
-    'Programming Language :: Python :: 3.8',
-    'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python',
@@ -36,13 +33,13 @@ include=[
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-redis = "^5.0.0"
-pydantic = "^2.4.1"
+redis = "^5.0.1"
+pydantic = "^2.6.1"
 click = "^8.0.1"
 types-redis = "^4.6.0"
 python-ulid = "^1.0.3"
 typing-extensions = "^4.4.0"
-hiredis = "^2.2.3"
+hiredis = "^2.3.2"
 more-itertools = ">=8.14,<10.0"
 
 [tool.poetry.dev-dependencies]
