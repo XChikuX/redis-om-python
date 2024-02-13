@@ -1,9 +1,9 @@
 [tool.poetry]
 name = "pyredis-om"
-version = "0.2.4"
+version = "0.2.5"
 description = "Object mappings, and more, for Redis."
 authors = ["Redis OSS <oss@redis.com>"]
-maintainers = ["Redis OSS <oss@redis.com>"]
+maintainers = ["Srikanth <srikanth@psync.dev>"]
 license = "BSD-3-Clause"
 readme = "README.md"
 repository = "https://github.com/xchikux/redis-om-python"

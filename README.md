@@ -20,8 +20,6 @@
 
 **Redis OM Python** makes it easy to model Redis data in your Python applications.
 
-[Redis OM .NET](https://github.com/redis/redis-om-dotnet) | [Redis OM Node.js](https://github.com/redis/redis-om-node) | [Redis OM Spring](https://github.com/redis/redis-om-spring) | **Redis OM Python**
-
 <details>
   <summary><strong>Table of contents</strong></summary>
 
@@ -54,9 +52,9 @@ Redis OM provides high-level abstractions that make it easy to model and query d
 
 This **preview** release contains the following features:
 
-* Declarative object mapping for Redis objects
-* Declarative secondary-index generation
-* Fluent APIs for querying Redis
+- Declarative object mapping for Redis objects
+- Declarative secondary-index generation
+- Fluent APIs for querying Redis
 
 ## 💻 Installation
 
@@ -81,7 +79,6 @@ docker run -p 6379:6379 -p 8001:8001 redis/redis-stack
 ```
 
 This launches the [redis-stack](https://redis.io/docs/stack/) an extension of Redis that adds all manner of modern data structures to Redis. You'll also notice that if you open up http://localhost:8001 you'll have access to the redis-insight GUI, a GUI you can use to visualize and work with your data in Redis.
-
 
 ## 📇 Modeling Your Data
 
@@ -112,11 +109,22 @@ Now that we have a `Customer` model, let's use it to save customer data to Redis
 ```python
 import datetime
 from typing import Optional
-
 from pydantic import EmailStr
 
-from redis_om import HashModel
+from aredis_om import (
+    Field,
+    HashModel,
+    JsonModel,
+    EmbeddedJsonModel,
+    Migrator,
+    get_redis_connection,
+)
+from aredis_om.model.model import NotFoundError
 
+redis_conn = get_redis_connection(
+    url="redis://10.9.9.100:6379",
+    decode_responses=False,
+    password="D1ngD0ng",
 
 class Customer(HashModel):
     first_name: str
@@ -125,6 +133,14 @@ class Customer(HashModel):
     join_date: datetime.date
     age: int
     bio: Optional[str]
+
+    class Meta:
+        database = redis_conn
+
+    class Config:
+        # Ensure that updates will undergo validation by pydantic
+        validate_assignment = True
+        anystr_strip_whitespace = True
 
 
 # First, we create a new `Customer` object:
@@ -210,7 +226,7 @@ Data modeling, validation, and saving models to Redis all work regardless of how
 
 Next, we'll show you the **rich query expressions** and **embedded models** Redis OM provides when the [RediSearch][redisearch-url] and [RedisJSON][redis-json-url] modules are installed in your Redis deployment, or you're using [Redis Enterprise][redis-enterprise-url].
 
-**TIP**: *Wait, what's a Redis module?* If you aren't familiar with Redis modules, review the [So, How Do You Get RediSearch and RedisJSON?](#-so-how-do-you-get-redisearch-and-redisjson) section of this README.
+**TIP**: _Wait, what's a Redis module?_ If you aren't familiar with Redis modules, review the [So, How Do You Get RediSearch and RedisJSON?](#-so-how-do-you-get-redisearch-and-redisjson) section of this README.
 
 ### Querying
 
@@ -265,7 +281,7 @@ These queries -- and more! -- are possible because **Redis OM manages indexes fo
 
 Querying with this index features a rich expression syntax inspired by the Django ORM, SQLAlchemy, and Peewee. We think you'll enjoy it!
 
-**Note:** Indexing only works for data stored in Redis logical database 0.  If you are using a different database number when connecting to Redis, you can expect the code to raise a `MigrationError` when you run the migrator.
+**Note:** Indexing only works for data stored in Redis logical database 0. If you are using a different database number when connecting to Redis, you can expect the code to raise a `MigrationError` when you run the migrator.
 
 ### Embedded Models
 
@@ -322,7 +338,7 @@ Customer.find(Customer.address.city == "San Antonio",
 
 ## Calling Other Redis Commands
 
-Sometimes you'll need to run a Redis command directly.  Redis OM supports this through the `db` method on your model's class.  This returns a connected Redis client instance which exposes a function named for each Redis command.  For example, let's perform some basic set operations:
+Sometimes you'll need to run a Redis command directly. Redis OM supports this through the `db` method on your model's class. This returns a connected Redis client instance which exposes a function named for each Redis command. For example, let's perform some basic set operations:
 
 ```python
 from redis_om import HashModel
@@ -390,14 +406,11 @@ Redis OM uses the [MIT license][license-url].
 [ci-url]: https://github.com/redis/redis-om-python/actions/workflows/ci.yml
 [license-image]: https://img.shields.io/badge/license-mit-green.svg?style=flat-square
 [license-url]: LICENSE
+
 <!-- Links -->
 
 [redis-om-website]: https://developer.redis.com
-[redis-om-js]: https://github.com/redis-om/redis-om-js
-[redis-om-dotnet]: https://github.com/redis-om/redis-om-dotnet
-[redis-om-spring]: https://github.com/redis-om/redis-om-spring
 [redisearch-url]: https://redis.io/docs/stack/search/
 [redis-json-url]: https://redis.io/docs/stack/json/
 [pydantic-url]: https://github.com/samuelcolvin/pydantic
 [ulid-url]: https://github.com/ulid/spec
-[redis-enterprise-url]: https://redis.com/try-free/

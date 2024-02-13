@@ -125,7 +125,7 @@ def is_supported_container_type(typ: Optional[type]) -> bool:
 
 
 def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any]):
-    for field_name in field_values.keys():
+    for field_name in field_values:
         if "__" in field_name:
             obj = model
             for sub_field in field_name.split("__"):
@@ -144,7 +144,7 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
 
 
 def decode_redis_value(
-        obj: Union[List[bytes], Dict[bytes, bytes], bytes], encoding: str
+    obj: Union[List[bytes], Dict[bytes, bytes], bytes], encoding: str
 ) -> Union[List[str], Dict[str, str], str]:
     """Decode a binary-encoded Redis hash into the specified encoding."""
     if isinstance(obj, list):
@@ -161,7 +161,7 @@ def decode_redis_value(
 def remove_prefix(value: str, prefix: str) -> str:
     """Remove a prefix from a string."""
     if value.startswith(prefix):
-        value = value[len(prefix):]  # noqa: E203
+        value = value[len(prefix) :]  # noqa: E203
     return value
 
 
@@ -170,7 +170,7 @@ class PipelineError(Exception):
 
 
 def verify_pipeline_response(
-        response: List[Union[bytes, str]], expected_responses: int = 0
+    response: List[Union[bytes, str]], expected_responses: int = 0
 ):
     # TODO: More generic pipeline verification here (what else is possible?),
     #  plus hash and JSON-specific verifications in separate functions.
@@ -370,15 +370,15 @@ DEFAULT_PAGE_SIZE = 1000
 
 class FindQuery:
     def __init__(
-            self,
-            expressions: Sequence[ExpressionOrNegated],
-            model: Type["RedisModel"],
-            knn: Optional[KNNExpression] = None,
-            offset: int = 0,
-            limit: Optional[int] = None,
-            page_size: int = DEFAULT_PAGE_SIZE,
-            sort_fields: Optional[List[str]] = None,
-            nocontent: bool = False,
+        self,
+        expressions: Sequence[ExpressionOrNegated],
+        model: Type["RedisModel"],
+        knn: Optional[KNNExpression] = None,
+        offset: int = 0,
+        limit: Optional[int] = None,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        sort_fields: Optional[List[str]] = None,
+        nocontent: bool = False,
     ):
         if not has_redisearch(model.db()):
             raise RedisModelError(
@@ -455,10 +455,10 @@ class FindQuery:
         self._query = self.resolve_redisearch_query(self.expression)
         if self.knn:
             self._query = (
-                              self._query
-                              if self._query.startswith("(") or self._query == "*"
-                              else f"({self._query})"
-                          ) + f"=>[{self.knn}]"
+                self._query
+                if self._query.startswith("(") or self._query == "*"
+                else f"({self._query})"
+            ) + f"=>[{self.knn}]"
         return self._query
 
     @property
@@ -492,7 +492,7 @@ class FindQuery:
             return RediSearchFieldTypes.TAG
         elif op is Operators.LIKE:
             fts = getattr(field.field_info, "full_text_search", None)
-            if fts is not True:  # Could be PydanticUndefined
+            if not fts:  # Could be PydanticUndefined
                 raise QuerySyntaxError(
                     f"You tried to do a full-text search on the field '{field.name}', "
                     f"but the field is not indexed for full-text search. Use the "
@@ -559,13 +559,13 @@ class FindQuery:
 
     @classmethod
     def resolve_value(
-            cls,
-            field_name: str,
-            field_type: RediSearchFieldTypes,
-            field_info: PydanticFieldInfo,
-            op: Operators,
-            value: Any,
-            parents: List[Tuple[str, "RedisModel"]],
+        cls,
+        field_name: str,
+        field_type: RediSearchFieldTypes,
+        field_info: PydanticFieldInfo,
+        op: Operators,
+        value: Any,
+        parents: List[Tuple[str, "RedisModel"]],
     ) -> str:
         if parents:
             prefix = "_".join([p[0] for p in parents])
@@ -626,7 +626,9 @@ class FindQuery:
                     # The value contains the TAG field separator. We can work
                     # around this by breaking apart the values and unioning them
                     # with multiple field:{} queries.
-                    values: filter = filter(None, value.split(separator_char))
+                    values: List[str] = [
+                        val for val in value.split(separator_char) if val
+                    ]
                     for value in values:
                         value = escaper.escape(value)
                         result += f"@{field_name}:{{{value}}}"
@@ -706,7 +708,7 @@ class FindQuery:
             return "*"
 
         if isinstance(expression.left, Expression) or isinstance(
-                expression.left, NegatedExpression
+            expression.left, NegatedExpression
         ):
             result += f"({cls.resolve_redisearch_query(expression.left)})"
         elif isinstance(expression.left, ModelField):
@@ -969,11 +971,11 @@ class UlidPrimaryKey:
 
 
 def __dataclass_transform__(
-        *,
-        eq_default: bool = True,
-        order_default: bool = False,
-        kw_only_default: bool = False,
-        field_descriptors: Tuple[Union[type, Callable[..., Any]], ...] = (()),
+    *,
+    eq_default: bool = True,
+    order_default: bool = False,
+    kw_only_default: bool = False,
+    field_descriptors: Tuple[Union[type, Callable[..., Any]], ...] = (()),
 ) -> Callable[[_T], _T]:
     return lambda a: a
 
@@ -995,10 +997,10 @@ class FieldInfo(PydanticFieldInfo):
 
 class RelationshipInfo(Representation):
     def __init__(
-            self,
-            *,
-            back_populates: Optional[str] = None,
-            link_model: Optional[Any] = None,
+        self,
+        *,
+        back_populates: Optional[str] = None,
+        link_model: Optional[Any] = None,
     ) -> None:
         self.back_populates = back_populates
         self.link_model = link_model
@@ -1038,11 +1040,11 @@ class VectorFieldOptions:
 
     @staticmethod
     def flat(
-            type: TYPE,
-            dimension: int,
-            distance_metric: DISTANCE_METRIC,
-            initial_cap: Optional[int] = None,
-            block_size: Optional[int] = None,
+        type: TYPE,
+        dimension: int,
+        distance_metric: DISTANCE_METRIC,
+        initial_cap: Optional[int] = None,
+        block_size: Optional[int] = None,
     ):
         return VectorFieldOptions(
             algorithm=VectorFieldOptions.ALGORITHM.FLAT,
@@ -1055,14 +1057,14 @@ class VectorFieldOptions:
 
     @staticmethod
     def hnsw(
-            type: TYPE,
-            dimension: int,
-            distance_metric: DISTANCE_METRIC,
-            initial_cap: Optional[int] = None,
-            m: Optional[int] = None,
-            ef_construction: Optional[int] = None,
-            ef_runtime: Optional[int] = None,
-            epsilon: Optional[float] = None,
+        type: TYPE,
+        dimension: int,
+        distance_metric: DISTANCE_METRIC,
+        initial_cap: Optional[int] = None,
+        m: Optional[int] = None,
+        ef_construction: Optional[int] = None,
+        ef_runtime: Optional[int] = None,
+        epsilon: Optional[float] = None,
     ):
         return VectorFieldOptions(
             algorithm=VectorFieldOptions.ALGORITHM.HNSW,
@@ -1093,36 +1095,36 @@ class VectorFieldOptions:
 
 
 def Field(
-        default: Any = Undefined,
-        *,
-        default_factory: Optional[NoArgAnyCallable] = None,
-        alias: str = None,
-        title: str = None,
-        description: str = None,
-        exclude: Union[
-            AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
-        ] = None,
-        include: Union[
-            AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
-        ] = None,
-        const: bool = None,
-        gt: float = None,
-        ge: float = None,
-        lt: float = None,
-        le: float = None,
-        multiple_of: float = None,
-        min_items: int = None,
-        max_items: int = None,
-        min_length: int = None,
-        max_length: int = None,
-        allow_mutation: bool = True,
-        regex: str = None,
-        primary_key: bool = False,
-        sortable: Union[bool, UndefinedType] = Undefined,
-        index: Union[bool, UndefinedType] = Undefined,
-        full_text_search: Union[bool, UndefinedType] = Undefined,
-        vector_options: Optional[VectorFieldOptions] = None,
-        schema_extra: Optional[Dict[str, Any]] = None,
+    default: Any = Undefined,
+    *,
+    default_factory: Optional[NoArgAnyCallable] = None,
+    alias: str = None,
+    title: str = None,
+    description: str = None,
+    exclude: Union[
+        AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
+    ] = None,
+    include: Union[
+        AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
+    ] = None,
+    const: bool = None,
+    gt: float = None,
+    ge: float = None,
+    lt: float = None,
+    le: float = None,
+    multiple_of: float = None,
+    min_items: int = None,
+    max_items: int = None,
+    min_length: int = None,
+    max_length: int = None,
+    allow_mutation: bool = True,
+    regex: str = None,
+    primary_key: bool = False,
+    sortable: Union[bool, UndefinedType] = Undefined,
+    index: Union[bool, UndefinedType] = Undefined,
+    full_text_search: Union[bool, UndefinedType] = Undefined,
+    vector_options: Optional[VectorFieldOptions] = None,
+    schema_extra: Optional[Dict[str, Any]] = None,
 ) -> Any:
     current_schema_extra = schema_extra or {}
     field_info = FieldInfo(
@@ -1315,7 +1317,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     async def delete(
-            cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None
+        cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None
     ) -> int:
         """Delete data at this key."""
         db = cls._get_db(pipeline)
@@ -1331,12 +1333,12 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         raise NotImplementedError
 
     async def save(
-            self: "Model", pipeline: Optional[redis.client.Pipeline] = None
+        self: "Model", pipeline: Optional[redis.client.Pipeline] = None
     ) -> "Model":
         raise NotImplementedError
 
     async def expire(
-            self, num_seconds: int, pipeline: Optional[redis.client.Pipeline] = None
+        self, num_seconds: int, pipeline: Optional[redis.client.Pipeline] = None
     ):
         db = self._get_db(pipeline)
 
@@ -1380,9 +1382,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def find(
-            cls,
-            *expressions: Union[Any, Expression],
-            knn: Optional[KNNExpression] = None,
+        cls,
+        *expressions: Union[Any, Expression],
+        knn: Optional[KNNExpression] = None,
     ) -> FindQuery:
         return FindQuery(expressions=expressions, knn=knn, model=cls)
 
@@ -1436,10 +1438,10 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     async def add(
-            cls: Type["Model"],
-            models: Sequence["Model"],
-            pipeline: Optional[redis.client.Pipeline] = None,
-            pipeline_verifier: Callable[..., Any] = verify_pipeline_response,
+        cls: Type["Model"],
+        models: Sequence["Model"],
+        pipeline: Optional[redis.client.Pipeline] = None,
+        pipeline_verifier: Callable[..., Any] = verify_pipeline_response,
     ) -> Sequence["Model"]:
         db = cls._get_db(pipeline, bulk=True)
 
@@ -1457,7 +1459,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def _get_db(
-            self, pipeline: Optional[redis.client.Pipeline] = None, bulk: bool = False
+        self, pipeline: Optional[redis.client.Pipeline] = None, bulk: bool = False
     ):
         if pipeline is not None:
             return pipeline
@@ -1468,9 +1470,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     async def delete_many(
-            cls,
-            models: Sequence["RedisModel"],
-            pipeline: Optional[redis.client.Pipeline] = None,
+        cls,
+        models: Sequence["RedisModel"],
+        pipeline: Optional[redis.client.Pipeline] = None,
     ) -> int:
         db = cls._get_db(pipeline)
 
@@ -1515,7 +1517,7 @@ class HashModel(RedisModel, abc.ABC):
                 )
 
     async def save(
-            self: "Model", pipeline: Optional[redis.client.Pipeline] = None
+        self: "Model", pipeline: Optional[redis.client.Pipeline] = None
     ) -> "Model":
         self.check()
         db = self._get_db(pipeline)
@@ -1689,7 +1691,7 @@ class JsonModel(RedisModel, abc.ABC):
         super().__init__(*args, **kwargs)
 
     async def save(
-            self: "Model", pipeline: Optional[redis.client.Pipeline] = None
+        self: "Model", pipeline: Optional[redis.client.Pipeline] = None
     ) -> "Model":
         self.check()
         db = self._get_db(pipeline)
@@ -1762,13 +1764,13 @@ class JsonModel(RedisModel, abc.ABC):
 
     @classmethod
     def schema_for_type(
-            cls,
-            json_path: str,
-            name: str,
-            name_prefix: str,
-            typ: Any,
-            field_info: PydanticFieldInfo,
-            parent_type: Optional[Any] = None,
+        cls,
+        json_path: str,
+        name: str,
+        name_prefix: str,
+        typ: Any,
+        field_info: PydanticFieldInfo,
+        parent_type: Optional[Any] = None,
     ) -> str:
         should_index = getattr(field_info, "index", False)
         is_container_type = is_supported_container_type(typ)
@@ -1856,7 +1858,7 @@ class JsonModel(RedisModel, abc.ABC):
                         parent_type=typ,
                     )
                 )
-            return " ".join(filter(None, sub_fields))
+            return " ".join([sub_field for sub_field in sub_fields if sub_field])
         # NOTE: This is the termination point for recursion. We've descended
         # into models and lists until we found an actual value to index.
         elif should_index:
@@ -1868,8 +1870,8 @@ class JsonModel(RedisModel, abc.ABC):
                 path = json_path
             else:
                 path = f"{json_path}.{name}"
-            sortable = getattr(field_info, "sortable", False)
-            full_text_search = getattr(field_info, "full_text_search", False)
+            sortable: bool = getattr(field_info, "sortable", False)
+            full_text_search: bool = getattr(field_info, "full_text_search", False)
             sortable_tag_error = RedisModelError(
                 "In this Preview release, TAG fields cannot "
                 f"be marked as sortable. Problem field: {name}. "
@@ -1885,23 +1887,23 @@ class JsonModel(RedisModel, abc.ABC):
                         "In this Preview release, list and tuple fields can only "
                         f"contain strings. Problem field: {name}. See docs: TODO"
                     )
-                if full_text_search is True:
+                if full_text_search:
                     raise RedisModelError(
                         "List and tuple fields cannot be indexed for full-text "
                         f"search. Problem field: {name}. See docs: TODO"
                     )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                if sortable is True:
+                if sortable:
                     raise sortable_tag_error
             elif any(issubclass(typ, t) for t in NUMERIC_TYPES):
                 schema = f"{path} AS {index_field_name} NUMERIC"
             elif issubclass(typ, str):
-                if full_text_search is True:
+                if full_text_search:
                     schema = (
                         f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
                         f"{path} AS {index_field_name}_fts TEXT"
                     )
-                    if sortable is True:
+                    if sortable:
                         # NOTE: With the current preview release, making a field
                         # full-text searchable and sortable only makes the TEXT
                         # field sortable. This means that results for full-text
@@ -1910,11 +1912,11 @@ class JsonModel(RedisModel, abc.ABC):
                         schema += " SORTABLE"
                 else:
                     schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                    if sortable is True:
+                    if sortable:
                         raise sortable_tag_error
             else:
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                if sortable is True:
+                if sortable:
                     raise sortable_tag_error
             return schema
         return ""

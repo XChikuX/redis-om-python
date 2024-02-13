@@ -7,8 +7,11 @@ URL = os.environ.get("REDIS_OM_URL", None)
 
 
 def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
+    if not kwargs.get("url", None) and URL:
+        kwargs["url"] = URL
+
     # Decode from UTF-8 by default
-    if "decode_responses" not in kwargs:
+    if not kwargs.get("decode_responses", None):
         kwargs["decode_responses"] = True
 
     # If someone passed in a 'url' parameter, or specified a REDIS_OM_URL
