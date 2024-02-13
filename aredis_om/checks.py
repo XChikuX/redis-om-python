@@ -1,13 +1,11 @@
 from functools import lru_cache
-from typing import List
-
 from aredis_om.connections import get_redis_connection
 
 
 @lru_cache(maxsize=None)
 async def check_for_command(conn, cmd):
     cmd_info = await conn.execute_command("command", "info", cmd)
-    return None not in cmd_info
+    return all(cmd_info)
 
 
 @lru_cache(maxsize=None)

@@ -157,12 +157,9 @@ def decode_redis_value(
         return obj.decode(encoding)
 
 
-# TODO: replace with `str.removeprefix()` when only Python 3.9+ is supported
 def remove_prefix(value: str, prefix: str) -> str:
     """Remove a prefix from a string."""
-    if value.startswith(prefix):
-        value = value[len(prefix) :]  # noqa: E203
-    return value
+    return value.removeprefix(prefix) if value.startswith(prefix) else value
 
 
 class PipelineError(Exception):
@@ -1628,9 +1625,6 @@ class HashModel(RedisModel, abc.ABC):
     def schema_for_type(cls, name, typ: Any, field_info: PydanticFieldInfo):
         # TODO: Import parent logic from JsonModel to deal with lists, so that
         #  a List[int] gets indexed as TAG instead of NUMERICAL.
-        # TODO: Raise error if user embeds a model field or list and makes it
-        #  sortable. Instead, the embedded model should mark individual fields
-        #  as sortable.
         # TODO: Abstract string-building logic for each type (TAG, etc.) into
         #  classes that take a field name.
         sortable = getattr(field_info, "sortable", False)
@@ -1644,6 +1638,11 @@ class HashModel(RedisModel, abc.ABC):
                 )
                 return ""
             embedded_cls = embedded_cls[0]
+            if sortable:
+                raise ValueError(
+                    f"Field '{name}' is a container type and cannot be marked as sortable.\
+                         Mark individual fields within the embedded model as sortable instead."
+                )
             schema = cls.schema_for_type(name, embedded_cls, field_info)
         elif any(issubclass(typ, t) for t in NUMERIC_TYPES):
             vector_options: Optional[VectorFieldOptions] = getattr(
@@ -1662,6 +1661,11 @@ class HashModel(RedisModel, abc.ABC):
             else:
                 schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
         elif issubclass(typ, RedisModel):
+            if sortable:
+                raise ValueError(
+                    f"Field '{name}' is an embedded model and cannot be marked as sortable.\
+                          Mark individual fields within the embedded model as sortable instead."
+                )
             sub_fields = []
             for embedded_name, field in typ.__fields__.items():
                 sub_fields.append(
@@ -1870,8 +1874,8 @@ class JsonModel(RedisModel, abc.ABC):
                 path = json_path
             else:
                 path = f"{json_path}.{name}"
-            sortable: bool = getattr(field_info, "sortable", False)
-            full_text_search: bool = getattr(field_info, "full_text_search", False)
+            sortable = getattr(field_info, "sortable", False)
+            full_text_search = getattr(field_info, "full_text_search", False)
             sortable_tag_error = RedisModelError(
                 "In this Preview release, TAG fields cannot "
                 f"be marked as sortable. Problem field: {name}. "
@@ -1887,23 +1891,23 @@ class JsonModel(RedisModel, abc.ABC):
                         "In this Preview release, list and tuple fields can only "
                         f"contain strings. Problem field: {name}. See docs: TODO"
                     )
-                if full_text_search:
+                if full_text_search is True:
                     raise RedisModelError(
                         "List and tuple fields cannot be indexed for full-text "
                         f"search. Problem field: {name}. See docs: TODO"
                     )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                if sortable:
+                if sortable is True:
                     raise sortable_tag_error
             elif any(issubclass(typ, t) for t in NUMERIC_TYPES):
                 schema = f"{path} AS {index_field_name} NUMERIC"
             elif issubclass(typ, str):
-                if full_text_search:
+                if full_text_search is True:
                     schema = (
                         f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
                         f"{path} AS {index_field_name}_fts TEXT"
                     )
-                    if sortable:
+                    if sortable is True:
                         # NOTE: With the current preview release, making a field
                         # full-text searchable and sortable only makes the TEXT
                         # field sortable. This means that results for full-text
@@ -1912,7 +1916,7 @@ class JsonModel(RedisModel, abc.ABC):
                         schema += " SORTABLE"
                 else:
                     schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                    if sortable:
+                    if sortable is True:
                         raise sortable_tag_error
             else:
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
