@@ -1920,7 +1920,7 @@ class JsonModel(RedisModel, abc.ABC):
                         raise sortable_tag_error
             else:
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                if sortable:
+                if sortable is True:
                     raise sortable_tag_error
             return schema
         return ""
