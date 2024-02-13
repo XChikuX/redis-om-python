@@ -1,14 +1,14 @@
 [tool.poetry]
-name = "redis-om"
-version = "0.2.2"
+name = "pyredis-om"
+version = "0.2.3"
 description = "Object mappings, and more, for Redis."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Redis OSS <oss@redis.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
-repository = "https://github.com/anton-petrov/redis-om-python"
+repository = "https://github.com/xchikux/redis-om-python"
 packages = [
-    { "include" = "redis_om" },
+    { "include" = "aredis_om" },
 ]
 classifiers = [
     "Development Status :: 3 - Beta",
