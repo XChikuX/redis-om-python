@@ -11,7 +11,7 @@ packages = [
     { "include" = "aredis_om" },
 ]
 classifiers = [
-    "Development Status :: 3 - Beta",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
