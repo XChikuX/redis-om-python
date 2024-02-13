@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyredis-om"
-version = "0.2.5"
+version = "0.3.0"
 description = "Object mappings, and more, for Redis."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Srikanth <srikanth@psync.dev>"]
