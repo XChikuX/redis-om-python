@@ -6,15 +6,15 @@ This tutorial will walk you through installing Redis OM, creating your first mod
 
 ## Prerequisites
 
-Redis OM requires Python version 3.7 or above and a Redis instance to connect to.
+Redis OM requires Python version 3.10 or above and a Redis instance to connect to.
 
 ## Python
 
-Make sure you are running **Python version 3.7 or higher**:
+Make sure you are running **Python version 3.8 or higher**:
 
 ```
 python --version
-Python 3.7.0
+Python 3.10.0
 ```
 
 If you don't have Python installed, you can download it from [Python.org](https://www.python.org/downloads/), use [pyenv](https://github.com/pyenv/pyenv), or install Python with your operating system's package manager.
@@ -25,7 +25,7 @@ This library requires [redis-py](https://pypi.org/project/redis) version 4.2.0 o
 
 Redis OM saves data in Redis, so you will need Redis installed and running to complete this tutorial.
 
-We recommend the [redis-stack](https://hub.docker.com/r/redis/redis-stack) image because it includes Redis capabilities that this library uses to provide extra features. Later sections of this guide will provide more detail about these features.
+We recommend the [redis](https://hub.docker.com/r/redis/redis) image because it includes Redis capabilities that this library uses to provide extra features. Later sections of this guide will provide more detail about these features.
 
 You can also use the official Redis Docker image, which is hosted on [Docker Hub](https://hub.docker.com/_/redis).  However this does not include the Search and JSON modules required to store JSON models and use the `find` query interface.
 
@@ -603,7 +603,7 @@ andrew.key()
 With the model's Redis key, you can start `redis-cli` and inspect the data stored under that key. Here, we run `JSON.GET` command with `redis-cli` using the running "redis" container that this project's Docker Compose file defines:
 
 ```
-$ docker-compose exec -T redis redis-cli HGETALL mymodel.Customer:01FKGX1DFEV9Z2XKF59WQ6DC9r
+$ docker compose exec -T redis redis-cli HGETALL mymodel.Customer:01FKGX1DFEV9Z2XKF59WQ6DC9r
 
  1) "pk"
  2) "01FKGX1DFEV9Z2XKF59WQ6DC9T"
@@ -700,6 +700,27 @@ Customer.find(Customer.last_name != "Brookins").all()
 Customer.find((Customer.last_name == "Brookins") | (
         Customer.age == 100
 ) & (Customer.last_name == "Smith")).all()
+```
+
+### Saving and querying Boolean values
+
+For historical reasons, saving and querying Boolean values is not supported in `HashModels`, however in JSON models,
+you may store and query Boolean values using the `==` syntax:
+
+```python
+from redis_om import (
+    Field,
+    JsonModel,
+    Migrator
+)
+
+class Demo(JsonModel):
+    b: bool = Field(index=True)
+
+Migrator().run()
+d = Demo(b=True)
+d.save()
+res = Demo.find(Demo.b == True)
 ```
 
 ## Calling Other Redis Commands

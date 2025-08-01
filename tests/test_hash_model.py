@@ -4,8 +4,9 @@ import abc
 import dataclasses
 import datetime
 import decimal
+import uuid
 from collections import namedtuple
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 from unittest import mock
 
 import pytest
@@ -47,7 +48,7 @@ async def m(key_prefix, redis):
 
     class Member(BaseHashModel):
         id: int = Field(index=True, primary_key=True)
-        first_name: str = Field(index=True)
+        first_name: str = Field(index=True, case_sensitive=True)
         last_name: str = Field(index=True)
         email: str = Field(index=True)
         join_date: datetime.date
@@ -101,17 +102,6 @@ async def members(m):
     await member3.save()
 
     yield member1, member2, member3
-
-
-@py_test_mark_asyncio
-async def test_count_query(members, m):
-
-    count = await m.Member.find((m.Member.first_name == "Andrew") & (m.Member.last_name == "Brookins")).count()
-    assert count == 1
-    count = await m.Member.find(m.Member.first_name == "Andrew").count()
-    assert count == 2
-    count = await m.Member.find().count()
-    assert count == 3
 
 
 @py_test_mark_asyncio
@@ -395,11 +385,27 @@ async def test_sorting(members, m):
         await m.Member.find().sort_by("join_date").all()
 
 
+@py_test_mark_asyncio
+async def test_case_sensitive(members, m):
+    member1, member2, member3 = members
+
+    actual = await m.Member.find(
+        m.Member.first_name == "Andrew" and m.Member.pk == member1.pk
+    ).all()
+    assert actual == [member1]
+
+    actual = await m.Member.find(m.Member.first_name == "andrew").all()
+    assert actual == []
+
+
 def test_validates_required_fields(m):
     # Raises ValidationError: last_name is required
     # TODO: Test the error value
     with pytest.raises(ValidationError):
-        m.Member(id=0, first_name="Andrew", zipcode="97086", join_date=today)
+        try:
+            m.Member(id=0, first_name="Andrew", zipcode="97086", join_date=today)
+        except Exception as e:
+            raise e
 
 
 def test_validates_field(m):
@@ -592,6 +598,7 @@ def test_raises_error_with_embedded_models(m):
     with pytest.raises(RedisModelError):
 
         class InvalidMember(m.BaseHashModel):
+            name: str = Field(index=True)
             address: Address
 
 
@@ -739,7 +746,6 @@ def test_schema(m):
     # We need to build the key prefix because it will differ based on whether
     # these tests were copied into the tests_sync folder and unasynce'd.
     key_prefix = Address.make_key(Address._meta.primary_key_pattern.format(pk=""))
-
     assert (
         Address.redisearch_schema()
         == f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | a_string TAG SEPARATOR | a_full_text_string TAG SEPARATOR | a_full_text_string AS a_full_text_string_fts TEXT an_integer NUMERIC SORTABLE a_float NUMERIC"
@@ -815,3 +821,133 @@ async def test_count(members, m):
         m.Member.first_name == "Kim", m.Member.last_name == "Brookins"
     ).count()
     assert actual_count == 1
+
+
+@py_test_mark_asyncio
+async def test_type_with_union(members, m):
+    class TypeWithUnion(m.BaseHashModel):
+        field: Union[str, int]
+
+    twu_str = TypeWithUnion(field="hello world")
+    res = await twu_str.save()
+    assert res.pk == twu_str.pk
+    twu_str_rematerialized = await TypeWithUnion.get(twu_str.pk)
+    assert (
+        isinstance(twu_str_rematerialized.field, str)
+        and twu_str_rematerialized.pk == twu_str.pk
+    )
+
+    twu_int = TypeWithUnion(field=42)
+    await twu_int.save()
+    twu_int_rematerialized = await TypeWithUnion.get(twu_int.pk)
+
+    # Note - we will not be able to automatically serialize an int back to this union type,
+    # since as far as we know from Redis this item is a string
+    assert twu_int_rematerialized.pk == twu_int.pk
+
+
+@py_test_mark_asyncio
+async def test_type_with_uuid():
+    class TypeWithUuid(HashModel):
+        uuid: uuid.UUID
+
+    item = TypeWithUuid(uuid=uuid.uuid4())
+
+    await item.save()
+
+
+@py_test_mark_asyncio
+async def test_xfix_queries(members, m):
+    member1, member2, member3 = members
+
+    result = await m.Member.find(
+        m.Member.first_name.startswith("And") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = await m.Member.find(
+        m.Member.last_name.endswith("ins") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = await m.Member.find(
+        m.Member.last_name.contains("ook") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = await m.Member.find(
+        m.Member.bio % "great*" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+    result = await m.Member.find(
+        m.Member.bio % "*rty" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+    result = await m.Member.find(
+        m.Member.bio % "*eat*" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+
+@py_test_mark_asyncio
+async def test_none():
+    class ModelWithNoneDefault(HashModel):
+        test: Optional[str] = Field(index=True, default=None)
+
+    class ModelWithStringDefault(HashModel):
+        test: Optional[str] = Field(index=True, default="None")
+
+    await Migrator().run()
+
+    a = ModelWithNoneDefault()
+    await a.save()
+    res = await ModelWithNoneDefault.find(ModelWithNoneDefault.pk == a.pk).first()
+    assert res.test is None
+
+    b = ModelWithStringDefault()
+    await b.save()
+    res = await ModelWithStringDefault.find(ModelWithStringDefault.pk == b.pk).first()
+    assert res.test == "None"
+
+
+@py_test_mark_asyncio
+async def test_update_validation():
+    class TestUpdate(HashModel):
+        name: str
+        age: int
+
+    await Migrator().run()
+    t = TestUpdate(name="steve", age=34)
+    await t.save()
+    update_dict = dict()
+    update_dict["age"] = "cat"
+
+    with pytest.raises(ValidationError):
+        await t.update(**update_dict)
+
+    rematerialized = await TestUpdate.find(TestUpdate.pk == t.pk).first()
+    assert rematerialized.age == 34
+
+
+@py_test_mark_asyncio
+async def test_literals():
+    from typing import Literal
+
+    class TestLiterals(HashModel):
+        flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
+
+    schema = TestLiterals.redisearch_schema()
+
+    key_prefix = TestLiterals.make_key(
+        TestLiterals._meta.primary_key_pattern.format(pk="")
+    )
+    assert schema == (
+        f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
+    )
+    await Migrator().run()
+    item = TestLiterals(flavor="pumpkin")
+    await item.save()
+    rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
+    assert rematerialized.pk == item.pk
