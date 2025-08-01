@@ -44,7 +44,7 @@ python-ulid = "^2.2.0"
 hiredis = "^3.2.1"
 more-itertools = "^10.2.0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 mypy = "^1.9.0"
 pytest = "^8.0.2"
 ipdb = "^0.13.9"
