@@ -35,9 +35,7 @@ def render_tree(
 
     if up is not None:
         next_last = "up"
-        next_indent = "{0}{1}{2}".format(
-            indent, " " if "up" in last else "|", " " * len(str(name(current_node)))
-        )
+        next_indent = f'{indent}{" " if "up" in last else "|"}{" " * len(str(name(current_node)))}'
         render_tree(
             up, nameattr, left_child, right_child, next_indent, next_last, buffer
         )
@@ -61,14 +59,14 @@ def render_tree(
         end_shape = ""
 
     print(
-        "{0}{1}{2}{3}".format(indent, start_shape, name(current_node), end_shape),
+        f"{indent}{start_shape}{name(current_node)}{end_shape}",
         file=buffer,
     )
 
     if down is not None:
         next_last = "down"
-        next_indent = "{0}{1}{2}".format(
-            indent, " " if "down" in last else "|", " " * len(str(name(current_node)))
+        next_indent = (
+            f'{indent}{" " if "down" in last else "|"}{len(str(name(current_node)))}'
         )
         render_tree(
             down, nameattr, left_child, right_child, next_indent, next_last, buffer

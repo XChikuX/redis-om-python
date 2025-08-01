@@ -149,7 +149,7 @@ def is_supported_container_type(typ: Optional[type]) -> bool:
 
 
 def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any]):
-    for field_name in field_values.keys():
+    for field_name in field_values:
         if "__" in field_name:
             obj = model
             for sub_field in field_name.split("__"):
