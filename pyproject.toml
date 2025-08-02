@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyredis-om"
-version = "0.3.8b"
+version = "0.3.8b1"
 description = "A true `redis-om` alternative, built out of frustration."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Srikanth <srikanth@psync.dev>"]
