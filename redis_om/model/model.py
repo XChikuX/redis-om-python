@@ -184,12 +184,9 @@ def decode_redis_value(
         return obj.decode(encoding)
 
 
-# TODO: replace with `str.removeprefix()` when only Python 3.9+ is supported
 def remove_prefix(value: str, prefix: str) -> str:
     """Remove a prefix from a string."""
-    if value.startswith(prefix):
-        value = value[len(prefix) :]  # noqa: E203
-    return value
+    return value.removeprefix(prefix)
 
 
 class PipelineError(Exception):
