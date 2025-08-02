@@ -28,18 +28,12 @@ if PYDANTIC_V2:
     from pydantic.v1 import BaseModel, validator, TypeAdapter
     from pydantic.v1.fields import FieldInfo, ModelField, Undefined, UndefinedType
 
-    from pydantic import BaseModel, TypeAdapter
     from pydantic import ValidationError as ValidationError
-    from pydantic._internal._model_construction import ModelMetaclass
-    from pydantic._internal._repr import Representation
-    from pydantic.deprecated.json import ENCODERS_BY_TYPE
 
     from pydantic.v1.json import ENCODERS_BY_TYPE
     from pydantic.v1.main import ModelMetaclass, validate_model
     from pydantic.v1.typing import NoArgAnyCallable
     from pydantic.v1.utils import Representation
-    from pydantic_core import PydanticUndefined as Undefined
-    from pydantic_core import PydanticUndefinedType as UndefinedType
 
     @dataclass
     class ModelField:
