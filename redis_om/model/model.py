@@ -11,8 +11,10 @@ from typing import (
     AbstractSet,
     Any,
     Callable,
+    ClassVar,
     Dict,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -21,8 +23,9 @@ from typing import (
     Type,
     TypeVar,
     Union,
-    no_type_check,
 )
+from typing import get_args as typing_get_args
+from typing import no_type_check
 
 from more_itertools import ichunked
 from redis.commands.json.path import Path
@@ -31,7 +34,7 @@ from typing_extensions import Protocol, get_args, get_origin
 from ulid import ULID
 
 from .. import redis
-from .._compat import BaseModel
+from .._compat import PYDANTIC_V2, BaseModel
 from .._compat import FieldInfo as PydanticFieldInfo
 from .._compat import (
     ModelField,
@@ -45,7 +48,7 @@ from .._compat import (
 )
 from ..checks import has_redis_json, has_redisearch
 from ..connections import get_redis_connection
-from ..util import ASYNC_MODE
+from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .token_escaper import TokenEscaper
@@ -75,6 +78,19 @@ DEFAULT_REDISEARCH_FIELD_SEPARATOR = ","
 ERRORS_URL = "https://github.com/redis/redis-om-python/blob/main/docs/errors.md"
 
 
+def get_outer_type(field):
+    if hasattr(field, "outer_type_"):
+        return field.outer_type_
+    elif isinstance(field.annotation, type) or is_supported_container_type(
+        field.annotation
+    ):
+        return field.annotation
+    elif not hasattr(field.annotation, "__args__"):
+        return None
+    else:
+        return field.annotation.__args__[0]
+
+
 class RedisModelError(Exception):
     """Raised when a problem exists in the definition of a RedisModel."""
 
@@ -101,12 +117,19 @@ class Operators(Enum):
     NOT_IN = 11
     LIKE = 12
     ALL = 13
+    STARTSWITH = 14
+    ENDSWITH = 15
+    CONTAINS = 16
+    TRUE = 17
+    FALSE = 18
 
     def __str__(self):
         return str(self.name)
 
 
-ExpressionOrModelField = Union["Expression", "NegatedExpression", ModelField]
+ExpressionOrModelField = Union[
+    "Expression", "NegatedExpression", ModelField, PydanticFieldInfo
+]
 
 
 def embedded(cls):
@@ -119,17 +142,20 @@ def embedded(cls):
 
 def is_supported_container_type(typ: Optional[type]) -> bool:
     # TODO: Wait, why don't we support indexing sets?
-    if typ == list or typ == tuple:
+    if typ == list or typ == tuple or typ == Literal:
         return True
     unwrapped = get_origin(typ)
-    return unwrapped == list or unwrapped == tuple
+    return unwrapped == list or unwrapped == tuple or unwrapped == Literal
 
 
 def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any]):
-    for field_name in field_values.keys():
+    for field_name in field_values:
         if "__" in field_name:
             obj = model
             for sub_field in field_name.split("__"):
+                if not isinstance(obj, ModelMeta) and hasattr(obj, "field"):
+                    obj = getattr(obj, "field").annotation
+
                 if not hasattr(obj, sub_field):
                     raise QuerySyntaxError(
                         f"The update path {field_name} contains a field that does not "
@@ -138,7 +164,7 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
                 obj = getattr(obj, sub_field)
             return
 
-        if field_name not in model.__fields__:
+        if field_name not in model.__fields__:  # type: ignore
             raise QuerySyntaxError(
                 f"The field {field_name} does not exist on the model {model.__name__}"
             )
@@ -330,9 +356,27 @@ class ExpressionProxy:
             left=self.field, op=Operators.NOT_IN, right=other, parents=self.parents
         )
 
+    def startswith(self, other: Any) -> Expression:
+        return Expression(
+            left=self.field, op=Operators.STARTSWITH, right=other, parents=self.parents
+        )
+
+    def endswith(self, other: Any) -> Expression:
+        return Expression(
+            left=self.field, op=Operators.ENDSWITH, right=other, parents=self.parents
+        )
+
+    def contains(self, other: Any) -> Expression:
+        return Expression(
+            left=self.field, op=Operators.CONTAINS, right=other, parents=self.parents
+        )
+
     def __getattr__(self, item):
-        if is_supported_container_type(self.field.outer_type_):
-            embedded_cls = get_args(self.field.outer_type_)
+        if item.startswith("__"):
+            raise AttributeError("cannot invoke __getattr__ with reserved field")
+        outer_type = outer_type_or_annotation(self.field)
+        if is_supported_container_type(outer_type):
+            embedded_cls = get_args(outer_type)
             if not embedded_cls:
                 raise QuerySyntaxError(
                     "In order to query on a list field, you must define "
@@ -342,9 +386,9 @@ class ExpressionProxy:
             embedded_cls = embedded_cls[0]
             attr = getattr(embedded_cls, item)
         else:
-            attr = getattr(self.field.outer_type_, item)
+            attr = getattr(outer_type, item)
         if isinstance(attr, self.__class__):
-            new_parent = (self.field.name, self.field.outer_type_)
+            new_parent = (self.field.alias, outer_type)
             if new_parent not in attr.parents:
                 attr.parents.append(new_parent)
             new_parents = list(set(self.parents) - set(attr.parents))
@@ -474,13 +518,20 @@ class FindQuery:
             field_name = sort_field.lstrip("-")
             if self.knn and field_name == self.knn.score_field:
                 continue
-            if field_name not in self.model.__fields__:
+            if field_name not in self.model.__fields__:  # type: ignore
                 raise QueryNotSupportedError(
                     f"You tried sort by {field_name}, but that field "
                     f"does not exist on the model {self.model}"
                 )
             field_proxy = getattr(self.model, field_name)
-            if not getattr(field_proxy.field.field_info, "sortable", False):
+            if isinstance(field_proxy.field, FieldInfo) or isinstance(
+                field_proxy.field, PydanticFieldInfo
+            ):
+                field_info = field_proxy.field
+            else:
+                field_info = field_proxy.field.field_info
+
+            if not getattr(field_info, "sortable", False):
                 raise QueryNotSupportedError(
                     f"You tried sort by {field_name}, but {self.model} does "
                     f"not define that field as sortable. Docs: {ERRORS_URL}#E2"
@@ -488,20 +539,31 @@ class FindQuery:
         return sort_fields
 
     @staticmethod
-    def resolve_field_type(field: ModelField, op: Operators) -> RediSearchFieldTypes:
-        if getattr(field.field_info, "primary_key", None) is True:
+    def resolve_field_type(
+        field: Union[ModelField, PydanticFieldInfo], op: Operators
+    ) -> RediSearchFieldTypes:
+        field_info: Union[FieldInfo, ModelField, PydanticFieldInfo]
+
+        if not hasattr(field, "field_info"):
+            field_info = field
+        else:
+            field_info = field.field_info
+        if getattr(field_info, "primary_key", None) is True:
             return RediSearchFieldTypes.TAG
         elif op is Operators.LIKE:
-            fts = getattr(field.field_info, "full_text_search", None)
+            fts = getattr(field_info, "full_text_search", None)
             if fts is not True:  # Could be PydanticUndefined
                 raise QuerySyntaxError(
-                    f"You tried to do a full-text search on the field '{field.name}', "
+                    f"You tried to do a full-text search on the field '{field.alias}', "
                     f"but the field is not indexed for full-text search. Use the "
                     f"full_text_search=True option. Docs: {ERRORS_URL}#E3"
                 )
             return RediSearchFieldTypes.TEXT
 
-        field_type = field.outer_type_
+        field_type = outer_type_or_annotation(field)
+
+        if not isinstance(field_type, type):
+            field_type = field_type.__origin__
 
         # TODO: GEO fields
         container_type = get_origin(field_type)
@@ -526,7 +588,9 @@ class FindQuery:
                 "Only lists and tuples are supported for multi-value fields. "
                 f"Docs: {ERRORS_URL}#E4"
             )
-        elif any(issubclass(field_type, t) for t in NUMERIC_TYPES):
+        elif field_type is bool:
+            return RediSearchFieldTypes.TAG
+        elif is_numeric_type(field_type):
             # Index numeric Python types as NUMERIC fields, so we can support
             # range queries.
             return RediSearchFieldTypes.NUMERIC
@@ -620,7 +684,11 @@ class FindQuery:
                         separator_char,
                     )
                     return ""
-                if isinstance(value, int):
+                if isinstance(value, bool):
+                    result = "@{field_name}:{{{value}}}".format(
+                        field_name=field_name, value=value
+                    )
+                elif isinstance(value, int):
                     # This if will hit only if the field is a primary key of type int
                     result = f"@{field_name}:[{value} {value}]"
                 elif separator_char in value:
@@ -630,20 +698,45 @@ class FindQuery:
                     values: filter = filter(None, value.split(separator_char))
                     for value in values:
                         value = escaper.escape(value)
-                        result += f"@{field_name}:{{{value}}}"
+                        result += "@{field_name}:{{{value}}}".format(
+                            field_name=field_name, value=value
+                        )
                 else:
                     value = escaper.escape(value)
-                    result += f"@{field_name}:{{{value}}}"
+                    result += "@{field_name}:{{{value}}}".format(
+                        field_name=field_name, value=value
+                    )
             elif op is Operators.NE:
                 value = escaper.escape(value)
-                result += f"-(@{field_name}:{{{value}}})"
+                result += "-(@{field_name}:{{{value}}})".format(
+                    field_name=field_name, value=value
+                )
             elif op is Operators.IN:
                 expanded_value = cls.expand_tag_value(value)
-                result += f"(@{field_name}:{{{expanded_value}}})"
+                result += "(@{field_name}:{{{expanded_value}}})".format(
+                    field_name=field_name, expanded_value=expanded_value
+                )
             elif op is Operators.NOT_IN:
                 # TODO: Implement NOT_IN, test this...
                 expanded_value = cls.expand_tag_value(value)
-                result += f"-(@{field_name}:{{{expanded_value}}})"
+                result += "-(@{field_name}:{{{expanded_value}}})".format(
+                    field_name=field_name, expanded_value=expanded_value
+                )
+            elif op is Operators.STARTSWITH:
+                expanded_value = cls.expand_tag_value(value)
+                result += "(@{field_name}:{{{expanded_value}*}})".format(
+                    field_name=field_name, expanded_value=expanded_value
+                )
+            elif op is Operators.ENDSWITH:
+                expanded_value = cls.expand_tag_value(value)
+                result += "(@{field_name}:{{*{expanded_value}}})".format(
+                    field_name=field_name, expanded_value=expanded_value
+                )
+            elif op is Operators.CONTAINS:
+                expanded_value = cls.expand_tag_value(value)
+                result += "(@{field_name}:{{*{expanded_value}*}})".format(
+                    field_name=field_name, expanded_value=expanded_value
+                )
 
         return result
 
@@ -719,6 +812,15 @@ class FindQuery:
                     f"You tried to query by a field ({field_name}) "
                     f"that isn't indexed. Docs: {ERRORS_URL}#E6"
                 )
+        elif isinstance(expression.left, FieldInfo):
+            field_type = cls.resolve_field_type(expression.left, expression.op)
+            field_name = expression.left.alias
+            field_info = expression.left
+            if not field_info or not getattr(field_info, "index", None):
+                raise QueryNotSupportedError(
+                    f"You tried to query by a field ({field_name}) "
+                    f"that isn't indexed. Docs: {ERRORS_URL}#E6"
+                )
         else:
             raise QueryNotSupportedError(
                 "A query expression should start with either a field "
@@ -771,7 +873,9 @@ class FindQuery:
 
         return result
 
-    def execute(self, exhaust_results=True, return_raw_result=False):
+    def execute(
+        self, exhaust_results=True, return_raw_result=False, return_query_args=False
+    ):
         args: List[Union[str, bytes]] = [
             "FT.SEARCH",
             self.model.Meta.index_name,
@@ -795,6 +899,9 @@ class FindQuery:
 
         if self.nocontent:
             args.append("NOCONTENT")
+
+        if return_query_args:
+            return self.model.Meta.index_name, args
 
         # Reset the cache if we're executing from offset 0.
         if self.offset == 0:
@@ -829,6 +936,10 @@ class FindQuery:
             self._model_cache += _results
         return self._model_cache
 
+    def get_query(self):
+        query = self.copy()
+        return query.execute(return_query_args=True)
+
     def first(self):
         query = self.copy(offset=0, limit=1, sort_fields=self.sort_fields)
         results = query.execute(exhaust_results=False)
@@ -848,7 +959,9 @@ class FindQuery:
         return self.execute()
 
     def page(self, offset=0, limit=10):
-        return self.copy(offset=offset, limit=limit).execute()
+        return self.copy(offset=offset, limit=limit).execute(
+            exhaust_results=False
+        )
 
     def sort_by(self, *fields: str):
         if not fields:
@@ -866,7 +979,7 @@ class FindQuery:
         validate_model_fields(self.model, field_values)
         pipeline = self.model.db().pipeline() if use_transaction else None
 
-        # TODO: async for here?
+
         for model in self.all():
             for field, value in field_values.items():
                 setattr(model, field, value)
@@ -911,7 +1024,7 @@ class FindQuery:
         """
         if ASYNC_MODE:
             raise QuerySyntaxError(
-                "Cannot use [] notation with async code. "
+                "Cannot use [] notation with code. "
                 "Use FindQuery.get_item() instead."
             )
         if self._model_cache and len(self._model_cache) >= item:
@@ -924,7 +1037,7 @@ class FindQuery:
     def get_item(self, item: int):
         """
         Given this code:
-            await Model.find().get_item(1000)
+            Model.find().get_item(1000)
 
         We should return only the 1000th result.
 
@@ -935,7 +1048,7 @@ class FindQuery:
                that result, then we should clone the current query and
                give it a new offset and limit: offset=n, limit=1.
 
-        NOTE: This method is included specifically for async users, who
+        NOTE: This method is included specifically for users, who
         cannot use the notation Model.find()[1000].
         """
         if self._model_cache and len(self._model_cache) >= item:
@@ -976,12 +1089,14 @@ class FieldInfo(PydanticFieldInfo):
     def __init__(self, default: Any = Undefined, **kwargs: Any) -> None:
         primary_key = kwargs.pop("primary_key", False)
         sortable = kwargs.pop("sortable", Undefined)
+        case_sensitive = kwargs.pop("case_sensitive", Undefined)
         index = kwargs.pop("index", Undefined)
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
         super().__init__(default=default, **kwargs)
         self.primary_key = primary_key
         self.sortable = sortable
+        self.case_sensitive = case_sensitive
         self.index = index
         self.full_text_search = full_text_search
         self.vector_options = vector_options
@@ -1090,29 +1205,30 @@ def Field(
     default: Any = Undefined,
     *,
     default_factory: Optional[NoArgAnyCallable] = None,
-    alias: str = None,
-    title: str = None,
-    description: str = None,
+    alias: Optional[str] = None,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
     exclude: Union[
         AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
     ] = None,
     include: Union[
         AbstractSet[Union[int, str]], Mapping[Union[int, str], Any], Any
     ] = None,
-    const: bool = None,
-    gt: float = None,
-    ge: float = None,
-    lt: float = None,
-    le: float = None,
-    multiple_of: float = None,
-    min_items: int = None,
-    max_items: int = None,
-    min_length: int = None,
-    max_length: int = None,
+    const: Optional[bool] = None,
+    gt: Optional[float] = None,
+    ge: Optional[float] = None,
+    lt: Optional[float] = None,
+    le: Optional[float] = None,
+    multiple_of: Optional[float] = None,
+    min_items: Optional[int] = None,
+    max_items: Optional[int] = None,
+    min_length: Optional[int] = None,
+    max_length: Optional[int] = None,
     allow_mutation: bool = True,
-    regex: str = None,
+    regex: Optional[str] = None,
     primary_key: bool = False,
     sortable: Union[bool, UndefinedType] = Undefined,
+    case_sensitive: Union[bool, UndefinedType] = Undefined,
     index: Union[bool, UndefinedType] = Undefined,
     full_text_search: Union[bool, UndefinedType] = Undefined,
     vector_options: Optional[VectorFieldOptions] = None,
@@ -1141,12 +1257,12 @@ def Field(
         regex=regex,
         primary_key=primary_key,
         sortable=sortable,
+        case_sensitive=case_sensitive,
         index=index,
         full_text_search=full_text_search,
         vector_options=vector_options,
         **current_schema_extra,
     )
-    field_info._validate()
     return field_info
 
 
@@ -1222,6 +1338,18 @@ class ModelMeta(ModelMetaclass):
         # Create proxies for each model field so that we can use the field
         # in queries, like Model.get(Model.field_name == 1)
         for field_name, field in new_class.__fields__.items():
+            if not isinstance(field, FieldInfo):
+                for base_candidate in bases:
+                    if hasattr(base_candidate, field_name):
+                        inner_field = getattr(base_candidate, field_name)
+                        if hasattr(inner_field, "field") and isinstance(
+                            getattr(inner_field, "field"), FieldInfo
+                        ):
+                            field.metadata.append(getattr(inner_field, "field"))
+                            field = getattr(inner_field, "field")
+
+            if not field.alias:
+                field.alias = field_name
             setattr(new_class, field_name, ExpressionProxy(field, []))
             annotation = new_class.get_annotations().get(field_name)
             if annotation:
@@ -1231,12 +1359,21 @@ class ModelMeta(ModelMetaclass):
             else:
                 new_class.__annotations__[field_name] = ExpressionProxy
             # Check if this is our FieldInfo version with extended ORM metadata.
-            if isinstance(field.field_info, FieldInfo):
-                if field.field_info.primary_key:
+            field_info = None
+            if hasattr(field, "field_info") and isinstance(field.field_info, FieldInfo):
+                field_info = field.field_info
+            elif field_name in attrs and isinstance(
+                attrs.__getitem__(field_name), FieldInfo
+            ):
+                field_info = attrs.__getitem__(field_name)
+                field.field_info = field_info
+
+            if field_info is not None:
+                if field_info.primary_key:
                     new_class._meta.primary_key = PrimaryKey(
                         name=field_name, field=field
                     )
-                if field.field_info.vector_options:
+                if field_info.vector_options:
                     score_attr = f"_{field_name}_score"
                     setattr(new_class, score_attr, None)
                     new_class.__annotations__[score_attr] = Union[float, None]
@@ -1280,15 +1417,38 @@ class ModelMeta(ModelMetaclass):
         return new_class
 
 
+def outer_type_or_annotation(field):
+    if hasattr(field, "outer_type_"):
+        return field.outer_type_
+    elif not hasattr(field.annotation, "__args__"):
+        if not isinstance(field.annotation, type):
+            raise AttributeError(f"could not extract outer type from field {field}")
+        return field.annotation
+    elif get_origin(field.annotation) == Literal:
+        return str
+    else:
+        return field.annotation.__args__[0]
+
+
 class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     pk: Optional[str] = Field(default=None, primary_key=True)
+    if PYDANTIC_V2:
+        ConfigDict: ClassVar
 
     Meta = DefaultMeta
 
-    class Config:
-        orm_mode = True
-        arbitrary_types_allowed = True
-        extra = "allow"
+    if PYDANTIC_V2:
+        from pydantic import ConfigDict
+
+        model_config = ConfigDict(
+            from_attributes=True, arbitrary_types_allowed=True, extra="allow"
+        )
+    else:
+
+        class Config:
+            orm_mode = True
+            arbitrary_types_allowed = True
+            extra = "allow"
 
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
@@ -1300,7 +1460,10 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def key(self):
         """Return the Redis key for this model."""
-        pk = getattr(self, self._meta.primary_key.field.name)
+        if hasattr(self._meta.primary_key.field, "name"):
+            pk = getattr(self, self._meta.primary_key.field.name)
+        else:
+            pk = getattr(self, self._meta.primary_key.name)
         return self.make_primary_key(pk)
 
     @classmethod
@@ -1339,7 +1502,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @validator("pk", always=True, allow_reuse=True)
     def validate_pk(cls, v):
-        if not v:
+        if not v or isinstance(v, ExpressionProxy):
             v = cls._meta.primary_key_creator_cls().create_pk()
         return v
 
@@ -1348,7 +1511,20 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         """Check for a primary key. We need one (and only one)."""
         primary_keys = 0
         for name, field in cls.__fields__.items():
-            if getattr(field.field_info, "primary_key", None):
+            if not hasattr(field, "field_info"):
+                if (
+                    not isinstance(field, FieldInfo)
+                    and hasattr(field, "metadata")
+                    and len(field.metadata) > 0
+                    and isinstance(field.metadata[0], FieldInfo)
+                ):
+                    field_info = field.metadata[0]
+                else:
+                    field_info = field
+            else:
+                field_info = field.field_info
+
+            if getattr(field_info, "primary_key", None):
                 primary_keys += 1
         if primary_keys == 0:
             raise RedisModelError("You must define a primary key for the model")
@@ -1480,30 +1656,57 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def check(self):
         """Run all validations."""
-        *_, validation_error = validate_model(self.__class__, self.__dict__)
-        if validation_error:
-            raise validation_error
+        if not PYDANTIC_V2:
+            *_, validation_error = validate_model(self.__class__, self.__dict__)
+            if validation_error:
+                raise validation_error
+        else:
+            from pydantic import TypeAdapter
+
+            adapter = TypeAdapter(self.__class__)
+            adapter.validate_python(self.__dict__)
 
 
 class HashModel(RedisModel, abc.ABC):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
+        if hasattr(cls, "__annotations__"):
+            for name, field_type in cls.__annotations__.items():
+                origin = get_origin(field_type)
+                for typ in (Set, Mapping, List):
+                    if isinstance(origin, type) and issubclass(origin, typ):
+                        raise RedisModelError(
+                            f"HashModels cannot index set, list, "
+                            f"or mapping fields. Field: {name}"
+                        )
+                if isinstance(field_type, type) and issubclass(field_type, RedisModel):
+                    raise RedisModelError(
+                        f"HashModels cannot index embedded model fields. Field: {name}"
+                    )
+                elif isinstance(field_type, type) and dataclasses.is_dataclass(
+                    field_type
+                ):
+                    raise RedisModelError(
+                        f"HashModels cannot index dataclass fields. Field: {name}"
+                    )
+
         for name, field in cls.__fields__.items():
-            origin = get_origin(field.outer_type_)
+            outer_type = outer_type_or_annotation(field)
+            origin = get_origin(outer_type)
             if origin:
                 for typ in (Set, Mapping, List):
                     if issubclass(origin, typ):
                         raise RedisModelError(
-                            f"HashModels cannot index set, list,"
-                            f" or mapping fields. Field: {name}"
+                            f"HashModels cannot index set, list, "
+                            f"or mapping fields. Field: {name}"
                         )
 
-            if issubclass(field.outer_type_, RedisModel):
+            if issubclass(outer_type, RedisModel):
                 raise RedisModelError(
                     f"HashModels cannot index embedded model fields. Field: {name}"
                 )
-            elif dataclasses.is_dataclass(field.outer_type_):
+            elif dataclasses.is_dataclass(outer_type):
                 raise RedisModelError(
                     f"HashModels cannot index dataclass fields. Field: {name}"
                 )
@@ -1515,6 +1718,9 @@ class HashModel(RedisModel, abc.ABC):
         db = self._get_db(pipeline)
 
         document = jsonable_encoder(self.dict())
+
+        # filter out values which are `None` because they are not valid in a HSET
+        document = {k: v for k, v in document.items() if v is not None}
         # TODO: Wrap any Redis response errors in a custom exception?
         db.hset(self.key(), mapping=document)
         return self
@@ -1525,9 +1731,11 @@ class HashModel(RedisModel, abc.ABC):
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
-            remove_prefix(key, key_prefix)
-            if isinstance(key, str)
-            else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
+            (
+                remove_prefix(key, key_prefix)
+                if isinstance(key, str)
+                else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
+            )
             for key in cls.db().scan_iter(f"{key_prefix}*", _type="HASH")
         )
 
@@ -1582,21 +1790,32 @@ class HashModel(RedisModel, abc.ABC):
 
         for name, field in cls.__fields__.items():
             # TODO: Merge this code with schema_for_type()?
-            _type = field.outer_type_
+            _type = outer_type_or_annotation(field)
             is_subscripted_type = get_origin(_type)
 
-            if getattr(field.field_info, "primary_key", None):
+            if (
+                not isinstance(field, FieldInfo)
+                and hasattr(field, "metadata")
+                and len(field.metadata) > 0
+                and isinstance(field.metadata[0], FieldInfo)
+            ):
+                field = field.metadata[0]
+
+            if not hasattr(field, "field_info"):
+                field_info = field
+            else:
+                field_info = field.field_info
+
+            if getattr(field_info, "primary_key", None):
                 if issubclass(_type, str):
                     redisearch_field = (
                         f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
                     )
                 else:
-                    redisearch_field = cls.schema_for_type(
-                        name, _type, field.field_info
-                    )
+                    redisearch_field = cls.schema_for_type(name, _type, field_info)
                 schema_parts.append(redisearch_field)
-            elif getattr(field.field_info, "index", None) is True:
-                schema_parts.append(cls.schema_for_type(name, _type, field.field_info))
+            elif getattr(field_info, "index", None) is True:
+                schema_parts.append(cls.schema_for_type(name, _type, field_info))
             elif is_subscripted_type:
                 # Ignore subscripted types (usually containers!) that we don't
                 # support, for the purposes of indexing.
@@ -1609,23 +1828,19 @@ class HashModel(RedisModel, abc.ABC):
                     log.warning("Model %s defined an empty list field: %s", cls, name)
                     continue
                 embedded_cls = embedded_cls[0]
-                schema_parts.append(
-                    cls.schema_for_type(name, embedded_cls, field.field_info)
-                )
+                schema_parts.append(cls.schema_for_type(name, embedded_cls, field_info))
             elif issubclass(_type, RedisModel):
-                schema_parts.append(cls.schema_for_type(name, _type, field.field_info))
+                schema_parts.append(cls.schema_for_type(name, _type, field_info))
         return schema_parts
 
     @classmethod
     def schema_for_type(cls, name, typ: Any, field_info: PydanticFieldInfo):
         # TODO: Import parent logic from JsonModel to deal with lists, so that
         #  a List[int] gets indexed as TAG instead of NUMERICAL.
-        # TODO: Raise error if user embeds a model field or list and makes it
-        #  sortable. Instead, the embedded model should mark individual fields
-        #  as sortable.
         # TODO: Abstract string-building logic for each type (TAG, etc.) into
         #  classes that take a field name.
         sortable = getattr(field_info, "sortable", False)
+        case_sensitive = getattr(field_info, "case_sensitive", False)
 
         if is_supported_container_type(typ):
             embedded_cls = get_args(typ)
@@ -1636,8 +1851,15 @@ class HashModel(RedisModel, abc.ABC):
                 )
                 return ""
             embedded_cls = embedded_cls[0]
+            if sortable:
+                raise ValueError(
+                    f"Field '{name}' is a container type and cannot be marked as sortable.\
+                         Mark individual fields within the embedded model as sortable instead."
+                )
             schema = cls.schema_for_type(name, embedded_cls, field_info)
-        elif any(issubclass(typ, t) for t in NUMERIC_TYPES):
+        elif typ is bool:
+            schema = f"{name} TAG"
+        elif is_numeric_type(typ):
             vector_options: Optional[VectorFieldOptions] = getattr(
                 field_info, "vector_options", None
             )
@@ -1654,6 +1876,11 @@ class HashModel(RedisModel, abc.ABC):
             else:
                 schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
         elif issubclass(typ, RedisModel):
+            if sortable:
+                raise ValueError(
+                    f"Field '{name}' is an embedded model and cannot be marked as sortable.\
+                          Mark individual fields within the embedded model as sortable instead."
+                )
             sub_fields = []
             for embedded_name, field in typ.__fields__.items():
                 sub_fields.append(
@@ -1666,6 +1893,9 @@ class HashModel(RedisModel, abc.ABC):
             schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
         if schema and sortable is True:
             schema += " SORTABLE"
+        if schema and case_sensitive is True:
+            schema += " CASESENSITIVE"
+
         return schema
 
 
@@ -1698,9 +1928,11 @@ class JsonModel(RedisModel, abc.ABC):
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
-            remove_prefix(key, key_prefix)
-            if isinstance(key, str)
-            else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
+            (
+                remove_prefix(key, key_prefix)
+                if isinstance(key, str)
+                else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
+            )
             for key in cls.db().scan_iter(f"{key_prefix}*", _type="ReJSON-RL")
         )
 
@@ -1746,11 +1978,47 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
-
+        fields = dict()
         for name, field in cls.__fields__.items():
-            _type = field.outer_type_
+            fields[name] = field
+        for name, field in cls.__dict__.items():
+            if isinstance(field, FieldInfo):
+                if not field.annotation:
+                    field.annotation = cls.__annotations__.get(name)
+                fields[name] = field
+        for name, field in cls.__annotations__.items():
+            if name in fields:
+                continue
+            fields[name] = PydanticFieldInfo.from_annotation(field)
+
+        for name, field in fields.items():
+            _type = get_outer_type(field)
+            if _type is None:
+                continue
+
+            if (
+                not isinstance(field, FieldInfo)
+                and hasattr(field, "metadata")
+                and len(field.metadata) > 0
+                and isinstance(field.metadata[0], FieldInfo)
+            ):
+                field = field.metadata[0]
+
+            if hasattr(field, "field_info"):
+                field_info = field.field_info
+            else:
+                field_info = field
+            if getattr(field_info, "primary_key", None):
+                if issubclass(_type, str):
+                    redisearch_field = f"$.{name} AS {name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                else:
+                    redisearch_field = cls.schema_for_type(
+                        json_path, name, "", _type, field_info
+                    )
+                schema_parts.append(redisearch_field)
+                continue
             schema_parts.append(
-                cls.schema_for_type(json_path, name, "", _type, field.field_info)
+                cls.schema_for_type(json_path, name, "", _type, field_info)
             )
         return schema_parts
 
@@ -1797,9 +2065,7 @@ class JsonModel(RedisModel, abc.ABC):
             field_info, "vector_options", None
         )
         try:
-            is_vector = vector_options and any(
-                issubclass(get_args(typ)[0], t) for t in NUMERIC_TYPES
-            )
+            is_vector = vector_options and has_numeric_inner_type(typ)
         except IndexError:
             raise RedisModelError(
                 f"Vector field '{name}' must be annotated as a container type"
@@ -1810,25 +2076,48 @@ class JsonModel(RedisModel, abc.ABC):
         # find any values marked as indexed.
         if is_container_type and not is_vector:
             field_type = get_origin(typ)
-            embedded_cls = get_args(typ)
-            if not embedded_cls:
-                log.warning(
-                    "Model %s defined an empty list or tuple field: %s", cls, name
+            if field_type == Literal:
+                path = f"{json_path}.{name}"
+                return cls.schema_for_type(
+                    path,
+                    name,
+                    name_prefix,
+                    str,
+                    field_info,
+                    parent_type=field_type,
                 )
-                return ""
-            embedded_cls = embedded_cls[0]
-            return cls.schema_for_type(
-                f"{json_path}.{name}[*]",
-                name,
-                name_prefix,
-                embedded_cls,
-                field_info,
-                parent_type=field_type,
-            )
+            else:
+                embedded_cls = get_args(typ)
+                if not embedded_cls:
+                    log.warning(
+                        "Model %s defined an empty list or tuple field: %s", cls, name
+                    )
+                    return ""
+                path = f"{json_path}.{name}[*]"
+                embedded_cls = embedded_cls[0]
+                return cls.schema_for_type(
+                    path,
+                    name,
+                    name_prefix,
+                    embedded_cls,
+                    field_info,
+                    parent_type=field_type,
+                )
         elif field_is_model:
             name_prefix = f"{name_prefix}_{name}" if name_prefix else name
             sub_fields = []
             for embedded_name, field in typ.__fields__.items():
+                if hasattr(field, "field_info"):
+                    field_info = field.field_info
+                elif (
+                    hasattr(field, "metadata")
+                    and len(field.metadata) > 0
+                    and isinstance(field.metadata[0], FieldInfo)
+                ):
+                    field_info = field.metadata[0]
+                else:
+                    field_info = field
+
                 if parent_is_container_type:
                     # We'll store this value either as a JavaScript array, so
                     # the correct JSONPath expression is to refer directly to
@@ -1845,8 +2134,9 @@ class JsonModel(RedisModel, abc.ABC):
                         path,
                         embedded_name,
                         name_prefix,
-                        field.outer_type_,
-                        field.field_info,
+                        # field.annotation,
+                        get_outer_type(field),
+                        field_info,
                         parent_type=typ,
                     )
                 )
@@ -1863,12 +2153,23 @@ class JsonModel(RedisModel, abc.ABC):
             else:
                 path = f"{json_path}.{name}"
             sortable = getattr(field_info, "sortable", False)
+            case_sensitive = getattr(field_info, "case_sensitive", False)
             full_text_search = getattr(field_info, "full_text_search", False)
             sortable_tag_error = RedisModelError(
                 "In this Preview release, TAG fields cannot "
                 f"be marked as sortable. Problem field: {name}. "
                 "See docs: TODO"
             )
+
+            # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
+            # a proper type, we can pull the type information from the origin of the first argument.
+            if not isinstance(typ, type):
+                type_args = typing_get_args(field_info.annotation)
+                typ = (
+                    getattr(type_args[0], "__origin__", type_args[0])
+                    if type_args
+                    else typ
+                )
 
             # TODO: GEO field
             if is_vector and vector_options:
@@ -1887,7 +2188,11 @@ class JsonModel(RedisModel, abc.ABC):
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
                 if sortable is True:
                     raise sortable_tag_error
-            elif any(issubclass(typ, t) for t in NUMERIC_TYPES):
+                if case_sensitive is True:
+                    schema += " CASESENSITIVE"
+            elif typ is bool:
+                schema = f"{path} AS {index_field_name} TAG"
+            elif is_numeric_type(typ):
                 schema = f"{path} AS {index_field_name} NUMERIC"
             elif issubclass(typ, str):
                 if full_text_search is True:
@@ -1902,10 +2207,14 @@ class JsonModel(RedisModel, abc.ABC):
                         # search queries can be sorted, but not exact match
                         # queries.
                         schema += " SORTABLE"
+                    if case_sensitive is True:
+                        raise RedisModelError("Text fields cannot be case-sensitive.")
                 else:
                     schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
                     if sortable is True:
                         raise sortable_tag_error
+                    if case_sensitive is True:
+                        schema += " CASESENSITIVE"
             else:
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
                 if sortable is True:
