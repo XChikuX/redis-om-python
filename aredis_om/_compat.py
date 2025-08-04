@@ -25,6 +25,8 @@ if PYDANTIC_V2:
     def use_pydantic_2_plus():
         return True
 
+    from pydantic_core import PydanticUndefined
+
     from pydantic.v1 import BaseModel, validator, TypeAdapter
     from pydantic.v1.fields import FieldInfo, ModelField, Undefined, UndefinedType
 
@@ -87,7 +89,7 @@ if PYDANTIC_V2:
 
 else:
     from pydantic import BaseModel, validator
-    from pydantic.fields import FieldInfo, ModelField, Undefined, UndefinedType
+    from pydantic.fields import FieldInfo, ModelField, Undefined as PydanticUndefined, UndefinedType
     from pydantic.json import ENCODERS_BY_TYPE
     from pydantic.main import ModelMetaclass, validate_model
     from pydantic.typing import NoArgAnyCallable

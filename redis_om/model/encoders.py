@@ -31,8 +31,8 @@ from pathlib import PurePath
 from types import GeneratorType
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
-from .._compat import ENCODERS_BY_TYPE, BaseModel
-from pydantic_core import PydanticUndefined
+from .._compat import ENCODERS_BY_TYPE, BaseModel, PydanticUndefined
+
 
 
 SetIntStr = Set[Union[int, str]]
