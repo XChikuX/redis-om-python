@@ -41,7 +41,7 @@ from .._compat import (
     ModelMetaclass,
     NoArgAnyCallable,
     Representation,
-    Undefined,
+    PydanticUndefined as Undefined,
     UndefinedType,
     validate_model,
     validator,
