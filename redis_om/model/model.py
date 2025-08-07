@@ -747,7 +747,7 @@ class FindQuery:
             return
         fields = []
         for f in self.sort_fields:
-            direction = "desc" if f.startswith("-") else "asc"
+            direction = "DESC" if f.startswith("-") else "ASC"
             fields.extend([f.lstrip("-"), direction])
         if self.sort_fields:
             return ["SORTBY", *fields]

@@ -368,6 +368,73 @@ redis_conn = get_redis_connection()
 redis_conn.set("hello", "world")
 ```
 
+## 🧩 Composing dynamic queries (optional conditions)
+
+Often you’ll want to add filters only when an input is provided (e.g., building a search form). You can compose a list of expressions and splat them into `find()`.
+
+Example:
+
+```python
+from typing import Optional, Sequence
+import datetime
+from pydantic import EmailStr
+
+from redis_om import Field, HashModel, Migrator
+
+class User(HashModel):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+    email: EmailStr
+    join_date: datetime.date
+    age: int = Field(index=True, sortable=True)
+    city: Optional[str] = Field(index=True)
+    bio: Optional[str] = Field(index=True, full_text_search=True, default="")
+
+# Ensure indexes exist (when using RediSearch)
+Migrator().run()
+
+def search_users(
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
+    city: Optional[str] = None,
+    name_prefix: Optional[str] = None,
+    bio_term: Optional[str] = None,
+) -> Sequence[User]:
+    conditions = []
+
+    # Range example (AND relationship)
+    if min_age is not None:
+        conditions.append(User.age >= min_age)
+    if max_age is not None:
+        conditions.append(User.age <= max_age)
+
+    # Exact match example
+    if city:
+        conditions.append(User.city == city)
+
+    # Prefix and full-text examples
+    if name_prefix:
+        # Uses TAG-prefix query semantics
+        conditions.append(User.last_name.startswith(name_prefix))
+    if bio_term:
+        # Full text search (requires full_text_search=True on the field)
+        conditions.append(User.bio % bio_term)
+
+    # All conditions passed to find() are combined with logical AND.
+    # For OR groups, compose an OR expression and add that single expression.
+    # Example OR group: last_name startswith("Sm") OR startswith("St")
+    # or_group = (User.last_name.startswith("Sm")) | (User.last_name.startswith("St"))
+    # conditions.append(or_group)
+
+    # Execute the query; you can also chain sort_by, page, etc.
+    return User.find(*conditions).sort_by("-age").all()
+```
+
+Notes:
+- Omit conditions by not appending them; the resulting `find(*conditions)` only includes what you provided.
+- Conditions passed separately to `find()` are ANDed together. Use `|` (OR) or `~(...)` (NOT) to build grouped expressions when needed, then append that single expression.
+- You can paginate with `.page(offset, limit)` or fetch the first match with `.first()`.
+
 ## 📚 Documentation
 
 The Redis OM documentation is available [here](docs/index.md).

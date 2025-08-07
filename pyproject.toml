@@ -9,6 +9,7 @@ readme = "README.md"
 repository = "https://github.com/xchikux/redis-om-python"
 packages = [
     { "include" = "aredis_om" },
+    { "include" = "redis_om" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
