@@ -445,21 +445,13 @@ If you run into trouble or have any questions, we're here to help!
 
 Hit us up on the [Redis Discord Server](http://discord.gg/redis) or [open an issue on GitHub](https://github.com/redis-developer/redis-om-python/issues/new).
 
-## ✨ So How Do You Get RediSearch and RedisJSON?
-
-Some advanced features of Redis OM rely on core features from two source available Redis modules: [RediSearch][redisearch-url] and [RedisJSON][redis-json-url].
-
-You can run these modules in your self-hosted Redis deployment, or you can use [Redis Enterprise][redis-enterprise-url], which includes both modules.
-
-To learn more, read [our documentation](docs/redis_modules.md).
-
 ## ❤️ Contributing
 
 We'd love your contributions!
 
-**Bug reports** are especially helpful at this stage of the project. [You can open a bug report on GitHub](https://github.com/redis/redis-om-python/issues/new).
+**Bug reports** are especially helpful at this stage of the project. [You can open a bug report on GitHub](https://github.com/XChikuX/redis-om-python/issues/new).
 
-You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/redis/redis-om-python/issues/new) to get started.
+You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
 ## 📝 License
 
