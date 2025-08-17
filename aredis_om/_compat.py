@@ -27,8 +27,9 @@ if PYDANTIC_V2:
 
     from pydantic_core import PydanticUndefined
 
-    from pydantic import BaseModel, validator, TypeAdapter
-    from pydantic.v1.fields import FieldInfo, ModelField, Undefined, UndefinedType
+    from pydantic.v1 import BaseModel, validator
+    from pydantic import TypeAdapter
+    from pydantic.v1.fields import FieldInfo, Undefined, UndefinedType
 
     from pydantic import ValidationError as ValidationError
 

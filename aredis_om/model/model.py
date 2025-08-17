@@ -52,6 +52,7 @@ from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .token_escaper import TokenEscaper
+from .types import Coordinates, GeoFilter
 
 
 model_registry = {}
@@ -562,7 +563,8 @@ class FindQuery:
         if not isinstance(field_type, type):
             field_type = field_type.__origin__
 
-        # TODO: GEO fields
+        if field_type is Coordinates:
+            return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
 
         if is_supported_container_type(container_type):
@@ -662,6 +664,13 @@ class FindQuery:
                 result += f"@{field_name}:[-inf {value}]"
         # TODO: How will we know the difference between a multi-value use of a TAG
         #  field and our hidden use of TAG for exact-match queries?
+        elif field_type is RediSearchFieldTypes.GEO:
+            if not isinstance(value, GeoFilter):
+                raise QuerySyntaxError(
+                    "You can only use a GeoFilter object with a GEO field."
+                )
+            if op is Operators.EQ:
+                result += f"@{field_name}:[{value}]"
         elif field_type is RediSearchFieldTypes.TAG:
             if op is Operators.EQ:
                 separator_char = getattr(
@@ -1863,6 +1872,8 @@ class HashModel(RedisModel, abc.ABC):
                 schema = f"{name} {vector_options.schema}"
             else:
                 schema = f"{name} NUMERIC"
+        elif typ is Coordinates:
+            schema = f"{name} GEO"
         elif issubclass(typ, str):
             if getattr(field_info, "full_text_search", False) is True:
                 schema = (
@@ -1985,7 +1996,11 @@ class JsonModel(RedisModel, abc.ABC):
         for name, field in cls.__annotations__.items():
             if name in fields:
                 continue
-            fields[name] = PydanticFieldInfo.from_annotation(field)
+            try:
+                fields[name] = PydanticFieldInfo.from_annotation(field)  # pydantic v2
+            except AttributeError:
+                # Under pydantic v1 compatibility path, this may not exist; skip.
+                continue
 
         for name, field in fields.items():
             _type = get_outer_type(field)
@@ -2167,7 +2182,6 @@ class JsonModel(RedisModel, abc.ABC):
                     else typ
                 )
 
-            # TODO: GEO field
             if is_vector and vector_options:
                 schema = f"{path} AS {index_field_name} {vector_options.schema}"
             elif parent_is_container_type or parent_is_model_in_container:
@@ -2190,6 +2204,8 @@ class JsonModel(RedisModel, abc.ABC):
                 schema = f"{path} AS {index_field_name} TAG"
             elif is_numeric_type(typ):
                 schema = f"{path} AS {index_field_name} NUMERIC"
+            elif typ is Coordinates:
+                schema = f"{path} AS {index_field_name} GEO"
             elif issubclass(typ, str):
                 if full_text_search is True:
                     schema = (

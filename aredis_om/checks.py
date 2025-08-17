@@ -1,11 +1,15 @@
 from functools import lru_cache
 from aredis_om.connections import get_redis_connection
+from redis.exceptions import AuthenticationError
 
 
 @lru_cache(maxsize=None)
 async def check_for_command(conn, cmd):
-    cmd_info = await conn.execute_command("command", "info", cmd)
-    return all(cmd_info)
+    try:
+        cmd_info = await conn.execute_command("command", "info", cmd)
+        return all(cmd_info)
+    except AuthenticationError:
+        return False
 
 
 @lru_cache(maxsize=None)

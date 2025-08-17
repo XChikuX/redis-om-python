@@ -1986,7 +1986,10 @@ class JsonModel(RedisModel, abc.ABC):
         for name, field in cls.__annotations__.items():
             if name in fields:
                 continue
-            fields[name] = PydanticFieldInfo.from_annotation(field)
+            try:
+                fields[name] = PydanticFieldInfo.from_annotation(field)
+            except AttributeError:
+                continue
 
         for name, field in fields.items():
             _type = get_outer_type(field)

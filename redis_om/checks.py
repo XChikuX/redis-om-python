@@ -2,12 +2,17 @@ from functools import lru_cache
 from typing import List
 
 from redis_om.connections import get_redis_connection
+from redis.exceptions import AuthenticationError
 
 
 @lru_cache(maxsize=None)
 def check_for_command(conn, cmd):
-    cmd_info = conn.execute_command("command", "info", cmd)
-    return None not in cmd_info
+    try:
+        cmd_info = conn.execute_command("command", "info", cmd)
+        return None not in cmd_info
+    except AuthenticationError:
+        # If we cannot authenticate, treat as command not available
+        return False
 
 
 @lru_cache(maxsize=None)
