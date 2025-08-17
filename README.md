@@ -35,6 +35,7 @@ span
 - [🔎 Rich Queries and Embedded Models](#-rich-queries-and-embedded-models)
   - [Querying](#querying)
   - [Embedded Models](#embedded-models)
+  - [GEO Spatial Queries](#geo-spatial-queries)
 - [Calling Other Redis Commands](#calling-other-redis-commands)
 - [📚 Documentation](#-documentation)
 - [⛏️ Troubleshooting](#️-troubleshooting)
@@ -334,6 +335,209 @@ Migrator().run()
 # Find all customers who live in San Antonio, TX
 Customer.find(Customer.address.city == "San Antonio",
               Customer.address.state == "TX")
+```
+
+### GEO Spatial Queries
+
+Redis OM supports geospatial queries through the `Coordinates` field type and `GeoFilter` for location-based searches. This is perfect for applications that need to find nearby locations, restaurants, stores, or any other location-based data.
+
+#### Defining Models with Coordinates
+
+First, let's create models that include geographic coordinates:
+
+```python
+import datetime
+from typing import Optional
+
+from redis_om import (
+    Coordinates,
+    GeoFilter,
+    Field,
+    HashModel,
+    JsonModel,
+    Migrator,
+)
+
+# Using HashModel for simple location storage
+class Store(HashModel):
+    name: str = Field(index=True)
+    coordinates: Coordinates = Field(index=True)
+    category: str = Field(index=True)
+
+# Using JsonModel for more complex location data
+class Restaurant(JsonModel):
+    name: str = Field(index=True)
+    coordinates: Coordinates = Field(index=True)
+    cuisine: str = Field(index=True)
+    rating: float = Field(index=True)
+    address: str
+    phone: Optional[str] = None
+
+# Run migrations to create indexes
+Migrator().run()
+```
+
+#### Storing Location Data
+
+You can create coordinates using latitude and longitude values:
+
+```python
+# Create some stores with coordinates (latitude, longitude)
+starbucks = Store(
+    name="Starbucks Downtown",
+    coordinates=(40.7589, -73.9851),  # Times Square, NYC
+    category="Coffee"
+)
+
+whole_foods = Store(
+    name="Whole Foods Market",
+    coordinates=(40.7505, -73.9934),  # Near Herald Square, NYC
+    category="Grocery"
+)
+
+# Save the stores
+starbucks.save()
+whole_foods.save()
+
+# Create restaurants
+pizza_place = Restaurant(
+    name="Joe's Pizza",
+    coordinates=(40.7484, -73.9857),  # Greenwich Village, NYC
+    cuisine="Italian",
+    rating=4.5,
+    address="7 Carmine St, New York, NY 10014"
+)
+
+sushi_bar = Restaurant(
+    name="Sushi Yasaka",
+    coordinates=(40.7282, -74.0776),  # West Village, NYC
+    cuisine="Japanese",
+    rating=4.8,
+    address="251 W 72nd St, New York, NY 10023"
+)
+
+pizza_place.save()
+sushi_bar.save()
+```
+
+#### Querying by Location
+
+Now you can search for locations within a specific radius using `GeoFilter`:
+
+```python
+# Find all stores within 1 mile of Times Square
+times_square = (40.7589, -73.9851)
+
+nearby_stores = Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=times_square[1], 
+        latitude=times_square[0], 
+        radius=1, 
+        unit="mi"
+    )
+).all()
+
+print(f"Found {len(nearby_stores)} stores within 1 mile of Times Square")
+for store in nearby_stores:
+    print(f"- {store.name} ({store.category})")
+
+# Find restaurants within 2 kilometers of a specific location
+central_park = (40.7812, -73.9665)
+
+nearby_restaurants = Restaurant.find(
+    Restaurant.coordinates == GeoFilter(
+        longitude=central_park[1],
+        latitude=central_park[0],
+        radius=2,
+        unit="km"  # Can use 'mi', 'km', 'm', or 'ft'
+    )
+).all()
+
+for restaurant in nearby_restaurants:
+    print(f"{restaurant.name} - {restaurant.cuisine} cuisine, rated {restaurant.rating}")
+```
+
+#### Combining GEO Queries with Other Filters
+
+You can combine geospatial queries with other field filters:
+
+```python
+# Find highly-rated Italian restaurants within 5 miles of downtown NYC
+downtown_nyc = (40.7831, -73.9712)
+
+good_italian_nearby = Restaurant.find(
+    (Restaurant.coordinates == GeoFilter(
+        longitude=downtown_nyc[1],
+        latitude=downtown_nyc[0],
+        radius=5,
+        unit="mi"
+    )) & 
+    (Restaurant.cuisine == "Italian") &
+    (Restaurant.rating >= 4.0)
+).all()
+
+# Find coffee shops within walking distance (0.25 miles)
+walking_distance_coffee = Store.find(
+    (Store.coordinates == GeoFilter(
+        longitude=-73.9851,
+        latitude=40.7589,
+        radius=0.25,
+        unit="mi"
+    )) &
+    (Store.category == "Coffee")
+).all()
+```
+
+#### Supported Distance Units
+
+The `GeoFilter` supports the following distance units:
+- `"mi"` - Miles
+- `"km"` - Kilometers  
+- `"m"` - Meters
+- `"ft"` - Feet
+
+#### Advanced Location Examples
+
+Here are some practical examples for common geospatial use cases:
+
+```python
+# Find the closest store to a user's location
+user_location = (40.7500, -73.9900)
+
+closest_stores = Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=user_location[1],
+        latitude=user_location[0],
+        radius=10,  # Start with a reasonable radius
+        unit="mi"
+    )
+).all()
+
+if closest_stores:
+    print(f"Closest store: {closest_stores[0].name}")
+
+# Create a store locator function
+def find_nearby_locations(lat: float, lon: float, radius: float = 5.0, 
+                         category: Optional[str] = None):
+    """Find stores within a radius, optionally filtered by category."""
+    conditions = [
+        Store.coordinates == GeoFilter(
+            longitude=lon,
+            latitude=lat,
+            radius=radius,
+            unit="mi"
+        )
+    ]
+    
+    if category:
+        conditions.append(Store.category == category)
+    
+    return Store.find(*conditions).all()
+
+# Usage examples
+nearby_grocery = find_nearby_locations(40.7589, -73.9851, 2.0, "Grocery")
+coffee_shops = find_nearby_locations(40.7589, -73.9851, 0.5, "Coffee")
+all_nearby = find_nearby_locations(40.7589, -73.9851, 1.0)
 ```
 
 ## Calling Other Redis Commands
