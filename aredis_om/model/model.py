@@ -1,5 +1,6 @@
 import abc
 import dataclasses
+import datetime
 import decimal
 import json
 import logging
@@ -1874,6 +1875,8 @@ class HashModel(RedisModel, abc.ABC):
                 schema = f"{name} NUMERIC"
         elif typ is Coordinates:
             schema = f"{name} GEO"
+        elif typ in (datetime.date, datetime.datetime):
+            schema = f"{name} NUMERIC"
         elif issubclass(typ, str):
             if getattr(field_info, "full_text_search", False) is True:
                 schema = (
@@ -2206,6 +2209,8 @@ class JsonModel(RedisModel, abc.ABC):
                 schema = f"{path} AS {index_field_name} NUMERIC"
             elif typ is Coordinates:
                 schema = f"{path} AS {index_field_name} GEO"
+            elif typ in (datetime.date, datetime.datetime):
+                schema = f"{path} AS {index_field_name} NUMERIC"
             elif issubclass(typ, str):
                 if full_text_search is True:
                     schema = (

@@ -1,5 +1,6 @@
 import abc
 import dataclasses
+import datetime
 import decimal
 import json
 import logging
@@ -1872,6 +1873,8 @@ class HashModel(RedisModel, abc.ABC):
                 )
             else:
                 schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+        elif typ in (datetime.date, datetime.datetime):
+            schema = f"{name} NUMERIC"
         elif issubclass(typ, RedisModel):
             if sortable:
                 raise ValueError(
@@ -2193,6 +2196,8 @@ class JsonModel(RedisModel, abc.ABC):
             elif typ is bool:
                 schema = f"{path} AS {index_field_name} TAG"
             elif is_numeric_type(typ):
+                schema = f"{path} AS {index_field_name} NUMERIC"
+            elif typ in (datetime.date, datetime.datetime):
                 schema = f"{path} AS {index_field_name} NUMERIC"
             elif issubclass(typ, str):
                 if full_text_search is True:
