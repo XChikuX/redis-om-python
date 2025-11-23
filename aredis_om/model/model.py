@@ -1846,7 +1846,7 @@ class HashModel(RedisModel, abc.ABC):
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime objects first
-        document = self.model_dump()
+        document = self.dict()
         document = convert_datetime_to_timestamp(document)
 
         # Then apply jsonable encoding for other types
@@ -2056,7 +2056,7 @@ class JsonModel(RedisModel, abc.ABC):
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime objects to timestamps
-        document = self.model_dump()
+        document = self.dict()
         document = convert_datetime_to_timestamp(document)
 
         # TODO: Wrap response errors in a custom exception?
