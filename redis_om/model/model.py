@@ -1836,7 +1836,12 @@ class HashModel(RedisModel, abc.ABC):
         self.check()
         db = self._get_db(pipeline)
 
-        document = jsonable_encoder(self.dict())
+        # Get model data and convert datetime objects first
+        document = self.model_dump()
+        document = convert_datetime_to_timestamp(document)
+
+        # Then apply jsonable encoding for other types
+        document = jsonable_encoder(document)
 
         # filter out values which are `None` because they are not valid in a HSET
         document = {k: v for k, v in document.items() if v is not None}
@@ -2039,8 +2044,12 @@ class JsonModel(RedisModel, abc.ABC):
         self.check()
         db = self._get_db(pipeline)
 
+        # Get model data and convert datetime objects to timestamps
+        document = self.model_dump()
+        document = convert_datetime_to_timestamp(document)
+
         # TODO: Wrap response errors in a custom exception?
-        db.json().set(self.key(), Path.root_path(), json.loads(self.json()))
+        db.json().set(self.key(), Path.root_path(), document)
         return self
 
     @classmethod
