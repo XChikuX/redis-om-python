@@ -1,3 +1,6 @@
+
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/XChikuX/redis-om-python?utm_source=oss&utm_medium=github&utm_campaign=XChikuX%2Fredis-om-python&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
+
 <div align="center">
   <br/>
   <br/>
@@ -5,6 +8,7 @@
   <br/>
   <br/>
 </div>
+
 
 <p align="center">
     <p align="center">
