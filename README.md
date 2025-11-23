@@ -63,10 +63,10 @@ Installation is simple with `pip`, Poetry, or Pipenv.
 
 ```sh
 # With pip
-$ pip install redis-om
+$ pip install pyredis-om
 
 # Or, using Poetry
-$ poetry add redis-om
+$ poetry add pyredis-om
 ```
 
 ## 🏁 Getting started
@@ -125,7 +125,8 @@ from aredis_om.model.model import NotFoundError
 redis_conn = get_redis_connection(
     url="redis://10.9.9.100:6379",
     decode_responses=False,
-    password="D1ngD0ng",
+    password="R@nD0mPass",
+)
 
 class Customer(HashModel):
     first_name: str
