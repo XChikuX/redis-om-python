@@ -639,10 +639,40 @@ def search_users(
     return User.find(*conditions).sort_by("-age").all()
 ```
 
+#### Query Methods
+
+Redis OM provides several convenient methods to execute and retrieve query results:
+
+```python
+# Fetch all matching records
+customers = Customer.find(Customer.age >= 25).all()
+
+# Get the first matching record
+first_customer = await Customer.find(Customer.age >= 25).first()
+
+# Count matching records
+customer_count = await Customer.find(Customer.age >= 25).count()
+
+# Paginate through results (offset=10, limit=5)
+page_results = await Customer.find(Customer.age >= 25).page(offset=10, limit=5)
+
+# Get a specific result by index
+specific_customer = await Customer.find(Customer.age >= 25).get_item(5)
+
+# Sort results (prefix with "-" for descending order)
+sorted_customers = await Customer.find(Customer.age >= 25).sort_by("-age").all()
+
+# Count with aggregation (handles multiple matches correctly)
+# Note: Use this for complex counting scenarios
+count_with_aggregation = await Customer.find(Customer.age >= 25).aggregate_ct()
+```
+
 Notes:
 - Omit conditions by not appending them; the resulting `find(*conditions)` only includes what you provided.
 - Conditions passed separately to `find()` are ANDed together. Use `|` (OR) or `~(...)` (NOT) to build grouped expressions when needed, then append that single expression.
 - You can paginate with `.page(offset, limit)` or fetch the first match with `.first()`.
+- The `.count()` method provides a fast count of matching records without fetching the actual data.
+- The `.aggregate_ct()` method should be used for accurate counting in complex query scenarios with nested conditions, though it may be slower than `.count()` and has a bug when multiple find commands point to the same record (They are counted twice).
 
 ## 📚 Documentation
 

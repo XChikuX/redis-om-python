@@ -1080,6 +1080,32 @@ class FindQuery:
         result = await query.execute(exhaust_results=True, return_raw_result=True)
         return result[0]
 
+    async def aggregate_ct(self) -> int:
+        # WARN: Has issues when multiple 'find' parameters match the same record
+        #       It will count them more than once.
+        args = [
+            "FT.AGGREGATE",
+            self.model.Meta.index_name,
+            self.query,
+            "APPLY",
+            "matched_terms()",
+            "AS",
+            "countable",
+            "GROUPBY",
+            "1",
+            "@countable",
+            "REDUCE",
+            "COUNT",
+            "0",
+        ]
+        raw_result = await self.model.db().execute_command(*args)
+        try:
+            return sum(
+                [int(result[3].decode("utf-8", "ignore")) for result in raw_result[1:]]
+            )
+        except IndexError:
+            return 0
+
     async def all(self, batch_size=DEFAULT_PAGE_SIZE):
         if batch_size != self.page_size:
             query = self.copy(page_size=batch_size, limit=batch_size)
@@ -2121,52 +2147,62 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
-        fields = dict()
-        for name, field in cls.__fields__.items():
-            fields[name] = field
-        for name, field in cls.__dict__.items():
-            if isinstance(field, FieldInfo):
-                if not field.annotation:
-                    field.annotation = cls.__annotations__.get(name)
-                fields[name] = field
-        for name, field in cls.__annotations__.items():
-            if name in fields:
-                continue
-            try:
-                fields[name] = PydanticFieldInfo.from_annotation(field)  # pydantic v2
-            except AttributeError:
-                # Under pydantic v1 compatibility path, this may not exist; skip.
-                continue
+        
+        # 1. Initialize fields with existing model fields
+        fields = dict(cls.__fields__)
 
+        # 2. Sync annotations and FieldInfo
+        # Note: Use cls.__annotations__ to avoid the scoping 'field' error
+        for name in cls.__annotations__:
+            if name in fields:
+                field = fields[name]
+                # Ensure the FieldInfo has the correct annotation if missing
+                if isinstance(field, FieldInfo) and not field.annotation:
+                    field.annotation = cls.__annotations__[name]
+            else:
+                # 3. Handle missing fields (Pydantic v2 vs v1 compatibility)
+                try:
+                    # In v2, we try to generate FieldInfo from the raw annotation
+                    fields[name] = PydanticFieldInfo.from_annotation(cls.__annotations__[name])
+                except (AttributeError, NameError):
+                    continue
+
+        # 4. Process the consolidated fields
         for name, field in fields.items():
             _type = get_outer_type(field)
             if _type is None:
                 continue
 
-            if (
-                not isinstance(field, FieldInfo)
-                and hasattr(field, "metadata")
-                and len(field.metadata) > 0
-                and isinstance(field.metadata[0], FieldInfo)
-            ):
-                field = field.metadata[0]
-
+            # Extract FieldInfo safely (handling Annotated and field_info wrappers)
+            field_info = field
             if hasattr(field, "field_info"):
                 field_info = field.field_info
-            else:
-                field_info = field
+            elif (
+                not isinstance(field, FieldInfo)
+                and hasattr(field, "metadata")
+                and field.metadata 
+                and isinstance(field.metadata[0], FieldInfo)
+            ):
+                field_info = field.metadata[0]
+
+            # 5. Generate Redis Schema parts
             if getattr(field_info, "primary_key", None):
                 if issubclass(_type, str):
-                    redisearch_field = f"$.{name} AS {name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                    # Using a formatted string for Tag fields
+                    redisearch_field = (
+                        f"$.{name} AS {name} TAG SEPARATOR "
+                        f"{SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                    )
                 else:
                     redisearch_field = cls.schema_for_type(
                         json_path, name, "", _type, field_info
                     )
                 schema_parts.append(redisearch_field)
-                continue
-            schema_parts.append(
-                cls.schema_for_type(json_path, name, "", _type, field_info)
-            )
+            else:
+                schema_parts.append(
+                    cls.schema_for_type(json_path, name, "", _type, field_info)
+                )
+
         return schema_parts
 
     @classmethod
