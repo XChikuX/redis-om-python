@@ -4,15 +4,18 @@ import abc
 import dataclasses
 import datetime
 import decimal
+import uuid
 from collections import namedtuple
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 from unittest import mock
 
 import pytest
 import pytest
 
 from redis_om import (
+    Coordinates,
     Field,
+    GeoFilter,
     HashModel,
     Migrator,
     NotFoundError,
@@ -47,7 +50,7 @@ def m(key_prefix, redis):
 
     class Member(BaseHashModel):
         id: int = Field(index=True, primary_key=True)
-        first_name: str = Field(index=True)
+        first_name: str = Field(index=True, case_sensitive=True)
         last_name: str = Field(index=True)
         email: str = Field(index=True)
         join_date: datetime.date
@@ -384,11 +387,27 @@ def test_sorting(members, m):
         m.Member.find().sort_by("join_date").all()
 
 
+@py_test_mark_sync
+def test_case_sensitive(members, m):
+    member1, member2, member3 = members
+
+    actual = m.Member.find(
+        m.Member.first_name == "Andrew" and m.Member.pk == member1.pk
+    ).all()
+    assert actual == [member1]
+
+    actual = m.Member.find(m.Member.first_name == "andrew").all()
+    assert actual == []
+
+
 def test_validates_required_fields(m):
     # Raises ValidationError: last_name is required
     # TODO: Test the error value
     with pytest.raises(ValidationError):
-        m.Member(id=0, first_name="Andrew", zipcode="97086", join_date=today)
+        try:
+            m.Member(id=0, first_name="Andrew", zipcode="97086", join_date=today)
+        except Exception as e:
+            raise e
 
 
 def test_validates_field(m):
@@ -581,6 +600,7 @@ def test_raises_error_with_embedded_models(m):
     with pytest.raises(RedisModelError):
 
         class InvalidMember(m.BaseHashModel):
+            name: str = Field(index=True)
             address: Address
 
 
@@ -728,7 +748,6 @@ def test_schema(m):
     # We need to build the key prefix because it will differ based on whether
     # these tests were copied into the tests_sync folder and unasynce'd.
     key_prefix = Address.make_key(Address._meta.primary_key_pattern.format(pk=""))
-
     assert (
         Address.redisearch_schema()
         == f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | a_string TAG SEPARATOR | a_full_text_string TAG SEPARATOR | a_full_text_string AS a_full_text_string_fts TEXT an_integer NUMERIC SORTABLE a_float NUMERIC"
@@ -804,3 +823,244 @@ def test_count(members, m):
         m.Member.first_name == "Kim", m.Member.last_name == "Brookins"
     ).count()
     assert actual_count == 1
+
+
+@py_test_mark_sync
+def test_type_with_union(members, m):
+    class TypeWithUnion(m.BaseHashModel):
+        field: Union[str, int]
+
+    twu_str = TypeWithUnion(field="hello world")
+    res = twu_str.save()
+    assert res.pk == twu_str.pk
+    twu_str_rematerialized = TypeWithUnion.get(twu_str.pk)
+    assert (
+        isinstance(twu_str_rematerialized.field, str)
+        and twu_str_rematerialized.pk == twu_str.pk
+    )
+
+    twu_int = TypeWithUnion(field=42)
+    twu_int.save()
+    twu_int_rematerialized = TypeWithUnion.get(twu_int.pk)
+
+    # Note - we will not be able to automatically serialize an int back to this union type,
+    # since as far as we know from Redis this item is a string
+    assert twu_int_rematerialized.pk == twu_int.pk
+
+
+@py_test_mark_sync
+def test_type_with_uuid():
+    class TypeWithUuid(HashModel):
+        uuid: uuid.UUID
+
+    item = TypeWithUuid(uuid=uuid.uuid4())
+
+    item.save()
+
+
+@py_test_mark_sync
+def test_xfix_queries(members, m):
+    member1, member2, member3 = members
+
+    result = m.Member.find(
+        m.Member.first_name.startswith("And") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = m.Member.find(
+        m.Member.last_name.endswith("ins") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = m.Member.find(
+        m.Member.last_name.contains("ook") and m.Member.last_name == "Brookins"
+    ).first()
+    assert result.last_name == "Brookins"
+
+    result = m.Member.find(
+        m.Member.bio % "great*" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+    result = m.Member.find(
+        m.Member.bio % "*rty" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+    result = m.Member.find(
+        m.Member.bio % "*eat*" and m.Member.first_name == "Andrew"
+    ).first()
+    assert result.first_name == "Andrew"
+
+
+@py_test_mark_sync
+def test_none():
+    class ModelWithNoneDefault(HashModel):
+        test: Optional[str] = Field(index=True, default=None)
+
+    class ModelWithStringDefault(HashModel):
+        test: Optional[str] = Field(index=True, default="None")
+
+    Migrator().run()
+
+    a = ModelWithNoneDefault()
+    a.save()
+    res = ModelWithNoneDefault.find(ModelWithNoneDefault.pk == a.pk).first()
+    assert res.test is None
+
+    b = ModelWithStringDefault()
+    b.save()
+    res = ModelWithStringDefault.find(ModelWithStringDefault.pk == b.pk).first()
+    assert res.test == "None"
+
+
+@py_test_mark_sync
+def test_update_validation():
+    class TestUpdate(HashModel):
+        name: str
+        age: int
+
+    Migrator().run()
+    t = TestUpdate(name="steve", age=34)
+    t.save()
+    update_dict = dict()
+    update_dict["age"] = "cat"
+
+    with pytest.raises(ValidationError):
+        t.update(**update_dict)
+
+    rematerialized = TestUpdate.find(TestUpdate.pk == t.pk).first()
+    assert rematerialized.age == 34
+
+
+@py_test_mark_sync
+def test_literals():
+    from typing import Literal
+
+    class TestLiterals(HashModel):
+        flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
+
+    schema = TestLiterals.redisearch_schema()
+
+    key_prefix = TestLiterals.make_key(
+        TestLiterals._meta.primary_key_pattern.format(pk="")
+    )
+    assert schema == (
+        f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
+    )
+    Migrator().run()
+    item = TestLiterals(flavor="pumpkin")
+    item.save()
+    rematerialized = TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
+    assert rematerialized.pk == item.pk
+
+
+
+@py_test_mark_sync
+def test_can_search_on_coordinates(key_prefix, redis):
+    class Location(HashModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc = Location(coordinates=(latitude, longitude))
+
+    loc.save()
+
+    rematerialized: Location = Location.find(
+        Location.coordinates
+        == GeoFilter(longitude=longitude, latitude=latitude, radius=10, unit="mi")
+    ).first()
+
+    assert rematerialized.pk == loc.pk
+    assert rematerialized.coordinates.latitude == latitude
+    assert rematerialized.coordinates.longitude == longitude
+
+
+@py_test_mark_sync
+def test_does_not_return_coordinates_if_outside_radius(key_prefix, redis):
+    class Location(HashModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc = Location(coordinates=(latitude, longitude))
+
+    loc.save()
+
+    with pytest.raises(NotFoundError):
+        Location.find(
+            Location.coordinates
+            == GeoFilter(longitude=0, latitude=0, radius=0.1, unit="mi")
+        ).first()
+
+
+@py_test_mark_sync
+def test_does_not_return_coordinates_if_location_is_none(key_prefix, redis):
+    class Location(HashModel, index=True):
+        coordinates: Optional[Coordinates] = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    loc = Location(coordinates=None)
+
+    loc.save()
+
+    with pytest.raises(NotFoundError):
+        Location.find(
+            Location.coordinates
+            == GeoFilter(longitude=0, latitude=0, radius=0.1, unit="mi")
+        ).first()
+
+
+@py_test_mark_sync
+def test_can_search_on_multiple_fields_with_geo_filter(key_prefix, redis):
+    class Location(HashModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+        name: str = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc1 = Location(coordinates=(latitude, longitude), name="Portland")
+    # Offset by 0.01 degrees (~1.1 km at this latitude) to create a nearby location
+    # This ensures "Nearby" is within the 10 mile search radius but not at the exact same location
+    loc2 = Location(coordinates=(latitude + 0.01, longitude + 0.01), name="Nearby")
+
+    loc1.save()
+    loc2.save()
+
+    rematerialized: List[Location] = Location.find(
+        (
+            Location.coordinates
+            == GeoFilter(longitude=longitude, latitude=latitude, radius=10, unit="mi")
+        )
+        & (Location.name == "Portland")
+    ).all()
+
+    assert len(rematerialized) == 1
+    assert rematerialized[0].pk == loc1.pk

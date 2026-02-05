@@ -34,7 +34,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from .._compat import ENCODERS_BY_TYPE, BaseModel, PydanticUndefined
 
 
-
 SetIntStr = Set[Union[int, str]]
 DictIntStrAny = Dict[Union[int, str], Any]
 

@@ -1,19 +1,23 @@
 # type: ignore
 
 import abc
+import asyncio
 import dataclasses
 import datetime
 import decimal
+import uuid
 from collections import namedtuple
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 from unittest import mock
 
 import pytest
 import pytest
 
 from redis_om import (
+    Coordinates,
     EmbeddedJsonModel,
     Field,
+    GeoFilter,
     JsonModel,
     Migrator,
     NotFoundError,
@@ -24,7 +28,7 @@ from redis_om import (
 # We need to run this check as sync code (during tests) even in async mode
 # because we call it in the top-level module scope.
 from redis_om import has_redis_json
-from tests._compat import ValidationError
+from tests._compat import EmailStr, PositiveInt, ValidationError
 
 from .conftest import py_test_mark_sync
 
@@ -50,12 +54,12 @@ def m(key_prefix, redis):
 
     class Address(EmbeddedJsonModel):
         address_line_1: str
-        address_line_2: Optional[str]
+        address_line_2: Optional[str] = None
         city: str = Field(index=True)
         state: str
         country: str
         postal_code: str = Field(index=True)
-        note: Optional[Note]
+        note: Optional[Note] = None
 
     class Item(EmbeddedJsonModel):
         price: decimal.Decimal
@@ -66,18 +70,18 @@ def m(key_prefix, redis):
         created_on: datetime.datetime
 
     class Member(BaseJsonModel):
-        first_name: str = Field(index=True)
+        first_name: str = Field(index=True, case_sensitive=True)
         last_name: str = Field(index=True)
-        email: str = Field(index=True)
+        email: Optional[EmailStr] = Field(index=True, default=None)
         join_date: datetime.date
-        age: int = Field(index=True)
+        age: Optional[PositiveInt] = Field(index=True, default=None)
         bio: Optional[str] = Field(index=True, full_text_search=True, default="")
 
         # Creates an embedded model.
         address: Address
 
         # Creates an embedded list of models.
-        orders: Optional[List[Order]]
+        orders: Optional[List[Order]] = None
 
     Migrator().run()
 
@@ -88,13 +92,16 @@ def m(key_prefix, redis):
 
 @pytest.fixture()
 def address(m):
-    yield m.Address(
-        address_line_1="1 Main St.",
-        city="Portland",
-        state="OR",
-        country="USA",
-        postal_code=11111,
-    )
+    try:
+        yield m.Address(
+            address_line_1="1 Main St.",
+            city="Portland",
+            state="OR",
+            country="USA",
+            postal_code="11111",
+        )
+    except Exception as e:
+        raise e
 
 
 @pytest.fixture()
@@ -131,6 +138,34 @@ def members(address, m):
     member3.save()
 
     yield member1, member2, member3
+
+
+@py_test_mark_sync
+def test_validate_bad_email(address, m):
+    # Raises ValidationError as email is malformed
+    with pytest.raises(ValidationError):
+        m.Member(
+            first_name="Andrew",
+            last_name="Brookins",
+            zipcode="97086",
+            join_date=today,
+            email="foobarbaz",
+        )
+
+
+@py_test_mark_sync
+def test_validate_bad_age(address, m):
+    # Raises ValidationError as email is malformed
+    with pytest.raises(ValidationError):
+        m.Member(
+            first_name="Andrew",
+            last_name="Brookins",
+            zipcode="97086",
+            join_date=today,
+            email="foo@bar.com",
+            address=address,
+            age=-5,
+        )
 
 
 @py_test_mark_sync
@@ -424,6 +459,15 @@ def test_in_query(members, m):
 
 
 @py_test_mark_sync
+def test_not_in_query(members, m):
+    member1, member2, member3 = members
+    actual = (
+        m.Member.find(m.Member.pk >> [member2.pk, member3.pk]).sort_by("age").all()
+    )
+    assert actual == [member1]
+
+
+@py_test_mark_sync
 def test_update_query(members, m):
     member1, member2, member3 = members
     m.Member.find(m.Member.pk << [member1.pk, member2.pk, member3.pk]).update(
@@ -709,6 +753,17 @@ def test_sorting(members, m):
 
 
 @py_test_mark_sync
+def test_case_sensitive(members, m):
+    member1, member2, member3 = members
+
+    actual = m.Member.find(m.Member.first_name == "Andrew").all()
+    assert actual == [member1, member3]
+
+    actual = m.Member.find(m.Member.first_name == "andrew").all()
+    assert actual == []
+
+
+@py_test_mark_sync
 def test_not_found(m):
     with pytest.raises(NotFoundError):
         # This ID does not exist.
@@ -830,9 +885,23 @@ def test_schema(m, key_prefix):
     # We need to build the key prefix because it will differ based on whether
     # these tests were copied into the tests_sync folder and unasynce'd.
     key_prefix = m.Member.make_key(m.Member._meta.primary_key_pattern.format(pk=""))
-    assert (
-        m.Member.redisearch_schema()
-        == f"ON JSON PREFIX 1 {key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | $.first_name AS first_name TAG SEPARATOR | $.last_name AS last_name TAG SEPARATOR | $.email AS email TAG SEPARATOR |  $.age AS age NUMERIC $.bio AS bio TAG SEPARATOR | $.bio AS bio_fts TEXT $.address.pk AS address_pk TAG SEPARATOR | $.address.city AS address_city TAG SEPARATOR | $.address.postal_code AS address_postal_code TAG SEPARATOR | $.address.note.pk AS address_note_pk TAG SEPARATOR | $.address.note.description AS address_note_description TAG SEPARATOR | $.orders[*].pk AS orders_pk TAG SEPARATOR | $.orders[*].items[*].pk AS orders_items_pk TAG SEPARATOR | $.orders[*].items[*].name AS orders_items_name TAG SEPARATOR |"
+    assert m.Member.redisearch_schema() == (
+        f"ON JSON PREFIX 1 {key_prefix} SCHEMA "
+        "$.pk AS pk TAG SEPARATOR | "
+        "$.first_name AS first_name TAG SEPARATOR | CASESENSITIVE "
+        "$.last_name AS last_name TAG SEPARATOR | "
+        "$.email AS email TAG SEPARATOR |  "
+        "$.age AS age NUMERIC "
+        "$.bio AS bio TAG SEPARATOR | "
+        "$.bio AS bio_fts TEXT "
+        "$.address.pk AS address_pk TAG SEPARATOR | "
+        "$.address.city AS address_city TAG SEPARATOR | "
+        "$.address.postal_code AS address_postal_code TAG SEPARATOR | "
+        "$.address.note.pk AS address_note_pk TAG SEPARATOR | "
+        "$.address.note.description AS address_note_description TAG SEPARATOR | "
+        "$.orders[*].pk AS orders_pk TAG SEPARATOR | "
+        "$.orders[*].items[*].pk AS orders_items_pk TAG SEPARATOR | "
+        "$.orders[*].items[*].name AS orders_items_name TAG SEPARATOR |"
     )
 
 
@@ -849,3 +918,356 @@ def test_count(members, m):
         m.Member.first_name == "Kim", m.Member.last_name == "Brookins"
     ).count()
     assert actual_count == 1
+
+
+@py_test_mark_sync
+def test_type_with_union(members, m):
+    class TypeWithUnion(m.BaseJsonModel):
+        field: Union[str, int]
+
+    twu_str = TypeWithUnion(field="hello world")
+    res = twu_str.save()
+    assert res.pk == twu_str.pk
+    twu_str_rematerialized = TypeWithUnion.get(twu_str.pk)
+    assert (
+        isinstance(twu_str_rematerialized.field, str)
+        and twu_str_rematerialized.pk == twu_str.pk
+    )
+
+    twu_int = TypeWithUnion(field=42)
+    twu_int.save()
+    twu_int_rematerialized = TypeWithUnion.get(twu_int.pk)
+    assert (
+        isinstance(twu_int_rematerialized.field, int)
+        and twu_int_rematerialized.pk == twu_int.pk
+    )
+
+
+@py_test_mark_sync
+def test_type_with_uuid():
+    class TypeWithUuid(JsonModel):
+        uuid: uuid.UUID
+
+    item = TypeWithUuid(uuid=uuid.uuid4())
+
+    item.save()
+
+
+@py_test_mark_sync
+def test_xfix_queries(m):
+    m.Member(
+        first_name="Steve",
+        last_name="Lorello",
+        email="s@example.com",
+        join_date=today,
+        bio="Steve is a two-bit hacker who loves Redis.",
+        address=m.Address(
+            address_line_1="42 foo bar lane",
+            city="Satellite Beach",
+            state="FL",
+            country="USA",
+            postal_code="32999",
+        ),
+        age=34,
+    ).save()
+
+    result = m.Member.find(
+        m.Member.first_name.startswith("Ste") and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+    result = m.Member.find(
+        m.Member.last_name.endswith("llo") and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+    result = m.Member.find(
+        m.Member.address.city.contains("llite") and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+    result = m.Member.find(
+        m.Member.bio % "tw*" and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+    result = m.Member.find(
+        m.Member.bio % "*cker" and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+    result = m.Member.find(
+        m.Member.bio % "*ack*" and m.Member.first_name == "Steve"
+    ).first()
+    assert result.first_name == "Steve"
+
+
+@py_test_mark_sync
+def test_none():
+    class ModelWithNoneDefault(JsonModel):
+        test: Optional[str] = Field(index=True, default=None)
+
+    class ModelWithStringDefault(JsonModel):
+        test: Optional[str] = Field(index=True, default="None")
+
+    Migrator().run()
+
+    a = ModelWithNoneDefault()
+    a.save()
+    res = ModelWithNoneDefault.find(ModelWithNoneDefault.pk == a.pk).first()
+    assert res.test is None
+
+    b = ModelWithStringDefault()
+    b.save()
+    res = ModelWithStringDefault.find(ModelWithStringDefault.pk == b.pk).first()
+    assert res.test == "None"
+
+
+@py_test_mark_sync
+def test_update_validation():
+    class Embedded(EmbeddedJsonModel):
+        price: float
+        name: str = Field(index=True)
+
+    class TestUpdatesClass(JsonModel):
+        name: str
+        age: int
+        embedded: Embedded
+
+    Migrator().run()
+    embedded = Embedded(price=3.14, name="foo")
+    t = TestUpdatesClass(name="str", age=42, embedded=embedded)
+    t.save()
+
+    update_dict = dict()
+    update_dict["age"] = "foo"
+    with pytest.raises(ValidationError):
+        t.update(**update_dict)
+
+    t.age = 42
+    update_dict.clear()
+    update_dict["embedded"] = "hello"
+    with pytest.raises(ValidationError):
+        t.update(**update_dict)
+
+    rematerialized = TestUpdatesClass.find(TestUpdatesClass.pk == t.pk).first()
+    assert rematerialized.age == 42
+
+
+@py_test_mark_sync
+def test_model_with_dict():
+    class EmbeddedJsonModelWithDict(EmbeddedJsonModel):
+        dict: Dict
+
+    class ModelWithDict(JsonModel):
+        embedded_model: EmbeddedJsonModelWithDict
+        info: Dict
+
+    Migrator().run()
+    d = dict()
+    inner_dict = dict()
+    d["foo"] = "bar"
+    inner_dict["bar"] = "foo"
+    embedded_model = EmbeddedJsonModelWithDict(dict=inner_dict)
+    item = ModelWithDict(info=d, embedded_model=embedded_model)
+    item.save()
+
+    rematerialized = ModelWithDict.find(ModelWithDict.pk == item.pk).first()
+    assert rematerialized.pk == item.pk
+    assert rematerialized.info["foo"] == "bar"
+    assert rematerialized.embedded_model.dict["bar"] == "foo"
+
+
+@py_test_mark_sync
+def test_boolean():
+    class Example(JsonModel):
+        b: bool = Field(index=True)
+        d: datetime.date = Field(index=True)
+        name: str = Field(index=True)
+
+    Migrator().run()
+
+    ex = Example(b=True, name="steve", d=datetime.date.today())
+    exFalse = Example(b=False, name="foo", d=datetime.date.today())
+    ex.save()
+    exFalse.save()
+    res = Example.find(Example.b == True).first()
+    assert res.name == "steve"
+
+    res = Example.find(Example.b == False).first()
+    assert res.name == "foo"
+
+    res = Example.find(Example.d == ex.d and Example.b == True).first()
+    assert res.name == ex.name
+
+
+@py_test_mark_sync
+def test_int_pk():
+    class ModelWithIntPk(JsonModel):
+        my_id: int = Field(index=True, primary_key=True)
+
+    Migrator().run()
+    ModelWithIntPk(my_id=42).save()
+
+    m = ModelWithIntPk.find(ModelWithIntPk.my_id == 42).first()
+    assert m.my_id == 42
+
+
+@py_test_mark_sync
+def test_pagination():
+    class Test(JsonModel):
+        id: str = Field(primary_key=True, index=True)
+        num: int = Field(sortable=True, index=True)
+
+        @classmethod
+        def get_page(cls, offset, limit):
+            return cls.find().sort_by("num").page(limit=limit, offset=offset)
+
+    Migrator().run()
+
+    pipe = Test.Meta.database.pipeline()
+    for i in range(0, 1000):
+        Test(num=i, id=str(i)).save(pipeline=pipe)
+
+    pipe.execute()
+    res = Test.get_page(100, 100)
+    assert len(res) == 100
+    assert res[0].num == 100
+    res = Test.get_page(10, 30)
+    assert len(res) == 30
+    assert res[0].num == 10
+
+
+@py_test_mark_sync
+def test_literals():
+    from typing import Literal
+
+    class TestLiterals(JsonModel):
+        flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
+
+    schema = TestLiterals.redisearch_schema()
+
+    key_prefix = TestLiterals.make_key(
+        TestLiterals._meta.primary_key_pattern.format(pk="")
+    )
+    assert schema == (
+        f"ON JSON PREFIX 1 {key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | "
+        "$.flavor AS flavor TAG SEPARATOR |"
+    )
+    Migrator().run()
+    item = TestLiterals(flavor="pumpkin")
+    item.save()
+    rematerialized = TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
+    assert rematerialized.pk == item.pk
+
+
+
+
+@py_test_mark_sync
+def test_can_search_on_coordinates(key_prefix, redis):
+    class Location(JsonModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc = Location(coordinates=(latitude, longitude))
+
+    loc.save()
+
+    rematerialized: Location = Location.find(
+        Location.coordinates
+        == GeoFilter(longitude=longitude, latitude=latitude, radius=10, unit="mi")
+    ).first()
+
+    assert rematerialized.pk == loc.pk
+    assert rematerialized.coordinates.latitude == latitude
+    assert rematerialized.coordinates.longitude == longitude
+
+
+@py_test_mark_sync
+def test_does_not_return_coordinates_if_outside_radius(key_prefix, redis):
+    class Location(JsonModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc = Location(coordinates=(latitude, longitude))
+
+    loc.save()
+
+    with pytest.raises(NotFoundError):
+        Location.find(
+            Location.coordinates
+            == GeoFilter(longitude=0, latitude=0, radius=0.1, unit="mi")
+        ).first()
+
+
+@py_test_mark_sync
+def test_does_not_return_coordinates_if_location_is_none(key_prefix, redis):
+    class Location(JsonModel, index=True):
+        coordinates: Optional[Coordinates] = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    loc = Location(coordinates=None)
+
+    loc.save()
+
+    with pytest.raises(NotFoundError):
+        Location.find(
+            Location.coordinates
+            == GeoFilter(longitude=0, latitude=0, radius=0.1, unit="mi")
+        ).first()
+
+
+@py_test_mark_sync
+def test_can_search_on_multiple_fields_with_geo_filter(key_prefix, redis):
+    class Location(JsonModel, index=True):
+        coordinates: Coordinates = Field(index=True)
+        name: str = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
+
+    latitude = 45.5231
+    longitude = -122.6765
+
+    loc1 = Location(coordinates=(latitude, longitude), name="Portland")
+    # Offset by 0.01 degrees (~1.1 km at this latitude) to create a nearby location
+    # This ensures "Nearby" is within the 10 mile search radius but not at the exact same location
+    loc2 = Location(coordinates=(latitude + 0.01, longitude + 0.01), name="Nearby")
+
+    loc1.save()
+    loc2.save()
+
+    rematerialized: List[Location] = Location.find(
+        (
+            Location.coordinates
+            == GeoFilter(longitude=longitude, latitude=latitude, radius=10, unit="mi")
+        )
+        & (Location.name == "Portland")
+    ).all()
+
+    assert len(rematerialized) == 1
+    assert rematerialized[0].pk == loc1.pk

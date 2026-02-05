@@ -53,6 +53,7 @@ from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .token_escaper import TokenEscaper
+from .types import Coordinates, GeoFilter
 
 
 model_registry = {}
@@ -675,7 +676,8 @@ class FindQuery:
         if not isinstance(field_type, type):
             field_type = field_type.__origin__
 
-        # TODO: GEO fields
+        if field_type is Coordinates:
+            return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
 
         if is_supported_container_type(container_type):
@@ -784,6 +786,13 @@ class FindQuery:
                 result += f"@{field_name}:[-inf {value}]"
         # TODO: How will we know the difference between a multi-value use of a TAG
         #  field and our hidden use of TAG for exact-match queries?
+        elif field_type is RediSearchFieldTypes.GEO:
+            if not isinstance(value, GeoFilter):
+                raise QuerySyntaxError(
+                    "You can only use a GeoFilter object with a GEO field."
+                )
+            if op is Operators.EQ:
+                result += f"@{field_name}:[{value}]"
         elif field_type is RediSearchFieldTypes.TAG:
             if op is Operators.EQ:
                 separator_char = getattr(
@@ -869,7 +878,7 @@ class FindQuery:
             return
         fields = []
         for f in self.sort_fields:
-            direction = "DESC" if f.startswith("-") else "ASC"
+            direction = "desc" if f.startswith("-") else "asc"
             fields.extend([f.lstrip("-"), direction])
         if self.sort_fields:
             return ["SORTBY", *fields]
@@ -1071,6 +1080,32 @@ class FindQuery:
         result = query.execute(exhaust_results=True, return_raw_result=True)
         return result[0]
 
+    def aggregate_ct(self) -> int:
+        # WARN: Has issues when multiple 'find' parameters match the same record
+        #       It will count them more than once.
+        args = [
+            "FT.AGGREGATE",
+            self.model.Meta.index_name,
+            self.query,
+            "APPLY",
+            "matched_terms()",
+            "AS",
+            "countable",
+            "GROUPBY",
+            "1",
+            "@countable",
+            "REDUCE",
+            "COUNT",
+            "0",
+        ]
+        raw_result = self.model.db().execute_command(*args)
+        try:
+            return sum(
+                [int(result[3].decode("utf-8", "ignore")) for result in raw_result[1:]]
+            )
+        except IndexError:
+            return 0
+
     def all(self, batch_size=DEFAULT_PAGE_SIZE):
         if batch_size != self.page_size:
             query = self.copy(page_size=batch_size, limit=batch_size)
@@ -1098,7 +1133,7 @@ class FindQuery:
         validate_model_fields(self.model, field_values)
         pipeline = self.model.db().pipeline() if use_transaction else None
 
-
+        # TODO: async for here?
         for model in self.all():
             for field, value in field_values.items():
                 setattr(model, field, value)
@@ -1143,7 +1178,7 @@ class FindQuery:
         """
         if ASYNC_MODE:
             raise QuerySyntaxError(
-                "Cannot use [] notation with code. "
+                "Cannot use [] notation with async code. "
                 "Use FindQuery.get_item() instead."
             )
         if self._model_cache and len(self._model_cache) >= item:
@@ -1156,7 +1191,7 @@ class FindQuery:
     def get_item(self, item: int):
         """
         Given this code:
-            Model.find().get_item(1000)
+            await Model.find().get_item(1000)
 
         We should return only the 1000th result.
 
@@ -1167,7 +1202,7 @@ class FindQuery:
                that result, then we should clone the current query and
                give it a new offset and limit: offset=n, limit=1.
 
-        NOTE: This method is included specifically for users, who
+        NOTE: This method is included specifically for async users, who
         cannot use the notation Model.find()[1000].
         """
         if self._model_cache and len(self._model_cache) >= item:
@@ -1991,6 +2026,10 @@ class HashModel(RedisModel, abc.ABC):
                 schema = f"{name} {vector_options.schema}"
             else:
                 schema = f"{name} NUMERIC"
+        elif typ is Coordinates:
+            schema = f"{name} GEO"
+        elif typ in (datetime.date, datetime.datetime):
+            schema = f"{name} NUMERIC"
         elif issubclass(typ, str):
             if getattr(field_info, "full_text_search", False) is True:
                 schema = (
@@ -1999,8 +2038,6 @@ class HashModel(RedisModel, abc.ABC):
                 )
             else:
                 schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-        elif typ in (datetime.date, datetime.datetime):
-            schema = f"{name} NUMERIC"
         elif issubclass(typ, RedisModel):
             if sortable:
                 raise ValueError(
@@ -2026,6 +2063,27 @@ class HashModel(RedisModel, abc.ABC):
 
 
 class JsonModel(RedisModel, abc.ABC):
+    @staticmethod
+    def _extract_field_info(field: Any) -> Union[FieldInfo, PydanticFieldInfo, ModelField]:
+        """
+        Extract FieldInfo from a field, handling various Pydantic versions and formats.
+        
+        This method consolidates the logic for extracting field info from:
+        - Direct FieldInfo instances
+        - Fields with field_info attribute
+        - Fields with metadata containing FieldInfo
+        """
+        if hasattr(field, "field_info"):
+            return field.field_info
+        elif (
+            not isinstance(field, FieldInfo)
+            and hasattr(field, "metadata")
+            and field.metadata 
+            and isinstance(field.metadata[0], FieldInfo)
+        ):
+            return field.metadata[0]
+        return field
+
     def __init_subclass__(cls, **kwargs):
         # Generate the RediSearch schema once to validate fields.
         cls.redisearch_schema()
@@ -2110,51 +2168,42 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
-        fields = dict()
-        for name, field in cls.__fields__.items():
-            fields[name] = field
-        for name, field in cls.__dict__.items():
-            if isinstance(field, FieldInfo):
-                if not field.annotation:
-                    field.annotation = cls.__annotations__.get(name)
-                fields[name] = field
-        for name, field in cls.__annotations__.items():
-            if name in fields:
-                continue
-            try:
-                fields[name] = PydanticFieldInfo.from_annotation(field)
-            except AttributeError:
-                continue
+        
+        # 1. Initialize fields with existing model fields
+        fields = dict(cls.__fields__)
 
+        # 2. Sync annotations and FieldInfo
+        # Note: Use cls.__annotations__ to avoid the scoping 'field' error
+        for name in cls.__annotations__:
+            if name in fields:
+                field = fields[name]
+                # Ensure the FieldInfo has the correct annotation if missing
+                if isinstance(field, FieldInfo) and not field.annotation:
+                    field.annotation = cls.__annotations__[name]
+            else:
+                # 3. Handle missing fields (Pydantic v2 vs v1 compatibility)
+                try:
+                    # In v2, we try to generate FieldInfo from the raw annotation
+                    fields[name] = PydanticFieldInfo.from_annotation(cls.__annotations__[name])
+                except (AttributeError, NameError):
+                    continue
+
+        # 4. Process the consolidated fields
         for name, field in fields.items():
             _type = get_outer_type(field)
             if _type is None:
                 continue
 
-            if (
-                not isinstance(field, FieldInfo)
-                and hasattr(field, "metadata")
-                and len(field.metadata) > 0
-                and isinstance(field.metadata[0], FieldInfo)
-            ):
-                field = field.metadata[0]
+            # Extract FieldInfo safely (handling Annotated and field_info wrappers)
+            field_info = cls._extract_field_info(field)
 
-            if hasattr(field, "field_info"):
-                field_info = field.field_info
-            else:
-                field_info = field
-            if getattr(field_info, "primary_key", None):
-                if issubclass(_type, str):
-                    redisearch_field = f"$.{name} AS {name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                else:
-                    redisearch_field = cls.schema_for_type(
-                        json_path, name, "", _type, field_info
-                    )
-                schema_parts.append(redisearch_field)
-                continue
+            # 5. Generate Redis Schema parts
+            # Call schema_for_type for both primary_key and indexed fields
+            # The method handles the distinction internally
             schema_parts.append(
                 cls.schema_for_type(json_path, name, "", _type, field_info)
             )
+
         return schema_parts
 
     @classmethod
@@ -2306,7 +2355,6 @@ class JsonModel(RedisModel, abc.ABC):
                     else typ
                 )
 
-            # TODO: GEO field
             if is_vector and vector_options:
                 schema = f"{path} AS {index_field_name} {vector_options.schema}"
             elif parent_is_container_type or parent_is_model_in_container:
@@ -2328,6 +2376,10 @@ class JsonModel(RedisModel, abc.ABC):
                     schema += " CASESENSITIVE"
             elif typ is bool:
                 schema = f"{path} AS {index_field_name} TAG"
+                if sortable is True:
+                    schema += " SORTABLE"
+            elif typ is Coordinates:
+                schema = f"{path} AS {index_field_name} GEO"
                 if sortable is True:
                     schema += " SORTABLE"
             elif is_numeric_type(typ):
@@ -2361,6 +2413,7 @@ class JsonModel(RedisModel, abc.ABC):
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
                 if sortable is True:
                     schema += " SORTABLE"
+
             return schema
         return ""
 

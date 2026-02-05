@@ -1,1 +1,1 @@
-import redis.asyncio as redis
+from redis import asyncio as redis

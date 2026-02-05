@@ -166,7 +166,9 @@ def test_saves_many(m):
     result = m.Member.add(members)
     assert result == [member1, member2]
 
-    assert m.Member.get(pk=member1.pk) == member1
+    m1_rematerialized = m.Member.get(pk=member1.pk)
+
+    assert m1_rematerialized == member1
     assert m.Member.get(pk=member2.pk) == member2
 
 

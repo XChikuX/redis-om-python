@@ -1,6 +1,6 @@
-import inspect
 import datetime
 import decimal
+import inspect
 from typing import Any, Type, get_args
 
 
@@ -14,7 +14,6 @@ def is_async_mode() -> bool:
 
 ASYNC_MODE = is_async_mode()
 
-# Keep numeric helpers in sync with the asynchronous variant
 NUMERIC_TYPES = (float, int, decimal.Decimal, datetime.datetime, datetime.date)
 
 
