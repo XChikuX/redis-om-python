@@ -1532,6 +1532,10 @@ class ModelMeta(ModelMetaclass):
                     setattr(new_class, score_attr, None)
                     new_class.__annotations__[score_attr] = Union[float, None]
 
+        # If this is an embedded model, we don't want to allow primary keys at all,
+        if getattr(new_class._meta, "embedded", False):
+            new_class._meta.primary_key = None
+
         if not getattr(new_class._meta, "global_key_prefix", None):
             new_class._meta.global_key_prefix = getattr(
                 base_meta, "global_key_prefix", ""
@@ -1656,6 +1660,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @validator("pk", always=True, allow_reuse=True)
     def validate_pk(cls, v):
+        # Skip pk generation for embedded models - they don't need primary keys
+        if getattr(cls._meta, "embedded", False):
+            return None
         if not v or isinstance(v, ExpressionProxy):
             v = cls._meta.primary_key_creator_cls().create_pk()
         return v
@@ -1818,7 +1825,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             from pydantic import TypeAdapter
 
             adapter = TypeAdapter(self.__class__)
-            adapter.validate_python(self.__dict__)
+            adapter.validate_python(self.__dict__)  # ty:ignore[conflicting-metaclass]
 
 
 class HashModel(RedisModel, abc.ABC):
@@ -1885,7 +1892,7 @@ class HashModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):  # type: ignore
+    async def all_pks(cls):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
@@ -2090,7 +2097,7 @@ class JsonModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):  # type: ignore
+    async def all_pks(cls):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
