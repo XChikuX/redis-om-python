@@ -308,7 +308,7 @@ ExpressionOrNegated = Union[Expression, NegatedExpression]
 class ExpressionProxy:
     def __init__(self, field: ModelField, parents: List[Tuple[str, "RedisModel"]]):
         self.field = field
-        self.parents = parents
+        self.parents = parents.copy()
 
     def __eq__(self, other: Any) -> Expression:  # type: ignore[override]
         return Expression(
@@ -388,11 +388,10 @@ class ExpressionProxy:
             attr = getattr(outer_type, item)
         if isinstance(attr, self.__class__):
             new_parent = (self.field.alias, outer_type)
-            if new_parent not in attr.parents:
-                attr.parents.append(new_parent)
             new_parents = list(set(self.parents) - set(attr.parents))
-            if new_parents:
-                attr.parents = new_parents + attr.parents
+            if new_parent not in new_parents:
+                new_parents.append(new_parent)
+            attr.parents = new_parents
         return attr
 
 
@@ -524,6 +523,135 @@ def convert_timestamp_to_datetime(obj, model_fields):
         return obj
 
 
+def convert_empty_strings_to_none(obj, model_fields):
+    """Convert empty strings back to None for Optional fields in HashModel.
+
+    HashModel stores None as empty string "" because Redis HSET requires non-null
+    values. This function converts empty strings back to None for fields that are
+    Optional (Union[T, None]) so Pydantic validation succeeds. (Fixes #254)
+    """
+    if not isinstance(obj, dict):
+        return obj
+
+    result = {}
+    for key, value in obj.items():
+        if key in model_fields and value == "":
+            field_info = model_fields[key]
+            field_type = (
+                field_info.annotation if hasattr(field_info, "annotation") else None
+            )
+            # Check if the field is Optional (Union[T, None])
+            is_optional = False
+            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
+                args = getattr(field_type, "__args__", ())
+                if type(None) in args:
+                    is_optional = True
+
+            if is_optional:
+                result[key] = None
+            else:
+                result[key] = value
+        else:
+            result[key] = value
+    return result
+
+
+def convert_bytes_to_base64(obj):
+    """Convert bytes objects to base64-encoded strings for storage.
+
+    This is necessary because Redis JSON and the jsonable_encoder cannot
+    handle arbitrary binary data. Base64 encoding ensures all byte values
+    (0-255) can be safely stored and retrieved.
+    """
+    import base64
+
+    if isinstance(obj, dict):
+        return {key: convert_bytes_to_base64(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_bytes_to_base64(item) for item in obj]
+    elif isinstance(obj, bytes):
+        return base64.b64encode(obj).decode("ascii")
+    else:
+        return obj
+
+
+def convert_base64_to_bytes(obj, model_fields):
+    """Convert base64-encoded strings back to bytes based on model field types."""
+    import base64
+
+    if not isinstance(obj, dict):
+        return obj
+
+    result = {}
+    for key, value in obj.items():
+        if key in model_fields:
+            field_info = model_fields[key]
+            field_type = (
+                field_info.annotation if hasattr(field_info, "annotation") else None
+            )
+
+            # Handle Optional types - extract the inner type
+            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
+                args = getattr(field_type, "__args__", ())
+                non_none_types = [
+                    arg for arg in args if arg is not type(None)  # noqa: E721
+                ]
+                if len(non_none_types) == 1:
+                    field_type = non_none_types[0]
+
+            if field_type is bytes and isinstance(value, str):
+                try:
+                    result[key] = base64.b64decode(value)
+                except (ValueError, TypeError):
+                    result[key] = value
+            elif isinstance(value, dict):
+                # Handle nested models with bytes fields
+                try:
+                    if (
+                        isinstance(field_type, type)
+                        and hasattr(field_type, "model_fields")
+                        and field_type.model_fields
+                    ):
+                        result[key] = convert_base64_to_bytes(
+                            value, field_type.model_fields
+                        )
+                    else:
+                        result[key] = value
+                except (TypeError, AttributeError):
+                    result[key] = value
+            elif isinstance(value, list):
+                # Handle lists that might contain nested models with bytes
+                inner_type = None
+                if (
+                    hasattr(field_type, "__origin__")
+                    and field_type.__origin__ in (list, List)
+                    and hasattr(field_type, "__args__")
+                    and field_type.__args__
+                ):
+                    inner_type = field_type.__args__[0]
+                    try:
+                        if (
+                            isinstance(inner_type, type)
+                            and hasattr(inner_type, "model_fields")
+                            and inner_type.model_fields
+                        ):
+                            result[key] = [
+                                convert_base64_to_bytes(item, inner_type.model_fields)
+                                for item in value
+                            ]
+                        else:
+                            result[key] = value
+                    except (TypeError, AttributeError):
+                        result[key] = value
+                else:
+                    result[key] = value
+            else:
+                result[key] = value
+        else:
+            result[key] = value
+    return result
+
+
 class FindQuery:
     def __init__(
         self,
@@ -610,11 +738,14 @@ class FindQuery:
             return self._query
         self._query = self.resolve_redisearch_query(self.expression)
         if self.knn:
-            self._query = (
-                self._query
-                if self._query.startswith("(") or self._query == "*"
-                else f"({self._query})"
-            ) + f"=>[{self.knn}]"
+            # Always wrap the filter expression in parentheses when combining
+            # with KNN, unless it's the wildcard "*". This ensures OR expressions
+            # like "(A)| (B)" become "((A)| (B))=>[KNN ...]" instead of the
+            # invalid "(A)| (B)=>[KNN ...]" where KNN only applies to the
+            # second term.
+            if self._query != "*":
+                self._query = f"({self._query})"
+            self._query += f"=>[{self.knn}]"
         return self._query
 
     @property
@@ -744,10 +875,10 @@ class FindQuery:
         value: Any,
         parents: List[Tuple[str, "RedisModel"]],
     ) -> str:
+        result = ""
         if parents:
             prefix = "_".join([p[0] for p in parents])
             field_name = f"{prefix}_{field_name}"
-        result = ""
         if field_type is RediSearchFieldTypes.TEXT:
             result = f"@{field_name}_fts:"
             if op is Operators.EQ:
@@ -763,27 +894,44 @@ class FindQuery:
                     f"Docs: {ERRORS_URL}#E5"
                 )
         elif field_type is RediSearchFieldTypes.NUMERIC:
-            # Convert datetime objects to timestamps for NUMERIC queries
-            if isinstance(value, (datetime.datetime, datetime.date)):
-                if isinstance(value, datetime.date) and not isinstance(
-                    value, datetime.datetime
-                ):
-                    # Convert date to datetime at midnight
-                    value = datetime.datetime.combine(value, datetime.time.min)
-                value = value.timestamp()
+            def convert_numeric_value(v):
+                """Convert Enum and datetime values for NUMERIC queries."""
+                # Convert Enum to its value (fixes #108)
+                if isinstance(v, Enum):
+                    v = v.value
+                # Convert datetime objects to timestamps
+                if isinstance(v, (datetime.datetime, datetime.date)):
+                    if isinstance(v, datetime.date) and not isinstance(
+                        v, datetime.datetime
+                    ):
+                        v = datetime.datetime.combine(v, datetime.time.min)
+                    v = v.timestamp()
+                return v
 
-            if op is Operators.EQ:
-                result += f"@{field_name}:[{value} {value}]"
-            elif op is Operators.NE:
-                result += f"-(@{field_name}:[{value} {value}])"
-            elif op is Operators.GT:
-                result += f"@{field_name}:[({value} +inf]"
-            elif op is Operators.LT:
-                result += f"@{field_name}:[-inf ({value}]"
-            elif op is Operators.GE:
-                result += f"@{field_name}:[{value} +inf]"
-            elif op is Operators.LE:
-                result += f"@{field_name}:[-inf {value}]"
+            if op is Operators.IN:
+                # Handle IN operator for NUMERIC fields (fixes #499)
+                converted_values = [convert_numeric_value(v) for v in value]
+                parts = [f"(@{field_name}:[{v} {v}])" for v in converted_values]
+                result += "|".join(parts)
+            elif op is Operators.NOT_IN:
+                # Handle NOT_IN operator for NUMERIC fields
+                converted_values = [convert_numeric_value(v) for v in value]
+                parts = [f"(@{field_name}:[{v} {v}])" for v in converted_values]
+                result += f"-({' | '.join(parts)})"
+            else:
+                value = convert_numeric_value(value)
+                if op is Operators.EQ:
+                    result += f"@{field_name}:[{value} {value}]"
+                elif op is Operators.NE:
+                    result += f"-(@{field_name}:[{value} {value}])"
+                elif op is Operators.GT:
+                    result += f"@{field_name}:[({value} +inf]"
+                elif op is Operators.LT:
+                    result += f"@{field_name}:[-inf ({value}]"
+                elif op is Operators.GE:
+                    result += f"@{field_name}:[{value} +inf]"
+                elif op is Operators.LE:
+                    result += f"@{field_name}:[-inf {value}]"
         # TODO: How will we know the difference between a multi-value use of a TAG
         #  field and our hidden use of TAG for exact-match queries?
         elif field_type is RediSearchFieldTypes.GEO:
@@ -935,6 +1083,10 @@ class FindQuery:
             field_type = cls.resolve_field_type(expression.left, expression.op)
             field_name = expression.left.name
             field_info = expression.left.field_info
+            # Build field_name using the specific parents for this expression
+            if expression.parents:
+                prefix = "_".join([p[0] for p in expression.parents])
+                field_name = f"{prefix}_{field_name}"
             if not field_info or not getattr(field_info, "index", None):
                 raise QueryNotSupportedError(
                     f"You tried to query by a field ({field_name}) "
@@ -1247,6 +1399,7 @@ class FieldInfo(PydanticFieldInfo):
         index = kwargs.pop("index", Undefined)
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
+        separator = kwargs.pop("separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
         super().__init__(default=default, **kwargs)
         self.primary_key = primary_key
         self.sortable = sortable
@@ -1254,6 +1407,7 @@ class FieldInfo(PydanticFieldInfo):
         self.index = index
         self.full_text_search = full_text_search
         self.vector_options = vector_options
+        self.separator = separator
 
 
 class RelationshipInfo(Representation):
@@ -1386,6 +1540,7 @@ def Field(
     index: Union[bool, UndefinedType] = Undefined,
     full_text_search: Union[bool, UndefinedType] = Undefined,
     vector_options: Optional[VectorFieldOptions] = None,
+    separator: str = SINGLE_VALUE_TAG_FIELD_SEPARATOR,
     schema_extra: Optional[Dict[str, Any]] = None,
 ) -> Any:
     current_schema_extra = schema_extra or {}
@@ -1415,6 +1570,7 @@ def Field(
         index=index,
         full_text_search=full_text_search,
         vector_options=vector_options,
+        separator=separator,
         **current_schema_extra,
     )
     return field_info
@@ -1881,6 +2037,7 @@ class HashModel(RedisModel, abc.ABC):
         # Get model data and convert datetime objects first
         document = self.dict()
         document = convert_datetime_to_timestamp(document)
+        document = convert_bytes_to_base64(document)
 
         # Then apply jsonable encoding for other types
         document = jsonable_encoder(document)
@@ -1910,6 +2067,9 @@ class HashModel(RedisModel, abc.ABC):
         document = await cls.db().hgetall(cls.make_primary_key(pk))
         if not document:
             raise NotFoundError
+        # Convert empty strings back to None for Optional fields (fixes #254)
+        document = convert_empty_strings_to_none(document, cls.model_fields)
+        document = convert_base64_to_bytes(document, cls.model_fields)
         try:
             result = cls.parse_obj(document)
         except TypeError as e:
@@ -1920,6 +2080,8 @@ class HashModel(RedisModel, abc.ABC):
                 f"model class ({cls.__class__}. Encoding: {cls.Meta.encoding}."
             )
             document = decode_redis_value(document, cls.Meta.encoding)
+            document = convert_empty_strings_to_none(document, cls.model_fields)
+            document = convert_base64_to_bytes(document, cls.model_fields)
             result = cls.parse_obj(document)
         return result
 
@@ -1974,8 +2136,11 @@ class HashModel(RedisModel, abc.ABC):
 
             if getattr(field_info, "primary_key", None):
                 if issubclass(_type, str):
+                    separator = getattr(
+                        field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                    )
                     redisearch_field = (
-                        f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                        f"{name} TAG SEPARATOR {separator}"
                     )
                 else:
                     redisearch_field = cls.schema_for_type(name, _type, field_info)
@@ -2038,13 +2203,16 @@ class HashModel(RedisModel, abc.ABC):
         elif typ in (datetime.date, datetime.datetime):
             schema = f"{name} NUMERIC"
         elif issubclass(typ, str):
+            separator = getattr(
+                field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+            )
             if getattr(field_info, "full_text_search", False) is True:
                 schema = (
-                    f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
+                    f"{name} TAG SEPARATOR {separator} "
                     f"{name} AS {name}_fts TEXT"
                 )
             else:
-                schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                schema = f"{name} TAG SEPARATOR {separator}"
         elif issubclass(typ, RedisModel):
             if sortable:
                 raise ValueError(
@@ -2060,7 +2228,10 @@ class HashModel(RedisModel, abc.ABC):
                 )
             schema = " ".join(sub_fields)
         else:
-            schema = f"{name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+            separator = getattr(
+                field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+            )
+            schema = f"{name} TAG SEPARATOR {separator}"
         if schema and sortable is True:
             schema += " SORTABLE"
         if schema and case_sensitive is True:
@@ -2070,6 +2241,27 @@ class HashModel(RedisModel, abc.ABC):
 
 
 class JsonModel(RedisModel, abc.ABC):
+    @staticmethod
+    def _extract_field_info(field: Any) -> Union[FieldInfo, PydanticFieldInfo, ModelField]:
+        """
+        Extract FieldInfo from a field, handling various Pydantic versions and formats.
+
+        This method consolidates the logic for extracting field info from:
+        - Direct FieldInfo instances
+        - Fields with field_info attribute
+        - Fields with metadata containing FieldInfo
+        """
+        if hasattr(field, "field_info"):
+            return field.field_info
+        elif (
+            not isinstance(field, FieldInfo)
+            and hasattr(field, "metadata")
+            and field.metadata
+            and isinstance(field.metadata[0], FieldInfo)
+        ):
+            return field.metadata[0]
+        return field
+
     def __init_subclass__(cls, **kwargs):
         # Generate the RediSearch schema once to validate fields.
         cls.redisearch_schema()
@@ -2091,6 +2283,7 @@ class JsonModel(RedisModel, abc.ABC):
         # Get model data and convert datetime objects to timestamps
         document = self.dict()
         document = convert_datetime_to_timestamp(document)
+        document = convert_bytes_to_base64(document)
 
         # TODO: Wrap response errors in a custom exception?
         await db.json().set(self.key(), Path.root_path(), document)
@@ -2141,6 +2334,7 @@ class JsonModel(RedisModel, abc.ABC):
             raise NotFoundError
         # Convert timestamps back to datetime objects before validation
         document_data = convert_timestamp_to_datetime(document_data, cls.model_fields)
+        document_data = convert_base64_to_bytes(document_data, cls.model_fields)
         return cls.model_validate(document_data)
 
     @classmethod
@@ -2181,34 +2375,14 @@ class JsonModel(RedisModel, abc.ABC):
                 continue
 
             # Extract FieldInfo safely (handling Annotated and field_info wrappers)
-            field_info = field
-            if hasattr(field, "field_info"):
-                field_info = field.field_info
-            elif (
-                not isinstance(field, FieldInfo)
-                and hasattr(field, "metadata")
-                and field.metadata 
-                and isinstance(field.metadata[0], FieldInfo)
-            ):
-                field_info = field.metadata[0]
+            field_info = cls._extract_field_info(field)
 
             # 5. Generate Redis Schema parts
-            if getattr(field_info, "primary_key", None):
-                if issubclass(_type, str):
-                    # Using a formatted string for Tag fields
-                    redisearch_field = (
-                        f"$.{name} AS {name} TAG SEPARATOR "
-                        f"{SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
-                    )
-                else:
-                    redisearch_field = cls.schema_for_type(
-                        json_path, name, "", _type, field_info
-                    )
-                schema_parts.append(redisearch_field)
-            else:
-                schema_parts.append(
-                    cls.schema_for_type(json_path, name, "", _type, field_info)
-                )
+            # Call schema_for_type for both primary_key and indexed fields
+            # The method handles the distinction internally
+            schema_parts.append(
+                cls.schema_for_type(json_path, name, "", _type, field_info)
+            )
 
         return schema_parts
 
@@ -2375,7 +2549,10 @@ class JsonModel(RedisModel, abc.ABC):
                         f"search. Problem field: {name}. See docs: TODO"
                     )
                 # List/tuple fields are indexed as TAG fields and can be sortable
-                schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                separator = getattr(
+                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                )
+                schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
                 if sortable is True:
                     schema += " SORTABLE"
                 if case_sensitive is True:
@@ -2393,9 +2570,12 @@ class JsonModel(RedisModel, abc.ABC):
                 if sortable is True:
                     schema += " SORTABLE"
             elif issubclass(typ, str):
+                separator = getattr(
+                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                )
                 if full_text_search is True:
                     schema = (
-                        f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
+                        f"{path} AS {index_field_name} TAG SEPARATOR {separator} "
                         f"{path} AS {index_field_name}_fts TEXT"
                     )
                     if sortable is True:
@@ -2409,14 +2589,17 @@ class JsonModel(RedisModel, abc.ABC):
                         raise RedisModelError("Text fields cannot be case-sensitive.")
                 else:
                     # String fields are indexed as TAG fields and can be sortable
-                    schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                    schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
                     if sortable is True:
                         schema += " SORTABLE"
                     if case_sensitive is True:
                         schema += " CASESENSITIVE"
             else:
                 # Default to TAG field, which can be sortable
-                schema = f"{path} AS {index_field_name} TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR}"
+                separator = getattr(
+                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                )
+                schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
                 if sortable is True:
                     schema += " SORTABLE"
 
