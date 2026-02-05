@@ -1,7 +1,6 @@
 # type: ignore
 """Tests for bug fixes #108, #254, and #499."""
 
-import abc
 from enum import Enum, IntEnum
 from typing import Optional
 
@@ -38,36 +37,38 @@ class Priority(IntEnum):
 def models_for_bug_fixes(key_prefix, redis):
     """Fixture providing models for testing bug fixes."""
 
-    class BaseHashModel(HashModel, abc.ABC):
-        class Meta:
-            global_key_prefix = key_prefix
-            database = redis
-
-    class BaseJsonModel(JsonModel, abc.ABC):
-        class Meta:
-            global_key_prefix = key_prefix
-            database = redis
-
     # Model for #108 - Enum with int values
-    class Task(BaseJsonModel, index=True):
+    class Task(JsonModel):
         name: str = Field(index=True)
         status: int = Field(index=True)  # Store as int, query with Enum
         priority: int = Field(index=True)
 
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
     # Model for #254 - Optional field in HashModel
-    class Person(BaseHashModel, index=True):
+    class Person(HashModel):
         name: str = Field(index=True)
         age: int
         weight: Optional[float] = None
         nickname: Optional[str] = None
 
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
     # Model for #499 - IN operator with NUMERIC fields
-    class Product(BaseJsonModel, index=True):
+    class Product(JsonModel):
         name: str = Field(index=True)
         price: int = Field(index=True)
         quantity: int = Field(index=True)
 
-    Migrator(conn=redis).run()
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    Migrator().run()
 
     return {
         "Task": Task,
@@ -77,7 +78,7 @@ def models_for_bug_fixes(key_prefix, redis):
 
 
 @py_test_mark_sync
-def test_issue_108_enum_int_in_query(models_for_bug_fixes):
+def test_enum_int_value_query(models_for_bug_fixes):
     """Test that Enum with int values works in queries (#108)."""
     Task = models_for_bug_fixes["Task"]
 
@@ -102,7 +103,7 @@ def test_issue_108_enum_int_in_query(models_for_bug_fixes):
 
 
 @py_test_mark_sync
-def test_issue_254_optional_field_retrieval(models_for_bug_fixes):
+def test_optional_field_none_hashmodel(models_for_bug_fixes):
     """Test that Optional fields with None values can be retrieved (#254)."""
     Person = models_for_bug_fixes["Person"]
 
@@ -118,7 +119,7 @@ def test_issue_254_optional_field_retrieval(models_for_bug_fixes):
 
 
 @py_test_mark_sync
-def test_issue_254_optional_field_with_value(models_for_bug_fixes):
+def test_optional_field_with_value_hashmodel(models_for_bug_fixes):
     """Test that Optional fields with actual values still work correctly."""
     Person = models_for_bug_fixes["Person"]
 
@@ -134,7 +135,7 @@ def test_issue_254_optional_field_with_value(models_for_bug_fixes):
 
 
 @py_test_mark_sync
-def test_issue_499_in_operator_numeric_fields(models_for_bug_fixes):
+def test_in_operator_numeric_field(models_for_bug_fixes):
     """Test that IN operator works with NUMERIC fields (#499)."""
     Product = models_for_bug_fixes["Product"]
 
@@ -157,6 +158,31 @@ def test_issue_499_in_operator_numeric_fields(models_for_bug_fixes):
     assert len(results) == 3
     names = {r.name for r in results}
     assert names == {"Widget", "Gadget", "Gizmo"}
+
+
+@py_test_mark_sync
+def test_enum_int_value_ne_query(models_for_bug_fixes):
+    """Test that not-equal query with Enum values works correctly (#792)."""
+    Task = models_for_bug_fixes["Task"]
+
+    task1 = Task(name="Task 1", status=Status.PENDING.value, priority=Priority.MEDIUM)
+    task2 = Task(name="Task 2", status=Status.ACTIVE.value, priority=Priority.HIGH)
+    task3 = Task(name="Task 3", status=Status.COMPLETED.value, priority=Priority.LOW)
+
+    task1.save()
+    task2.save()
+    task3.save()
+
+    # Not-equal query with enum values
+    results = Task.find(Task.status != Status.ACTIVE).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Task 1", "Task 3"}
+
+    results = Task.find(Task.priority != Priority.HIGH).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Task 1", "Task 3"}
 
 
 @py_test_mark_sync
@@ -192,7 +218,7 @@ def test_issue_108_enum_with_in_operator(models_for_bug_fixes):
 
 
 @py_test_mark_sync
-def test_issue_499_not_in_operator_numeric_fields(models_for_bug_fixes):
+def test_not_in_operator_numeric_field(models_for_bug_fixes):
     """Test that NOT_IN operator works with NUMERIC fields (#499)."""
     Product = models_for_bug_fixes["Product"]
 
