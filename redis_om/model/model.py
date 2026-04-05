@@ -179,6 +179,10 @@ def get_model_fields(model: Any) -> Mapping[str, Any]:
     return getattr(model, "__fields__", {})
 
 
+def has_model_field_mapping(model: Any) -> bool:
+    return hasattr(model, "model_fields") or hasattr(model, "__fields__")
+
+
 def validate_model_data(model: Any, values: Any) -> Any:
     if hasattr(model, "model_validate"):
         return model.model_validate(values)
@@ -481,7 +485,9 @@ def convert_timestamp_to_datetime(obj, model_fields):
                 elif isinstance(value, dict):
                     try:
                         # Check if field_type is a class and subclass of RedisModel
-                        if isinstance(field_type, type):
+                        if isinstance(field_type, type) and has_model_field_mapping(
+                            field_type
+                        ):
                             result[key] = convert_timestamp_to_datetime(
                                 value, get_model_fields(field_type)
                             )
@@ -503,7 +509,9 @@ def convert_timestamp_to_datetime(obj, model_fields):
 
                         # Check if the inner type is a nested model
                         try:
-                            if isinstance(inner_type, type):
+                            if isinstance(inner_type, type) and has_model_field_mapping(
+                                inner_type
+                            ):
                                 result[key] = [
                                     convert_timestamp_to_datetime(
                                         item, get_model_fields(inner_type)
@@ -612,7 +620,9 @@ def convert_base64_to_bytes(obj, model_fields):
             elif isinstance(value, dict):
                 # Handle nested models with bytes fields
                 try:
-                    if isinstance(field_type, type):
+                    if isinstance(field_type, type) and has_model_field_mapping(
+                        field_type
+                    ):
                         result[key] = convert_base64_to_bytes(
                             value, get_model_fields(field_type)
                         )
@@ -631,7 +641,9 @@ def convert_base64_to_bytes(obj, model_fields):
                 ):
                     inner_type = field_type.__args__[0]
                     try:
-                        if isinstance(inner_type, type):
+                        if isinstance(inner_type, type) and has_model_field_mapping(
+                            inner_type
+                        ):
                             result[key] = [
                                 convert_base64_to_bytes(
                                     item, get_model_fields(inner_type)

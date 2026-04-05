@@ -27,13 +27,17 @@ def test_convert_timestamp_to_datetime_uses_v1_fields_fallback():
 
 def test_validate_model_data_uses_parse_obj_fallback():
     class V1StyleModel:
+        def __init__(self, values):
+            self.values = values
+
         @classmethod
         def parse_obj(cls, values):
-            return {"parsed": values}
+            return cls(values)
 
-    assert validate_model_data(V1StyleModel, {"field": "value"}) == {
-        "parsed": {"field": "value"}
-    }
+    result = validate_model_data(V1StyleModel, {"field": "value"})
+
+    assert isinstance(result, V1StyleModel)
+    assert result.values == {"field": "value"}
 
 
 @py_test_mark_sync
