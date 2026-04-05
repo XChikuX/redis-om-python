@@ -172,6 +172,26 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
             )
 
 
+def get_model_fields(model: Any) -> Mapping[str, Any]:
+    """Return Pydantic field mappings from model_fields or __fields__."""
+    model_fields = getattr(model, "model_fields", None)
+    if model_fields is not None:
+        return model_fields
+    return getattr(model, "__fields__", {})
+
+
+def has_model_field_mapping(model: Any) -> bool:
+    """Check whether a model exposes Pydantic field mappings."""
+    return hasattr(model, "model_fields") or hasattr(model, "__fields__")
+
+
+def validate_model_data(model: Any, values: Any) -> Any:
+    """Validate model data with model_validate or parse_obj, as available."""
+    if hasattr(model, "model_validate"):
+        return model.model_validate(values)
+    return model.parse_obj(values)
+
+
 def decode_redis_value(
     obj: Union[List[bytes], Dict[bytes, bytes], bytes], encoding: str
 ) -> Union[List[str], Dict[str, str], str]:
@@ -468,13 +488,11 @@ def convert_timestamp_to_datetime(obj, model_fields):
                 elif isinstance(value, dict):
                     try:
                         # Check if field_type is a class and subclass of RedisModel
-                        if (
-                            isinstance(field_type, type)
-                            and hasattr(field_type, "model_fields")
-                            and field_type.model_fields
+                        if isinstance(field_type, type) and has_model_field_mapping(
+                            field_type
                         ):
                             result[key] = convert_timestamp_to_datetime(
-                                value, field_type.model_fields
+                                value, get_model_fields(field_type)
                             )
                         else:
                             result[key] = convert_timestamp_to_datetime(value, {})
@@ -494,14 +512,12 @@ def convert_timestamp_to_datetime(obj, model_fields):
 
                         # Check if the inner type is a nested model
                         try:
-                            if (
-                                isinstance(inner_type, type)
-                                and hasattr(inner_type, "model_fields")
-                                and inner_type.model_fields
+                            if isinstance(inner_type, type) and has_model_field_mapping(
+                                inner_type
                             ):
                                 result[key] = [
                                     convert_timestamp_to_datetime(
-                                        item, inner_type.model_fields
+                                        item, get_model_fields(inner_type)
                                     )
                                     for item in value
                                 ]
@@ -607,13 +623,11 @@ def convert_base64_to_bytes(obj, model_fields):
             elif isinstance(value, dict):
                 # Handle nested models with bytes fields
                 try:
-                    if (
-                        isinstance(field_type, type)
-                        and hasattr(field_type, "model_fields")
-                        and field_type.model_fields
+                    if isinstance(field_type, type) and has_model_field_mapping(
+                        field_type
                     ):
                         result[key] = convert_base64_to_bytes(
-                            value, field_type.model_fields
+                            value, get_model_fields(field_type)
                         )
                     else:
                         result[key] = value
@@ -630,13 +644,13 @@ def convert_base64_to_bytes(obj, model_fields):
                 ):
                     inner_type = field_type.__args__[0]
                     try:
-                        if (
-                            isinstance(inner_type, type)
-                            and hasattr(inner_type, "model_fields")
-                            and inner_type.model_fields
+                        if isinstance(inner_type, type) and has_model_field_mapping(
+                            inner_type
                         ):
                             result[key] = [
-                                convert_base64_to_bytes(item, inner_type.model_fields)
+                                convert_base64_to_bytes(
+                                    item, get_model_fields(inner_type)
+                                )
                                 for item in value
                             ]
                         else:
@@ -2068,8 +2082,9 @@ class HashModel(RedisModel, abc.ABC):
         if not document:
             raise NotFoundError
         # Convert empty strings back to None for Optional fields (fixes #254)
-        document = convert_empty_strings_to_none(document, cls.model_fields)
-        document = convert_base64_to_bytes(document, cls.model_fields)
+        model_fields = get_model_fields(cls)
+        document = convert_empty_strings_to_none(document, model_fields)
+        document = convert_base64_to_bytes(document, model_fields)
         try:
             result = cls.parse_obj(document)
         except TypeError as e:
@@ -2080,8 +2095,8 @@ class HashModel(RedisModel, abc.ABC):
                 f"model class ({cls.__class__}. Encoding: {cls.Meta.encoding}."
             )
             document = decode_redis_value(document, cls.Meta.encoding)
-            document = convert_empty_strings_to_none(document, cls.model_fields)
-            document = convert_base64_to_bytes(document, cls.model_fields)
+            document = convert_empty_strings_to_none(document, model_fields)
+            document = convert_base64_to_bytes(document, model_fields)
             result = cls.parse_obj(document)
         return result
 
@@ -2333,9 +2348,10 @@ class JsonModel(RedisModel, abc.ABC):
         if document_data is None:
             raise NotFoundError
         # Convert timestamps back to datetime objects before validation
-        document_data = convert_timestamp_to_datetime(document_data, cls.model_fields)
-        document_data = convert_base64_to_bytes(document_data, cls.model_fields)
-        return cls.model_validate(document_data)
+        model_fields = get_model_fields(cls)
+        document_data = convert_timestamp_to_datetime(document_data, model_fields)
+        document_data = convert_base64_to_bytes(document_data, model_fields)
+        return validate_model_data(cls, document_data)
 
     @classmethod
     def redisearch_schema(cls):
@@ -2348,7 +2364,7 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
-        
+
         # 1. Initialize fields with existing model fields
         fields = dict(cls.__fields__)
 
