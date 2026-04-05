@@ -481,10 +481,7 @@ def convert_timestamp_to_datetime(obj, model_fields):
                 elif isinstance(value, dict):
                     try:
                         # Check if field_type is a class and subclass of RedisModel
-                        if (
-                            isinstance(field_type, type)
-                            and get_model_fields(field_type)
-                        ):
+                        if isinstance(field_type, type):
                             result[key] = convert_timestamp_to_datetime(
                                 value, get_model_fields(field_type)
                             )
@@ -506,10 +503,7 @@ def convert_timestamp_to_datetime(obj, model_fields):
 
                         # Check if the inner type is a nested model
                         try:
-                            if (
-                                isinstance(inner_type, type)
-                                and get_model_fields(inner_type)
-                            ):
+                            if isinstance(inner_type, type):
                                 result[key] = [
                                     convert_timestamp_to_datetime(
                                         item, get_model_fields(inner_type)
@@ -618,10 +612,7 @@ def convert_base64_to_bytes(obj, model_fields):
             elif isinstance(value, dict):
                 # Handle nested models with bytes fields
                 try:
-                    if (
-                        isinstance(field_type, type)
-                        and get_model_fields(field_type)
-                    ):
+                    if isinstance(field_type, type):
                         result[key] = convert_base64_to_bytes(
                             value, get_model_fields(field_type)
                         )
@@ -640,10 +631,7 @@ def convert_base64_to_bytes(obj, model_fields):
                 ):
                     inner_type = field_type.__args__[0]
                     try:
-                        if (
-                            isinstance(inner_type, type)
-                            and get_model_fields(inner_type)
-                        ):
+                        if isinstance(inner_type, type):
                             result[key] = [
                                 convert_base64_to_bytes(
                                     item, get_model_fields(inner_type)
