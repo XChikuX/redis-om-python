@@ -2364,7 +2364,7 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
-        
+
         # 1. Initialize fields with existing model fields
         fields = dict(cls.__fields__)
 

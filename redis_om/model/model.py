@@ -2260,7 +2260,7 @@ class JsonModel(RedisModel, abc.ABC):
     def _extract_field_info(field: Any) -> Union[FieldInfo, PydanticFieldInfo, ModelField]:
         """
         Extract FieldInfo from a field, handling various Pydantic versions and formats.
-        
+
         This method consolidates the logic for extracting field info from:
         - Direct FieldInfo instances
         - Fields with field_info attribute
@@ -2271,7 +2271,7 @@ class JsonModel(RedisModel, abc.ABC):
         elif (
             not isinstance(field, FieldInfo)
             and hasattr(field, "metadata")
-            and field.metadata 
+            and field.metadata
             and isinstance(field.metadata[0], FieldInfo)
         ):
             return field.metadata[0]

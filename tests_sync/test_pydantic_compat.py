@@ -1,13 +1,12 @@
-# type: ignore
-
 import abc
 import datetime
 from unittest import mock
 
 import pytest
 
-from redis_om import Field, HashModel, JsonModel, Migrator, has_redis_json
+from redis_om import Field, HashModel, JsonModel, Migrator
 from redis_om.model.model import convert_timestamp_to_datetime, validate_model_data
+from redis_om import has_redis_json
 
 from .conftest import py_test_mark_sync
 
