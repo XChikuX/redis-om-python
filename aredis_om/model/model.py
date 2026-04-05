@@ -173,6 +173,7 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
 
 
 def get_model_fields(model: Any) -> Mapping[str, Any]:
+    """Return Pydantic field mappings from model_fields or __fields__."""
     model_fields = getattr(model, "model_fields", None)
     if model_fields is not None:
         return model_fields
@@ -180,10 +181,12 @@ def get_model_fields(model: Any) -> Mapping[str, Any]:
 
 
 def has_model_field_mapping(model: Any) -> bool:
+    """Check whether a model exposes Pydantic field mappings."""
     return hasattr(model, "model_fields") or hasattr(model, "__fields__")
 
 
 def validate_model_data(model: Any, values: Any) -> Any:
+    """Validate model data with model_validate or parse_obj, as available."""
     if hasattr(model, "model_validate"):
         return model.model_validate(values)
     return model.parse_obj(values)
