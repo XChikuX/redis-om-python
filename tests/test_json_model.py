@@ -24,6 +24,7 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
+from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
 
 # We need to run this check as sync code (during tests) even in async mode
 # because we call it in the top-level module scope.
@@ -223,6 +224,30 @@ async def test_saves_model_and_creates_pk(address, m, redis):
     member2 = await m.Member.get(member.pk)
     assert member2 == member
     assert member2.address == address
+
+
+def test_convert_timestamp_to_datetime_uses_v1_fields_fallback():
+    class EmbeddedModel:
+        __fields__ = {"created_on": mock.Mock(annotation=datetime.datetime)}
+
+    model_fields = {"note": mock.Mock(annotation=EmbeddedModel)}
+
+    converted = convert_timestamp_to_datetime(
+        {"note": {"created_on": 1_700_000_000}}, model_fields
+    )
+
+    assert isinstance(converted["note"]["created_on"], datetime.datetime)
+
+
+def test_validate_model_data_uses_parse_obj_fallback():
+    class V1StyleModel:
+        @classmethod
+        def parse_obj(cls, values):
+            return {"parsed": values}
+
+    assert validate_model_data(V1StyleModel, {"field": "value"}) == {
+        "parsed": {"field": "value"}
+    }
 
 
 @py_test_mark_asyncio
