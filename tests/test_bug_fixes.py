@@ -186,6 +186,30 @@ async def test_issue_499_in_operator_numeric_fields(models_for_bug_fixes):
 
 
 @py_test_mark_asyncio
+async def test_enum_int_value_ne_query(models_for_bug_fixes):
+    """Test that not-equal query with Enum values works correctly (#792)."""
+    Task = models_for_bug_fixes["Task"]
+
+    task1 = Task(name="Task 1", status=Status.PENDING.value, priority=Priority.MEDIUM)
+    task2 = Task(name="Task 2", status=Status.ACTIVE.value, priority=Priority.HIGH)
+    task3 = Task(name="Task 3", status=Status.COMPLETED.value, priority=Priority.LOW)
+
+    await task1.save()
+    await task2.save()
+    await task3.save()
+
+    results = await Task.find(Task.status != Status.ACTIVE).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Task 1", "Task 3"}
+
+    results = await Task.find(Task.priority != Priority.HIGH).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Task 1", "Task 3"}
+
+
+@py_test_mark_asyncio
 async def test_issue_499_in_operator_single_value(models_for_bug_fixes):
     """Test IN operator with a single value."""
     Product = models_for_bug_fixes["Product"]
@@ -216,3 +240,29 @@ async def test_issue_108_enum_with_in_operator(models_for_bug_fixes):
     assert len(results) == 2
     names = {r.name for r in results}
     assert names == {"Task A", "Task C"}
+
+
+@py_test_mark_asyncio
+async def test_not_in_operator_numeric_field(models_for_bug_fixes):
+    """Test that NOT_IN operator works with NUMERIC fields (#499)."""
+    Product = models_for_bug_fixes["Product"]
+
+    p1 = Product(name="Widget", price=10, quantity=100)
+    p2 = Product(name="Gadget", price=20, quantity=50)
+    p3 = Product(name="Gizmo", price=30, quantity=75)
+    p4 = Product(name="Doohickey", price=40, quantity=25)
+
+    await p1.save()
+    await p2.save()
+    await p3.save()
+    await p4.save()
+
+    results = await Product.find(Product.price >> [20, 40]).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Widget", "Gizmo"}
+
+    results = await Product.find(Product.quantity >> [25, 75]).all()
+    assert len(results) == 2
+    names = {r.name for r in results}
+    assert names == {"Widget", "Gadget"}

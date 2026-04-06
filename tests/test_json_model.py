@@ -1271,3 +1271,174 @@ async def test_can_search_on_multiple_fields_with_geo_filter(key_prefix, redis):
 
     assert len(rematerialized) == 1
     assert rematerialized[0].pk == loc1.pk
+
+
+@py_test_mark_asyncio
+async def test_merged_model_error(key_prefix, redis):
+    """Test that OR queries on two embedded models produce correct field prefixes (#657)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Player(EmbeddedJsonModel):
+        username: str = Field(index=True)
+        score: int = Field(index=True)
+
+    class Game(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        player1: Player
+        player2: Player
+
+    await Migrator().run()
+
+    game1 = Game(
+        name="Game1",
+        player1=Player(username="alice", score=100),
+        player2=Player(username="bob", score=200),
+    )
+    game2 = Game(
+        name="Game2",
+        player1=Player(username="charlie", score=150),
+        player2=Player(username="dave", score=250),
+    )
+    game3 = Game(
+        name="Game3",
+        player1=Player(username="alice", score=300),
+        player2=Player(username="eve", score=400),
+    )
+
+    await game1.save()
+    await game2.save()
+    await game3.save()
+
+    results = await Game.find(
+        (Game.player1.username == "alice") | (Game.player2.username == "eve")
+    ).all()
+    assert len(results) == 2
+    game_names = {r.name for r in results}
+    assert game_names == {"Game1", "Game3"}
+
+    results = await Game.find(
+        (Game.player1.score >= 200) | (Game.player2.score < 300)
+    ).all()
+    assert len(results) == 3
+
+
+@py_test_mark_asyncio
+async def test_bytes_field_with_binary_data(key_prefix, redis):
+    """Test storing/retrieving non-UTF8 bytes data (#783)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class BinaryData(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        data: bytes
+        optional_data: Optional[bytes] = None
+
+    await Migrator().run()
+
+    png_header = b"\x89PNG\r\n\x1a\n"
+    binary_data = b"\x00\x01\x02\x03\xff\xfe\xfd\xfc"
+
+    doc1 = BinaryData(name="png_header", data=png_header)
+    doc2 = BinaryData(name="binary_data", data=binary_data)
+    doc3 = BinaryData(name="with_optional", data=png_header, optional_data=binary_data)
+    doc4 = BinaryData(name="none_optional", data=png_header, optional_data=None)
+
+    await doc1.save()
+    await doc2.save()
+    await doc3.save()
+    await doc4.save()
+
+    retrieved1 = await BinaryData.get(doc1.pk)
+    assert retrieved1.name == "png_header"
+    assert retrieved1.data == png_header
+
+    retrieved2 = await BinaryData.get(doc2.pk)
+    assert retrieved2.name == "binary_data"
+    assert retrieved2.data == binary_data
+
+    retrieved3 = await BinaryData.get(doc3.pk)
+    assert retrieved3.name == "with_optional"
+    assert retrieved3.data == png_header
+    assert retrieved3.optional_data == binary_data
+
+    retrieved4 = await BinaryData.get(doc4.pk)
+    assert retrieved4.name == "none_optional"
+    assert retrieved4.data == png_header
+    assert retrieved4.optional_data is None
+
+
+@py_test_mark_asyncio
+async def test_optional_bytes_field(key_prefix, redis):
+    """Test Optional[bytes] with None and binary data (#783)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class OptionalBinaryModel(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        data: Optional[bytes] = None
+
+    await Migrator().run()
+
+    doc1 = OptionalBinaryModel(name="none_value", data=None)
+    await doc1.save()
+
+    retrieved1 = await OptionalBinaryModel.get(doc1.pk)
+    assert retrieved1.name == "none_value"
+    assert retrieved1.data is None
+
+    binary_content = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a"
+    doc2 = OptionalBinaryModel(name="binary_value", data=binary_content)
+    await doc2.save()
+
+    retrieved2 = await OptionalBinaryModel.get(doc2.pk)
+    assert retrieved2.name == "binary_value"
+    assert retrieved2.data == binary_content
+
+
+@py_test_mark_asyncio
+async def test_bytes_field_in_embedded_model(key_prefix, redis):
+    """Test bytes inside EmbeddedJsonModel (#783)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class BinaryContent(EmbeddedJsonModel):
+        content_type: str
+        data: bytes
+        metadata: Optional[bytes] = None
+
+    class Document(BaseJsonModel, index=True):
+        title: str = Field(index=True)
+        content: BinaryContent
+
+    await Migrator().run()
+
+    pdf_header = b"%PDF-1.4\n"
+    metadata = b"\x00\x01\x02\x03"
+
+    doc = Document(
+        title="PDF Document",
+        content=BinaryContent(
+            content_type="application/pdf", data=pdf_header, metadata=metadata
+        ),
+    )
+
+    await doc.save()
+
+    retrieved = await Document.get(doc.pk)
+    assert retrieved.title == "PDF Document"
+    assert retrieved.content.content_type == "application/pdf"
+    assert retrieved.content.data == pdf_header
+    assert retrieved.content.metadata == metadata
