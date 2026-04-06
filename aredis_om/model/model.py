@@ -1662,7 +1662,11 @@ def _convert_v2_validators_to_v1(attrs: dict) -> dict:
 
         if isinstance(info, RootValidatorDecoratorInfo):
             pre = info.mode == "before"
-            skip = not pre  # post-validators always need skip_on_failure
+            # In pydantic v1, post-root-validators (pre=False) require
+            # skip_on_failure=True so they are skipped when field
+            # validation has already failed.  Pre-validators run before
+            # field validation, so the flag is irrelevant for them.
+            skip = not pre
             converted[attr_name] = v1_root_validator(
                 pre=pre, skip_on_failure=skip, allow_reuse=True
             )(func)

@@ -15,7 +15,7 @@ try:
     from redis_om import has_redis_json
 
     HAS_REDIS_JSON = has_redis_json()
-except Exception:
+except (ImportError, ConnectionError, OSError):
     HAS_REDIS_JSON = False
 
 from .conftest import py_test_mark_asyncio
