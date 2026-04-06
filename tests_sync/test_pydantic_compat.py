@@ -1,10 +1,12 @@
+# type: ignore
+
 import abc
 import datetime
 from unittest import mock
 
 import pytest
 
-from redis_om import Field, HashModel, JsonModel, Migrator
+from redis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
 from redis_om.model.model import convert_timestamp_to_datetime, validate_model_data
 from redis_om import has_redis_json
 
@@ -37,6 +39,27 @@ def test_validate_model_data_uses_parse_obj_fallback():
 
     assert isinstance(result, V1StyleModel)
     assert result.values == {"field": "value"}
+
+
+def test_embedded_hash_model_preserves_explicit_pk_in_nested_json_model():
+    class EmbeddedLike(HashModel):
+        user_id: str
+        liked_user_id: str
+
+        class Meta:
+            embedded = True
+
+    class Operation(EmbeddedJsonModel):
+        likes: list[EmbeddedLike] = []
+
+    class RedisUser(JsonModel):
+        operations: Operation = Field(...)
+
+    like = EmbeddedLike(pk="a:b", user_id="a", liked_user_id="b")
+    user = RedisUser(operations=Operation(likes=[like]))
+
+    assert like.pk == "a:b"
+    assert user.dict()["operations"]["likes"][0]["pk"] == "a:b"
 
 
 @py_test_mark_sync
