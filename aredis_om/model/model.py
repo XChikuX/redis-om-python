@@ -1832,7 +1832,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def validate_pk(cls, v):
         # Skip pk generation for embedded models - they don't need primary keys
         if getattr(cls._meta, "embedded", False):
-            return None
+            if isinstance(v, ExpressionProxy):
+                return None
+            return v
         if not v or isinstance(v, ExpressionProxy):
             v = cls._meta.primary_key_creator_cls().create_pk()
         return v
