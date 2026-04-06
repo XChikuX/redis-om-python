@@ -1627,11 +1627,77 @@ class DefaultMeta:
     encoding: str = "utf-8"
 
 
+def _convert_v2_validators_to_v1(attrs: dict) -> dict:
+    """Convert pydantic v2 validator proxies in *attrs* to pydantic v1 form.
+
+    When a user decorates a method with ``@root_validator`` or ``@validator``
+    imported from ``pydantic`` (the v2 compatibility shim), the decorator
+    creates a ``PydanticDescriptorProxy`` wrapping a ``classmethod``.
+    Pydantic v1's ``ModelMetaclass`` does not recognise these objects and
+    attempts to deepcopy them as ordinary field defaults — which fails
+    because ``classmethod`` objects are not picklable.
+
+    This helper detects such proxies and re-wraps the underlying function
+    with the corresponding ``pydantic.v1`` decorator so that the v1
+    metaclass can process them normally.
+    """
+    try:
+        from pydantic._internal._decorators import (
+            PydanticDescriptorProxy,
+            RootValidatorDecoratorInfo,
+            ValidatorDecoratorInfo,
+        )
+    except ImportError:
+        return attrs
+
+    from pydantic.v1 import root_validator as v1_root_validator
+    from pydantic.v1 import validator as v1_validator
+
+    converted = dict(attrs)
+    for attr_name, value in list(converted.items()):
+        if not isinstance(value, PydanticDescriptorProxy):
+            continue
+        # Pydantic may wrap the original function in a classmethod for v1-style
+        # validators, but some proxies expose the raw callable directly.
+        func = getattr(value.wrapped, "__func__", value.wrapped)
+        info = value.decorator_info
+
+        if isinstance(info, RootValidatorDecoratorInfo):
+            pre = info.mode == "before"
+            # In pydantic v1, post-root-validators (pre=False) require
+            # skip_on_failure=True so they are skipped when field
+            # validation has already failed.  Pre-validators run before
+            # field validation, so the flag is irrelevant for them.
+            skip = not pre
+            converted[attr_name] = v1_root_validator(
+                pre=pre, skip_on_failure=skip, allow_reuse=True
+            )(func)
+        elif isinstance(info, ValidatorDecoratorInfo):
+            converted[attr_name] = v1_validator(
+                *info.fields,
+                pre=(info.mode == "before"),
+                always=info.always,
+                each_item=info.each_item,
+                allow_reuse=True,
+            )(func)
+    return converted
+
+
 class ModelMeta(ModelMetaclass):
     _meta: BaseMeta
 
     def __new__(cls, name, bases, attrs, **kwargs):  # noqa C901
         meta = attrs.pop("Meta", None)
+
+        # Convert pydantic v2 compat validators to pydantic v1 validators.
+        # When users apply @root_validator or @validator from pydantic (v2),
+        # they produce PydanticDescriptorProxy objects that pydantic v1's
+        # ModelMetaclass cannot handle (deepcopy fails on the inner
+        # classmethod).  Re-wrap them with the v1 equivalents so the v1
+        # metaclass processes them correctly.
+        if PYDANTIC_V2:
+            attrs = _convert_v2_validators_to_v1(attrs)
+
         new_class = super().__new__(cls, name, bases, attrs, **kwargs)
 
         # The fact that there is a Meta field and _meta field is important: a
@@ -1781,6 +1847,22 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
         super().__init__(**data)
+
+    def dict(self, *args, **kwargs):
+        """Return model data, omitting null ``pk`` on embedded models only."""
+        exclude = kwargs.pop("exclude", None)
+        is_embedded = getattr(self._meta, "embedded", False)
+        pk_value = getattr(self, "pk", None)
+        if is_embedded and pk_value is None:
+            if exclude is None:
+                exclude = {"pk"}
+            elif isinstance(exclude, AbstractSet):
+                exclude = set(exclude)
+                exclude.add("pk")
+            elif isinstance(exclude, dict):
+                exclude = dict(exclude)
+                exclude["pk"] = True
+        return super().dict(*args, exclude=exclude, **kwargs)
 
     def __lt__(self, other):
         """Default sort: compare primary key of models."""
