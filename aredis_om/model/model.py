@@ -1627,11 +1627,71 @@ class DefaultMeta:
     encoding: str = "utf-8"
 
 
+def _convert_v2_validators_to_v1(attrs: dict) -> dict:
+    """Convert pydantic v2 validator proxies in *attrs* to pydantic v1 form.
+
+    When a user decorates a method with ``@root_validator`` or ``@validator``
+    imported from ``pydantic`` (the v2 compatibility shim), the decorator
+    creates a ``PydanticDescriptorProxy`` wrapping a ``classmethod``.
+    Pydantic v1's ``ModelMetaclass`` does not recognise these objects and
+    attempts to deepcopy them as ordinary field defaults — which fails
+    because ``classmethod`` objects are not picklable.
+
+    This helper detects such proxies and re-wraps the underlying function
+    with the corresponding ``pydantic.v1`` decorator so that the v1
+    metaclass can process them normally.
+    """
+    try:
+        from pydantic._internal._decorators import (
+            PydanticDescriptorProxy,
+            RootValidatorDecoratorInfo,
+            ValidatorDecoratorInfo,
+        )
+    except ImportError:
+        return attrs
+
+    from pydantic.v1 import root_validator as v1_root_validator
+    from pydantic.v1 import validator as v1_validator
+
+    converted = dict(attrs)
+    for attr_name, value in list(converted.items()):
+        if not isinstance(value, PydanticDescriptorProxy):
+            continue
+        func = value.wrapped.__func__ if hasattr(value.wrapped, "__func__") else value.wrapped
+        info = value.decorator_info
+
+        if isinstance(info, RootValidatorDecoratorInfo):
+            pre = info.mode == "before"
+            skip = not pre  # post-validators always need skip_on_failure
+            converted[attr_name] = v1_root_validator(
+                pre=pre, skip_on_failure=skip, allow_reuse=True
+            )(func)
+        elif isinstance(info, ValidatorDecoratorInfo):
+            converted[attr_name] = v1_validator(
+                *info.fields,
+                pre=(info.mode == "before"),
+                always=info.always,
+                each_item=info.each_item,
+                allow_reuse=True,
+            )(func)
+    return converted
+
+
 class ModelMeta(ModelMetaclass):
     _meta: BaseMeta
 
     def __new__(cls, name, bases, attrs, **kwargs):  # noqa C901
         meta = attrs.pop("Meta", None)
+
+        # Convert pydantic v2 compat validators to pydantic v1 validators.
+        # When users apply @root_validator or @validator from pydantic (v2),
+        # they produce PydanticDescriptorProxy objects that pydantic v1's
+        # ModelMetaclass cannot handle (deepcopy fails on the inner
+        # classmethod).  Re-wrap them with the v1 equivalents so the v1
+        # metaclass processes them correctly.
+        if PYDANTIC_V2:
+            attrs = _convert_v2_validators_to_v1(attrs)
+
         new_class = super().__new__(cls, name, bases, attrs, **kwargs)
 
         # The fact that there is a Meta field and _meta field is important: a
@@ -1832,9 +1892,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def validate_pk(cls, v):
         # Skip pk generation for embedded models - they don't need primary keys
         if getattr(cls._meta, "embedded", False):
-            if isinstance(v, ExpressionProxy):
-                return None
-            return v
+            return None
         if not v or isinstance(v, ExpressionProxy):
             v = cls._meta.primary_key_creator_cls().create_pk()
         return v
