@@ -1846,6 +1846,19 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         __pydantic_self__.validate_primary_key()
         super().__init__(**data)
 
+    def dict(self, *args, **kwargs):
+        exclude = kwargs.pop("exclude", None)
+        if getattr(self._meta, "embedded", False) and getattr(self, "pk", None) is None:
+            if exclude is None:
+                exclude = {"pk"}
+            elif isinstance(exclude, AbstractSet):
+                exclude = set(exclude)
+                exclude.add("pk")
+            elif isinstance(exclude, dict):
+                exclude = dict(exclude)
+                exclude["pk"] = True
+        return super().dict(*args, exclude=exclude, **kwargs)
+
     def __lt__(self, other):
         """Default sort: compare primary key of models."""
         return self.key() < other.key()

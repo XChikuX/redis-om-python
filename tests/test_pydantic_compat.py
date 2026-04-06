@@ -84,7 +84,14 @@ def test_v2_root_validator_on_embedded_hashmodel():
     assert like.pk == "alice:bob"
 
     op = Operation(likes=[like])
+    op_dict = op.dict()
+    assert "pk" not in op_dict
+    assert op_dict["likes"][0]["pk"] == "alice:bob"
+
     user = RedisUser(operations=op)
+    user_dict = user.dict()
+    assert "pk" not in user_dict["operations"]
+    assert user_dict["operations"]["likes"][0]["pk"] == "alice:bob"
     assert user.operations.likes[0].user_id == "alice"
     assert user.operations.likes[0].liked_user_id == "bob"
     assert user.operations.likes[0].pk == "alice:bob"
