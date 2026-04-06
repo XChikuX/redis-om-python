@@ -1657,6 +1657,8 @@ def _convert_v2_validators_to_v1(attrs: dict) -> dict:
     for attr_name, value in list(converted.items()):
         if not isinstance(value, PydanticDescriptorProxy):
             continue
+        # Pydantic may wrap the original function in a classmethod for v1-style
+        # validators, but some proxies expose the raw callable directly.
         func = value.wrapped.__func__ if hasattr(value.wrapped, "__func__") else value.wrapped
         info = value.decorator_info
 
@@ -1847,6 +1849,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         super().__init__(**data)
 
     def dict(self, *args, **kwargs):
+        """Return model data, omitting null ``pk`` on embedded models only."""
         exclude = kwargs.pop("exclude", None)
         if getattr(self._meta, "embedded", False) and getattr(self, "pk", None) is None:
             if exclude is None:
