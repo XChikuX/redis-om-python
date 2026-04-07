@@ -626,23 +626,34 @@ def convert_bytes_to_base64(obj):
 
 
 def convert_dataclasses_to_dicts(obj):
-    """Recursively convert dataclass instances to JSON-safe values.
+    """Recursively convert non-JSON-serializable types to JSON-safe values.
 
-    ``Coordinates`` instances are serialised as their ``"lon,lat"`` string
-    form so that RediSearch GEO indexes work correctly.  All other
-    dataclass instances are converted to plain dicts via
-    ``dataclasses.asdict()``.  Pydantic v1's ``.dict()`` does not
-    automatically serialise these, so this helper must run before
-    ``json().set()``.
+    Handles:
+    - ``Coordinates`` → ``"lon,lat"`` string (required by RediSearch GEO)
+    - Other dataclasses → plain dicts via ``dataclasses.asdict()``
+    - ``set`` / ``frozenset`` → ``list``
+    - ``uuid.UUID`` → string
+    - ``Enum`` → its ``.value``
+
+    Pydantic v1's ``.dict()`` does not automatically serialise these types,
+    so this helper must run before ``json().set()``.
     """
+    import uuid
+
     if isinstance(obj, Coordinates):
         return str(obj)  # "lon,lat" string for RediSearch GEO
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
     if isinstance(obj, dict):
         return {key: convert_dataclasses_to_dicts(value) for key, value in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [convert_dataclasses_to_dicts(item) for item in obj]
+    if isinstance(obj, (set, frozenset)):
+        return [convert_dataclasses_to_dicts(item) for item in obj]
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
     return obj
 
 

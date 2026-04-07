@@ -321,19 +321,17 @@ After base:
 Pipeline-focused upstream issues reviewed:
 
 - **#523 – Retrieve multiple records at once with pipeline**
-  - **Not addressed** in this fork.
-  - This fork still supports pipeline-backed bulk save/delete flows, but it does not add a `get_many()` API.
+  - **Addressed** in this branch.
+  - Added `get_many(pks)` classmethod to both `HashModel` and `JsonModel`.
+  - Uses an implicit non-transactional pipeline internally to fetch all keys in one round-trip.
+  - Accepts an optional explicit pipeline for composing with other commands.
+  - Silently skips missing keys (does not raise `NotFoundError` for individual misses).
 
 - **#777 – Optimize `FindQuery.update()` to use key-only search and partial HSET**
   - **Not addressed** in this fork.
   - Current pipeline behavior for bulk save/delete works and is covered by passing tests, but update-path optimization has not been implemented.
 
 Related upstream issues also checked:
-
-- **#744 – Review `count()` implementation / consider `FT.AGGREGATE`**
-  - **Partly addressed nearby, but not fully resolved.**
-  - This fork still uses `FT.SEARCH LIMIT 0 0` for `count()`, so the upstream request itself remains open.
-  - However, this branch fixed the separate `aggregate_ct()` decoded-string bug and added coverage for it.
 
 - **#519 – Set `RedisModel.Meta.database` at runtime, not import time**
   - **Partly improved, not fully resolved.**
@@ -343,6 +341,41 @@ Related upstream issues also checked:
 - **#174 / #408 – Redis cluster support / cluster migrator**
   - **Already addressed in this fork before this branch.**
   - The codebase already contains cluster-aware connection handling and migrator/index creation paths.
+
+## Changes in this branch
+
+### Docker / environment
+
+- Switched `docker-compose.yml` from `redis/redis-stack:latest` to `redis:8-alpine`.
+  Redis 8 ships with all required modules (RediSearch, RedisJSON, RedisBloom, RedisTimeSeries) built-in.
+
+### Coordinates / GEO fixes
+
+- Fixed `Coordinates` serialisation for both `JsonModel` and `HashModel`.
+  The `Coordinates` dataclass is now stored as its `"lon,lat"` string representation,
+  which is required for RediSearch GEO index queries to work correctly.
+- Allowed `Coordinates` fields in `HashModel.__init_subclass__()` validation
+  (previously all dataclass fields were rejected).
+- Added `convert_dataclasses_to_dicts()` helper in the save pipeline for both model types.
+  This helper also converts `set`, `frozenset`, `uuid.UUID`, and `Enum` values
+  for JSON-safe serialisation.
+
+### Pipeline / get_many
+
+- Added `RedisModel.get_many(pks, pipeline=None)` base method (abstract).
+- Implemented `HashModel.get_many()` using pipelined `HGETALL` commands.
+- Implemented `JsonModel.get_many()` using pipelined `JSON.GET` commands.
+- Both implementations support explicit pipeline pass-through for composing
+  with other commands (e.g. GEORADIUS) in a single network call.
+
+### Tests added
+
+- `tests/test_pipeline_geo.py` — 16 async tests covering:
+  - `get_many()` for JsonModel and HashModel (happy path, missing keys, empty list, explicit pipeline)
+  - GEORADIUS + pipeline combined operations (JSON and Hash variants)
+  - Coordinates save/get round-trip for both model types
+  - GeoFilter search after Coordinates fix
+  - Pipeline save + `get_many()` integration
 
 ## Future work
 
