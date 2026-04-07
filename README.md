@@ -77,13 +77,13 @@ $ poetry add pyredis-om
 
 ### Starting Redis
 
-Before writing any code you'll need a Redis instance with the appropriate Redis modules! The quickest way to get this is with Docker:
+Before writing any code you'll need a Redis instance with the appropriate Redis modules. The quickest way to get this is with Docker:
 
 ```sh
-docker run -p 6379:6379 -p 8001:8001 redis/redis-stack
+docker run -p 6379:6379 redis:8-alpine
 ```
 
-This launches the [redis-stack](https://redis.io/docs/stack/) an extension of Redis that adds all manner of modern data structures to Redis. You'll also notice that if you open up http://localhost:8001 you'll have access to the redis-insight GUI, a GUI you can use to visualize and work with your data in Redis.
+The current `redis:8-alpine` image includes the modules Redis OM needs for JSON and search features, so you can use a single lightweight image for local development.
 
 ## 📇 Modeling Your Data
 
@@ -425,6 +425,8 @@ pizza_place.save()
 sushi_bar.save()
 ```
 
+`Coordinates` values are stored automatically in the Redis GEO-friendly `"longitude,latitude"` format for both `HashModel` and `JsonModel`, so the same field definition works for save/get round-trips and `GeoFilter` queries.
+
 #### Querying by Location
 
 Now you can search for locations within a specific radius using `GeoFilter`:
@@ -565,6 +567,36 @@ print(redis_conn.sismember("myset", "e"))
 # Prints True
 print(redis_conn.sismember("myset", "b"))
 ```
+
+You can also compose Redis OM operations with raw Redis pipeline commands. This is useful when you want commands like `GEORADIUSBYMEMBER` and regular model fetches to share the same pipeline round-trip.
+
+```python
+from aredis_om import Field, JsonModel, Migrator
+
+
+class UserLocation(JsonModel):
+    name: str = Field(index=True)
+
+
+await Migrator().run()
+
+# Save some models first...
+nearby_users = await UserLocation.get_many(["pk1", "pk2", "pk3"])
+
+# Or mix raw Redis commands with regular Redis operations in one pipeline.
+pipe = UserLocation.db().pipeline(transaction=False)
+pipe.georadiusbymember("Users", "pk1", 100, unit="km", count=100)
+pipe.json().get(UserLocation.make_primary_key("pk1"))
+results = await pipe.execute()
+```
+
+For bulk primary-key fetches, Redis OM also provides `get_many()` on both `HashModel` and `JsonModel`:
+
+```python
+users = await UserLocation.get_many(["pk1", "pk2", "pk3"])
+```
+
+`get_many()` uses an internal pipeline so the requested models are fetched in a single network round-trip, and it also accepts an explicit `pipeline=` argument when you want to compose it with other commands.
 
 The parameters expected by each command function are those documented on the command's page on [redis.io](https://redis.io/commands/).
 
