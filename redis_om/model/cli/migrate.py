@@ -1,12 +1,13 @@
+import asyncio
+import inspect
+
 import click
 
 from redis_om.model.migrations.migrator import Migrator
 
 
-@click.command()
-@click.option("--module", default="redis_om")
-def migrate(module: str):
-    migrator = Migrator(module)
+def _run_migrations(module: str):
+    migrator = Migrator(module=module)
     migrator.detect_migrations()
 
     if migrator.migrations:
@@ -15,4 +16,14 @@ def migrate(module: str):
             print(migration)
 
         if input("Run migrations? (y/n) ") == "y":
-            migrator.run()
+            return migrator.run()
+    return None
+
+
+@click.command()
+@click.option("--module", default="redis_om")
+def migrate(module: str):
+    result = _run_migrations(module)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result

@@ -31,7 +31,7 @@ from typing import no_type_check
 from more_itertools import ichunked
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
-from typing_extensions import Protocol, get_args, get_origin
+from typing_extensions import Annotated, Protocol, get_args, get_origin
 from ulid import ULID
 
 from .. import redis
@@ -309,14 +309,36 @@ class Expression:
         return render_tree(self)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(init=False)
 class KNNExpression:
     k: int
     vector_field: ModelField
     reference_vector: bytes
+    _score_field: Optional[str]
+
+    def __init__(
+        self,
+        k: int,
+        vector_field: Any,
+        reference_vector: bytes,
+        score_field: Optional[Any] = None,
+    ):
+        self.k = k
+        self.vector_field = (
+            vector_field.field if hasattr(vector_field, "field") else vector_field
+        )
+        self.reference_vector = reference_vector
+        if score_field is None:
+            self._score_field = None
+        elif hasattr(score_field, "field"):
+            self._score_field = score_field.field.name
+        elif hasattr(score_field, "name"):
+            self._score_field = score_field.name
+        else:
+            self._score_field = str(score_field)
 
     def __str__(self):
-        return f"KNN $K @{self.vector_field.name} $knn_ref_vector"
+        return f"KNN $K @{self.vector_field.name} $knn_ref_vector AS {self.score_field}"
 
     @property
     def query_params(self) -> Dict[str, Union[str, bytes]]:
@@ -324,7 +346,7 @@ class KNNExpression:
 
     @property
     def score_field(self) -> str:
-        return f"__{self.vector_field.name}_score"
+        return self._score_field or f"__{self.vector_field.name}_score"
 
 
 ExpressionOrNegated = Union[Expression, NegatedExpression]
@@ -412,11 +434,11 @@ class ExpressionProxy:
         else:
             attr = getattr(outer_type, item)
         if isinstance(attr, self.__class__):
+            new_parents = self.parents.copy()
             new_parent = (self.field.alias, outer_type)
-            new_parents = list(set(self.parents) - set(attr.parents))
             if new_parent not in new_parents:
                 new_parents.append(new_parent)
-            attr.parents = new_parents
+            return self.__class__(attr.field, new_parents)
         return attr
 
 
@@ -443,10 +465,16 @@ def convert_datetime_to_timestamp(obj):
     elif isinstance(obj, list):
         return [convert_datetime_to_timestamp(item) for item in obj]
     elif isinstance(obj, datetime.datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=datetime.timezone.utc)
+        else:
+            obj = obj.astimezone(datetime.timezone.utc)
         return obj.timestamp()
     elif isinstance(obj, datetime.date):
         # Convert date to datetime at midnight and get timestamp
-        dt = datetime.datetime.combine(obj, datetime.time.min)
+        dt = datetime.datetime.combine(
+            obj, datetime.time.min, tzinfo=datetime.timezone.utc
+        )
         return dt.timestamp()
     else:
         return obj
@@ -480,8 +508,9 @@ def convert_timestamp_to_datetime(obj, model_fields):
                     try:
                         if isinstance(value, str):
                             value = float(value)
-                        # Use fromtimestamp to preserve local timezone behavior
-                        dt = datetime.datetime.fromtimestamp(value)
+                        dt = datetime.datetime.fromtimestamp(
+                            value, tz=datetime.timezone.utc
+                        ).replace(tzinfo=None)
                         # If the field is specifically a date, convert to date
                         if field_type is datetime.date:
                             result[key] = dt.date()
@@ -683,13 +712,6 @@ class FindQuery:
         sort_fields: Optional[List[str]] = None,
         nocontent: bool = False,
     ):
-        if not has_redisearch(model.db()):
-            raise RedisModelError(
-                "Your Redis instance does not have either the RediSearch module "
-                "or RedisJSON module installed. Querying requires that your Redis "
-                "instance has one of these modules installed."
-            )
-
         self.expressions = expressions
         self.model = model
         self.knn = knn
@@ -913,6 +935,7 @@ class FindQuery:
                     f"Docs: {ERRORS_URL}#E5"
                 )
         elif field_type is RediSearchFieldTypes.NUMERIC:
+
             def convert_numeric_value(v):
                 """Convert Enum and datetime values for NUMERIC queries."""
                 # Convert Enum to its value (fixes #108)
@@ -1195,12 +1218,20 @@ class FindQuery:
                 i_dialect = args.index("DIALECT") + 1
                 if int(args[i_dialect]) < 2:
                     args[i_dialect] = "2"
+            args += ["RETURN", "2", "$", self.knn.score_field]
 
         if self.nocontent:
             args.append("NOCONTENT")
 
         if return_query_args:
             return self.model.Meta.index_name, args
+
+        if not await has_redisearch(self.model.db()):
+            raise RedisModelError(
+                "Your Redis instance does not have either the RediSearch module "
+                "or RedisJSON module installed. Querying requires that your Redis "
+                "instance has one of these modules installed."
+            )
 
         # Reset the cache if we're executing from offset 0.
         if self.offset == 0:
@@ -1272,7 +1303,14 @@ class FindQuery:
         raw_result = await self.model.db().execute_command(*args)
         try:
             return sum(
-                [int(result[3].decode("utf-8", "ignore")) for result in raw_result[1:]]
+                [
+                    int(
+                        result[3].decode("utf-8", "ignore")
+                        if isinstance(result[3], bytes)
+                        else result[3]
+                    )
+                    for result in raw_result[1:]
+                ]
             )
         except IndexError:
             return 0
@@ -1688,6 +1726,50 @@ def _convert_v2_validators_to_v1(attrs: dict) -> dict:
     return converted
 
 
+def _convert_v2_annotation_to_v1(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin is not None:
+        converted_args = tuple(
+            _convert_v2_annotation_to_v1(arg) for arg in get_args(annotation)
+        )
+        if not converted_args:
+            return annotation
+        if origin is Union:
+            return Union[converted_args]
+        if origin is Annotated:
+            return annotation
+        if origin is Literal:
+            return annotation
+        if hasattr(annotation, "copy_with"):
+            try:
+                return annotation.copy_with(converted_args)
+            except TypeError:
+                return annotation
+        try:
+            if len(converted_args) == 1:
+                return origin[converted_args[0]]
+            return origin[converted_args]
+        except TypeError:
+            return annotation
+
+    if isinstance(annotation, type):
+        module_name = getattr(annotation, "__module__", "")
+        annotation_name = getattr(annotation, "__name__", None)
+        if (
+            module_name.startswith("pydantic.")
+            and not module_name.startswith("pydantic.v1")
+            and annotation_name
+        ):
+            try:
+                import pydantic.v1 as pydantic_v1
+
+                if hasattr(pydantic_v1, annotation_name):
+                    return getattr(pydantic_v1, annotation_name)
+            except ImportError:
+                return annotation
+    return annotation
+
+
 class ModelMeta(ModelMetaclass):
     _meta: BaseMeta
 
@@ -1702,6 +1784,12 @@ class ModelMeta(ModelMetaclass):
         # metaclass processes them correctly.
         if PYDANTIC_V2:
             attrs = _convert_v2_validators_to_v1(attrs)
+            annotations = attrs.get("__annotations__", {})
+            if annotations:
+                attrs["__annotations__"] = {
+                    key: _convert_v2_annotation_to_v1(value)
+                    for key, value in annotations.items()
+                }
 
         new_class = super().__new__(cls, name, bases, attrs, **kwargs)
 
@@ -1856,6 +1944,15 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def dict(self, *args, **kwargs):
         """Return model data, omitting null ``pk`` on embedded models only."""
         exclude = kwargs.pop("exclude", None)
+        if PYDANTIC_V2:
+            if exclude is None:
+                exclude = {"model_config"}
+            elif isinstance(exclude, AbstractSet):
+                exclude = set(exclude)
+                exclude.add("model_config")
+            elif isinstance(exclude, dict):
+                exclude = dict(exclude)
+                exclude["model_config"] = True
         is_embedded = getattr(self._meta, "embedded", False)
         pk_value = getattr(self, "pk", None)
         if is_embedded and pk_value is None:
@@ -2005,6 +2102,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 for k, v in fields.items():
                     if k.startswith("__") and k.endswith("_score"):
                         setattr(doc, k[1:], float(v))
+                    elif k.endswith("_score") and hasattr(doc, k):
+                        setattr(doc, k, float(v))
             else:
                 doc = cls(**fields)
 
@@ -2074,20 +2173,12 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def check(self):
         """Run all validations."""
-        if not PYDANTIC_V2:
-            *_, validation_error = validate_model(self.__class__, self.__dict__)
-            if validation_error:
-                raise validation_error
-        else:
-            from pydantic import TypeAdapter
-
-            adapter = TypeAdapter(self.__class__)
-            adapter.validate_python(self.__dict__)  # ty:ignore[conflicting-metaclass]
+        validate_model_data(self.__class__, self.__dict__)
 
 
 class HashModel(RedisModel, abc.ABC):
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+        super().__init_subclass__()
 
         if hasattr(cls, "__annotations__"):
             for name, field_type in cls.__annotations__.items():
@@ -2241,9 +2332,7 @@ class HashModel(RedisModel, abc.ABC):
                     separator = getattr(
                         field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                     )
-                    redisearch_field = (
-                        f"{name} TAG SEPARATOR {separator}"
-                    )
+                    redisearch_field = f"{name} TAG SEPARATOR {separator}"
                 else:
                     redisearch_field = cls.schema_for_type(name, _type, field_info)
                 schema_parts.append(redisearch_field)
@@ -2310,8 +2399,7 @@ class HashModel(RedisModel, abc.ABC):
             )
             if getattr(field_info, "full_text_search", False) is True:
                 schema = (
-                    f"{name} TAG SEPARATOR {separator} "
-                    f"{name} AS {name}_fts TEXT"
+                    f"{name} TAG SEPARATOR {separator} " f"{name} AS {name}_fts TEXT"
                 )
             else:
                 schema = f"{name} TAG SEPARATOR {separator}"
@@ -2344,7 +2432,9 @@ class HashModel(RedisModel, abc.ABC):
 
 class JsonModel(RedisModel, abc.ABC):
     @staticmethod
-    def _extract_field_info(field: Any) -> Union[FieldInfo, PydanticFieldInfo, ModelField]:
+    def _extract_field_info(
+        field: Any,
+    ) -> Union[FieldInfo, PydanticFieldInfo, ModelField]:
         """
         Extract FieldInfo from a field, handling various Pydantic versions and formats.
 
@@ -2365,15 +2455,11 @@ class JsonModel(RedisModel, abc.ABC):
         return field
 
     def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
         # Generate the RediSearch schema once to validate fields.
         cls.redisearch_schema()
 
     def __init__(self, *args, **kwargs):
-        if not has_redis_json(self.db()):
-            log.error(
-                "Your Redis instance does not have the RedisJson module "
-                "loaded. JsonModel depends on RedisJson."
-            )
         super().__init__(*args, **kwargs)
 
     async def save(
@@ -2467,7 +2553,9 @@ class JsonModel(RedisModel, abc.ABC):
                 # 3. Handle missing fields (Pydantic v2 vs v1 compatibility)
                 try:
                     # In v2, we try to generate FieldInfo from the raw annotation
-                    fields[name] = PydanticFieldInfo.from_annotation(cls.__annotations__[name])
+                    fields[name] = PydanticFieldInfo.from_annotation(
+                        cls.__annotations__[name]
+                    )
                 except (AttributeError, NameError):
                     continue
 
@@ -2631,7 +2719,7 @@ class JsonModel(RedisModel, abc.ABC):
             # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
             # a proper type, we can pull the type information from the origin of the first argument.
             if not isinstance(typ, type):
-                type_args = typing_get_args(field_info.annotation)
+                type_args = typing_get_args(typ)
                 typ = (
                     getattr(type_args[0], "__origin__", type_args[0])
                     if type_args

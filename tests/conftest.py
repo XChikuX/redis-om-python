@@ -24,7 +24,7 @@ def event_loop(request):
     loop.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def redis():
     yield get_redis_connection()
 

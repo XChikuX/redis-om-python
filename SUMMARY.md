@@ -239,14 +239,14 @@ After base:
 
 | Item | Verdict | Notes |
 |---|---|---|
-| Bug 1: `Migrator(conn=redis)` invalid constructor arg | **Real** | `Migrator.__init__` accepts a `module` parameter (default `None`) but does not accept `conn`; this should raise `TypeError`, so the test fixture is wrong. |
-| Bug 2: async CLI migration entry point | **Real** | `aredis_om/model/cli/migrate.py` calls async methods without `await`. |
-| Bug 3: `lru_cache` on async functions | **Real** | `aredis_om/checks.py` decorates async functions with `@lru_cache`, which caches coroutine objects, not awaited results. |
+| Bug 1: `Migrator(conn=redis)` invalid constructor arg | **Real** | Confirmed during review and fixed in this branch by adding an explicit optional `conn` parameter. |
+| Bug 2: async CLI migration entry point | **Real** | Confirmed during review and fixed in this branch so the async migration path actually runs. |
+| Bug 3: `lru_cache` on async functions | **Real** | Confirmed during review and fixed in this branch by replacing it with an async-safe cache. |
 | Bug 4: `Not.query` hardcoded string | **Real but likely dormant** | `aredis_om/model/query_resolver.py` returns a literal placeholder string; the helper appears incomplete / unused. |
-| Bug 5: timezone-dependent datetime conversion | **Real** | `datetime.fromtimestamp()` restores local time, not stable UTC semantics. |
-| Bug 6: `aggregate_ct()` decode on string response | **Real** | Default connections use `decode_responses=True`, so `.decode()` on a `str` will fail. |
-| Bug 7: missing `test_tag_separator.py` | **Partly real** | There is no dedicated async `tests/test_tag_separator.py`, and internal files still mention it, but related separator behavior is partially covered elsewhere in hash/json tests. |
-| Bug 8: `ExpressionProxy.__getattr__` mutates shared state | **Plausible state-sharing hazard** | The current code does mutate `attr.parents` on a class-level proxy; I did not reproduce a user-facing failure during this review, but the pattern is still risky and worth hardening. |
+| Bug 5: timezone-dependent datetime conversion | **Real** | Confirmed during review and fixed in this branch with stable UTC-based conversion. |
+| Bug 6: `aggregate_ct()` decode on string response | **Real** | Confirmed during review and fixed in this branch; a regression test now covers decoded string responses. |
+| Bug 7: missing `test_tag_separator.py` | **Partly real** | A dedicated async `tests/test_tag_separator.py` has now been added in this branch. |
+| Bug 8: `ExpressionProxy.__getattr__` mutates shared state | **Plausible state-sharing hazard** | The risky mutation pattern was present during review; this branch hardens it by returning isolated proxy instances. |
 
 ## Additional issues found while checking
 
@@ -270,9 +270,69 @@ After base:
 
 ## Validation notes from this review
 
-- `poetry build` **passed**
-- `make lint` **failed before linting** because `docker-compose` was not available
-- `poetry run pytest -n auto -vv ./tests/ ./tests_sync/ --maxfail=1` **failed** with existing test/runtime issues at current `HEAD`
+- Initial baseline:
+  - `poetry build` **passed**
+  - `make lint` **failed before linting** because `docker-compose` was not available
+  - focused pytest initially exposed the async check, migration, pydantic, KNN, and response-decoding regressions described above
+
+## Status after implementing fixes
+
+- Fixed in code:
+  - async capability checks now await correctly and use an async-safe cache
+  - `Migrator` now accepts an optional explicit `conn=` override
+  - async CLI migration path now actually runs migrations
+  - `FindQuery` no longer performs async checks from a sync constructor
+  - `aggregate_ct()` now handles decoded string responses
+  - datetime save/load now uses stable UTC semantics
+  - `ExpressionProxy` now returns isolated parent chains instead of mutating shared proxies
+  - `KNNExpression` now accepts field proxies, aliases score fields correctly, and hydrates score values on results
+  - `RedisModel.dict()` no longer leaks `model_config` into persisted payloads under Pydantic v2
+  - `get_redis_connection()` now reads `REDIS_OM_URL` at call time instead of import time
+
+- Added tests:
+  - `tests/test_regressions.py`
+  - `tests/test_tag_separator.py`
+
+- Targeted validation now passing:
+  - `poetry build`
+  - fixed-area regressions (`tests/test_regressions.py`, `tests/test_tag_separator.py`, `tests/test_bug_fixes.py`, `tests/test_knn_expression.py`)
+  - pipeline-focused tests:
+    - `tests/test_json_model.py::test_saves_many_implicit_pipeline`
+    - `tests/test_json_model.py::test_saves_many_explicit_transaction`
+    - `tests/test_json_model.py::test_delete_many_implicit_pipeline`
+  - additional compatibility checks:
+    - `tests/test_json_model.py::test_pagination`
+    - `tests/test_json_model.py::test_merged_model_error`
+    - `tests/test_hash_model.py::test_saves_many`
+    - `tests/test_pydantic_integrations.py::test_email_str`
+
+## Upstream open-issue comparison (`redis/redis-om-python`)
+
+Pipeline-focused upstream issues reviewed:
+
+- **#523 – Retrieve multiple records at once with pipeline**
+  - **Not addressed** in this fork.
+  - This fork still supports pipeline-backed bulk save/delete flows, but it does not add a `get_many()` API.
+
+- **#777 – Optimize `FindQuery.update()` to use key-only search and partial HSET**
+  - **Not addressed** in this fork.
+  - Current pipeline behavior for bulk save/delete works and is covered by passing tests, but update-path optimization has not been implemented.
+
+Related upstream issues also checked:
+
+- **#744 – Review `count()` implementation / consider `FT.AGGREGATE`**
+  - **Partly addressed nearby, but not fully resolved.**
+  - This fork still uses `FT.SEARCH LIMIT 0 0` for `count()`, so the upstream request itself remains open.
+  - However, this branch fixed the separate `aggregate_ct()` decoded-string bug and added coverage for it.
+
+- **#519 – Set `RedisModel.Meta.database` at runtime, not import time**
+  - **Partly improved, not fully resolved.**
+  - This branch fixes one adjacent pain point by making `get_redis_connection()` re-read `REDIS_OM_URL` at call time.
+  - It does **not** redesign `Meta.database` / `_meta.database` to be late-bound or callable-injected, so the upstream request is still only partially covered.
+
+- **#174 / #408 – Redis cluster support / cluster migrator**
+  - **Already addressed in this fork before this branch.**
+  - The codebase already contains cluster-aware connection handling and migrator/index creation paths.
 
 ## Future work
 
