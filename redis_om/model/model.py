@@ -185,6 +185,11 @@ def has_model_field_mapping(model: Any) -> bool:
     return hasattr(model, "model_fields") or hasattr(model, "__fields__")
 
 
+def is_model_field_instance(value: Any) -> bool:
+    """Detect both legacy and compatibility ModelField-like objects."""
+    return hasattr(value, "name") and hasattr(value, "field_info")
+
+
 def validate_model_data(model: Any, values: Any) -> Any:
     """Validate model data with model_validate or parse_obj, as available."""
     if hasattr(model, "model_validate"):
@@ -1093,17 +1098,17 @@ class FindQuery:
             expression.left, NegatedExpression
         ):
             result += f"({cls.resolve_redisearch_query(expression.left)})"
-        elif isinstance(expression.left, ModelField):
+        elif is_model_field_instance(expression.left):
             field_type = cls.resolve_field_type(expression.left, expression.op)
             field_name = expression.left.name
             field_info = expression.left.field_info
-            # Build field_name using the specific parents for this expression
+            resolved_field_name = field_name
             if expression.parents:
                 prefix = "_".join([p[0] for p in expression.parents])
-                field_name = f"{prefix}_{field_name}"
+                resolved_field_name = f"{prefix}_{field_name}"
             if not field_info or not getattr(field_info, "index", None):
                 raise QueryNotSupportedError(
-                    f"You tried to query by a field ({field_name}) "
+                    f"You tried to query by a field ({resolved_field_name}) "
                     f"that isn't indexed. Docs: {ERRORS_URL}#E6"
                 )
         elif isinstance(expression.left, FieldInfo):
@@ -1148,7 +1153,7 @@ class FindQuery:
                 raise QuerySyntaxError("Could not resolve field type. See docs: TODO")
             elif not field_info:
                 raise QuerySyntaxError("Could not resolve field info. See docs: TODO")
-            elif isinstance(right, ModelField):
+            elif is_model_field_instance(right):
                 raise QueryNotSupportedError(
                     "Comparing fields is not supported. See docs: TODO"
                 )
