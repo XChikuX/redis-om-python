@@ -1489,7 +1489,18 @@ class FieldInfo(PydanticFieldInfo):
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
         separator = kwargs.pop("separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
-        super().__init__(default=default, **kwargs)
+        # When PYDANTIC_V2=True, `Undefined` is pydantic_core.PydanticUndefined.
+        # Pydantic v1's FieldInfo only treats its own `Undefined` sentinel as
+        # "no default" / "required".  Passing pydantic v2's sentinel makes
+        # pydantic v1 treat the field as having a concrete default (the sentinel
+        # object itself), setting required=False.  Convert it to the v1 sentinel
+        # so that required fields are correctly marked as required.
+        if PYDANTIC_V2 and default is Undefined:
+            from pydantic.v1.fields import Undefined as _V1Undefined
+
+            super().__init__(default=_V1Undefined, **kwargs)
+        else:
+            super().__init__(default=default, **kwargs)
         self.primary_key = primary_key
         self.sortable = sortable
         self.case_sensitive = case_sensitive
@@ -1823,7 +1834,18 @@ class ModelMeta(ModelMetaclass):
                     for key, value in annotations.items()
                 }
 
-        new_class = super().__new__(cls, name, bases, attrs, **kwargs)
+        # pydantic v1 raises NameError when a field name shadows a BaseModel
+        # built-in (e.g. "dict", "json", "schema").  Redis OM intentionally
+        # allows any user-defined field name, so we temporarily suppress that
+        # check during class creation.
+        import pydantic.v1.main as _pv1_main
+
+        _orig_validate_field_name = _pv1_main.validate_field_name
+        _pv1_main.validate_field_name = lambda _bases, _field_name: None  # noqa: E731
+        try:
+            new_class = super().__new__(cls, name, bases, attrs, **kwargs)
+        finally:
+            _pv1_main.validate_field_name = _orig_validate_field_name
 
         # The fact that there is a Meta field and _meta field is important: a
         # user may have given us a Meta object with their configuration, while
@@ -1959,15 +1981,30 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     if PYDANTIC_V2:
         from pydantic import ConfigDict
 
-        model_config = ConfigDict(
+        # Annotate as ClassVar so pydantic v1's ModelMetaclass does not include
+        # this as a model field (which would produce empty schema parts and show
+        # up in model repr).
+        model_config: ClassVar[dict] = ConfigDict(
             from_attributes=True, arbitrary_types_allowed=True, extra="allow"
         )
+
+        # pydantic.v1.BaseModel (used under the hood) ignores model_config and
+        # requires a nested Config class.  Define one so that extra fields are
+        # allowed, arbitrary types work, and smart_union avoids silently coercing
+        # int/str Union values.
+        class Config:
+            orm_mode = True
+            arbitrary_types_allowed = True
+            extra = "allow"
+            smart_union = True
+
     else:
 
         class Config:
             orm_mode = True
             arbitrary_types_allowed = True
             extra = "allow"
+            smart_union = True
 
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
@@ -2075,8 +2112,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 primary_keys += 1
         if primary_keys == 0:
             raise RedisModelError("You must define a primary key for the model")
-        elif primary_keys == 2:
-            cls.__fields__.pop("pk")
         elif primary_keys > 2:
             raise RedisModelError("You must define only one primary key for a model")
 
@@ -2130,6 +2165,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             # $ means a json entry
             if fields.get("$"):
                 json_fields = json.loads(fields.pop("$"))
+                model_fields = get_model_fields(cls)
+                json_fields = convert_timestamp_to_datetime(json_fields, model_fields)
+                json_fields = convert_base64_to_bytes(json_fields, model_fields)
                 doc = cls(**json_fields)
                 for k, v in fields.items():
                     if k.startswith("__") and k.endswith("_score"):
@@ -2137,6 +2175,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                     elif k.endswith("_score") and hasattr(doc, k):
                         setattr(doc, k, float(v))
             else:
+                model_fields = get_model_fields(cls)
+                fields = convert_empty_strings_to_none(fields, model_fields)
+                fields = convert_base64_to_bytes(fields, model_fields)
                 doc = cls(**fields)
 
             docs.append(doc)
@@ -2262,7 +2303,7 @@ class HashModel(RedisModel, abc.ABC):
             origin = get_origin(outer_type)
             if origin:
                 for typ in (Set, Mapping, List):
-                    if issubclass(origin, typ):
+                    if isinstance(origin, type) and issubclass(origin, typ):
                         raise RedisModelError(
                             f"HashModels cannot index set, list, "
                             f"or mapping fields. Field: {name}"
@@ -2862,13 +2903,15 @@ class JsonModel(RedisModel, abc.ABC):
                         "List and tuple fields cannot be indexed for full-text "
                         f"search. Problem field: {name}. See docs: TODO"
                     )
-                # List/tuple fields are indexed as TAG fields and can be sortable
+                if sortable is True:
+                    raise RedisModelError(
+                        "In this Preview release, list and tuple fields cannot be "
+                        f"marked as sortable. Problem field: {name}. See docs: TODO"
+                    )
                 separator = getattr(
                     field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                 )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
-                if sortable is True:
-                    schema += " SORTABLE"
                 if case_sensitive is True:
                     schema += " CASESENSITIVE"
             elif typ is bool:

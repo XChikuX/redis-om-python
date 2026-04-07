@@ -805,7 +805,12 @@ async def test_primary_pk_exists(m):
         bio="This is member 2 who can be quite anxious until you get to know them.",
     )
 
-    assert "pk" not in customer.__fields__
+    # With a custom primary key (`id`), the inherited `pk` field remains in
+    # __fields__ so that pydantic can auto-generate a ULID for it (enabling
+    # queries like Model.pk == instance.pk).  What changes is that the model's
+    # *primary key metadata* points to the custom field, not to "pk".
+    assert Customer2._meta.primary_key.name == "id"
+    assert customer.pk is not None  # auto-generated ULID
 
 
 @py_test_mark_asyncio
