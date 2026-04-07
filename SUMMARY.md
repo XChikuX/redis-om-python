@@ -3,7 +3,7 @@
 ## Scope of this review
 
 - Reviewed the current repository layout and the main implementation areas.
-- Reviewed commit history from `bdfe7ad379a921215e26499f62f2fb55b4e731ea` (`sync version`) through `HEAD`.
+- Reviewed commit history from `bdfe7ad379a921215e26499f62f2fb55b4e731ea` (commit message: `sync version`) through `HEAD`.
 - Spot-checked the bug list you provided and searched for a few related issues.
 
 ## Repository structure
@@ -224,7 +224,7 @@ After base:
    - Capability checks and the async CLI are clear examples.
 
 3. **Tooling drift exists**
-   - The Makefile still uses `docker-compose`, which failed in this environment where only `docker compose` exists.
+   - The Makefile still uses the older `docker-compose` command; environments that only provide Docker Compose v2 as `docker compose` will fail on those targets.
    - Some internal notes still refer to removed checked-in `tests_sync` content.
 
 4. **Commit history is noisy**
@@ -235,20 +235,20 @@ After base:
    - Build succeeded locally, but test and lint runs exposed existing breakage and style issues.
 
 6. **A few dead / half-finished code paths remain**
-   - `query_resolver.py` looks partially implemented and apparently unused by the main query path.
+   - `query_resolver.py` looks partially implemented; during this review I did not find imports of it outside its own module.
 
 ## Bug review of the provided list
 
 | Item | Verdict | Notes |
 |---|---|---|
-| Bug 1: `Migrator(conn=redis)` invalid constructor arg | **Real** | `Migrator.__init__` only accepts `module=None`; this should raise `TypeError`, so the test fixture is wrong. |
+| Bug 1: `Migrator(conn=redis)` invalid constructor arg | **Real** | `Migrator.__init__` accepts a `module` parameter (default `None`) but does not accept `conn`; this should raise `TypeError`, so the test fixture is wrong. |
 | Bug 2: async CLI migration entry point | **Real** | `aredis_om/model/cli/migrate.py` calls async methods without `await`. |
 | Bug 3: `lru_cache` on async functions | **Real** | `aredis_om/checks.py` decorates async functions with `@lru_cache`, which caches coroutine objects, not awaited results. |
 | Bug 4: `Not.query` hardcoded string | **Real but likely dormant** | `aredis_om/model/query_resolver.py` returns a literal placeholder string; the helper appears incomplete / unused. |
 | Bug 5: timezone-dependent datetime conversion | **Real** | `datetime.fromtimestamp()` restores local time, not stable UTC semantics. |
 | Bug 6: `aggregate_ct()` decode on string response | **Real** | Default connections use `decode_responses=True`, so `.decode()` on a `str` will fail. |
 | Bug 7: missing `test_tag_separator.py` | **Partly real** | There is no dedicated async `tests/test_tag_separator.py`, and internal files still mention it, but related separator behavior is partially covered elsewhere in hash/json tests. |
-| Bug 8: `ExpressionProxy.__getattr__` mutates shared state | **Plausible / low confidence** | The current code still mutates `attr.parents` on a class-level proxy, so this is worth hardening even though recent fixes reduced the obvious failure mode. |
+| Bug 8: `ExpressionProxy.__getattr__` mutates shared state | **Plausible state-sharing hazard** | The current code does mutate `attr.parents` on a class-level proxy; I did not reproduce a user-facing failure during this review, but the pattern is still risky and worth hardening. |
 
 ## Additional issues found while checking
 
