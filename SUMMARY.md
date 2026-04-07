@@ -39,9 +39,7 @@
 ├── pyproject.toml            packaging, deps, script entrypoints
 ├── tox.ini                   test env matrix
 ├── README.md                 primary project overview
-├── IMPLEMENTATION_COMPLETE.md
-├── test_execution_report.py
-└── test_implementation_status.py
+└── auxiliary review files    implementation / test status notes
 ```
 
 ## What this repo is
@@ -225,7 +223,7 @@ After base:
 
 3. **Tooling drift exists**
    - The Makefile still uses the older `docker-compose` command; environments that only provide Docker Compose v2 as `docker compose` will fail on those targets.
-   - Some internal notes still refer to removed checked-in `tests_sync` content.
+   - Some internal notes still lag behind the current generated-`tests_sync` workflow.
 
 4. **Commit history is noisy**
    - There are many version bumps, “minor changes”, “works?”, and repeated dependency edits.
@@ -235,7 +233,7 @@ After base:
    - Build succeeded locally, but test and lint runs exposed existing breakage and style issues.
 
 6. **A few dead / half-finished code paths remain**
-   - `query_resolver.py` looks partially implemented; during this review I did not find imports of it outside its own module.
+   - `query_resolver.py` still looks under-explained and would benefit from clearer ownership and tests around its role in query translation.
 
 ## Bug review of the provided list
 
