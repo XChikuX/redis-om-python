@@ -625,6 +625,27 @@ def convert_bytes_to_base64(obj):
         return obj
 
 
+def convert_dataclasses_to_dicts(obj):
+    """Recursively convert dataclass instances to JSON-safe values.
+
+    ``Coordinates`` instances are serialised as their ``"lon,lat"`` string
+    form so that RediSearch GEO indexes work correctly.  All other
+    dataclass instances are converted to plain dicts via
+    ``dataclasses.asdict()``.  Pydantic v1's ``.dict()`` does not
+    automatically serialise these, so this helper must run before
+    ``json().set()``.
+    """
+    if isinstance(obj, Coordinates):
+        return str(obj)  # "lon,lat" string for RediSearch GEO
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    if isinstance(obj, dict):
+        return {key: convert_dataclasses_to_dicts(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [convert_dataclasses_to_dicts(item) for item in obj]
+    return obj
+
+
 def convert_base64_to_bytes(obj, model_fields):
     """Convert base64-encoded strings back to bytes based on model field types."""
     import base64
@@ -2168,6 +2189,29 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return len(models)
 
     @classmethod
+    async def get_many(
+        cls: Type["Model"],
+        pks: Sequence[Any],
+        pipeline: Optional[redis.client.Pipeline] = None,
+    ) -> Sequence["Model"]:
+        """Retrieve multiple model instances by primary key using a pipeline.
+
+        This minimises network overhead by fetching all records in a single
+        round-trip instead of issuing one request per key.
+
+        Args:
+            pks: A sequence of primary key values.
+            pipeline: An optional explicit Redis pipeline.  When *None* an
+                implicit pipeline is created automatically.
+
+        Returns:
+            A list of model instances in the same order as *pks*.  Missing
+            keys are silently skipped (no ``NotFoundError`` is raised for
+            individual missing keys).
+        """
+        raise NotImplementedError
+
+    @classmethod
     def redisearch_schema(cls):
         raise NotImplementedError
 
@@ -2193,8 +2237,10 @@ class HashModel(RedisModel, abc.ABC):
                     raise RedisModelError(
                         f"HashModels cannot index embedded model fields. Field: {name}"
                     )
-                elif isinstance(field_type, type) and dataclasses.is_dataclass(
-                    field_type
+                elif (
+                    isinstance(field_type, type)
+                    and dataclasses.is_dataclass(field_type)
+                    and not issubclass(field_type, Coordinates)
                 ):
                     raise RedisModelError(
                         f"HashModels cannot index dataclass fields. Field: {name}"
@@ -2215,7 +2261,9 @@ class HashModel(RedisModel, abc.ABC):
                 raise RedisModelError(
                     f"HashModels cannot index embedded model fields. Field: {name}"
                 )
-            elif dataclasses.is_dataclass(outer_type):
+            elif dataclasses.is_dataclass(outer_type) and not issubclass(
+                outer_type, Coordinates
+            ):
                 raise RedisModelError(
                     f"HashModels cannot index dataclass fields. Field: {name}"
                 )
@@ -2230,6 +2278,7 @@ class HashModel(RedisModel, abc.ABC):
         document = self.dict()
         document = convert_datetime_to_timestamp(document)
         document = convert_bytes_to_base64(document)
+        document = convert_dataclasses_to_dicts(document)
 
         # Then apply jsonable encoding for other types
         document = jsonable_encoder(document)
@@ -2277,6 +2326,40 @@ class HashModel(RedisModel, abc.ABC):
             document = convert_base64_to_bytes(document, model_fields)
             result = cls.parse_obj(document)
         return result
+
+    @classmethod
+    async def get_many(
+        cls: Type["Model"],
+        pks: Sequence[Any],
+        pipeline: Optional[redis.client.Pipeline] = None,
+    ) -> Sequence["Model"]:
+        """Retrieve multiple HashModel instances by primary key using a pipeline."""
+        if not pks:
+            return []
+        keys = [cls.make_primary_key(pk) for pk in pks]
+        if pipeline is not None:
+            for key in keys:
+                pipeline.hgetall(key)
+            return []  # caller will execute the pipeline
+        db = cls.db().pipeline(transaction=False)
+        for key in keys:
+            db.hgetall(key)
+        results = await db.execute()
+        model_fields = get_model_fields(cls)
+        models = []
+        for document in results:
+            if not document:
+                continue
+            document = convert_empty_strings_to_none(document, model_fields)
+            document = convert_base64_to_bytes(document, model_fields)
+            try:
+                models.append(cls.parse_obj(document))
+            except TypeError:
+                document = decode_redis_value(document, cls.Meta.encoding)
+                document = convert_empty_strings_to_none(document, model_fields)
+                document = convert_base64_to_bytes(document, model_fields)
+                models.append(cls.parse_obj(document))
+        return models
 
     @classmethod
     @no_type_check
@@ -2472,6 +2555,7 @@ class JsonModel(RedisModel, abc.ABC):
         document = self.dict()
         document = convert_datetime_to_timestamp(document)
         document = convert_bytes_to_base64(document)
+        document = convert_dataclasses_to_dicts(document)
 
         # TODO: Wrap response errors in a custom exception?
         await db.json().set(self.key(), Path.root_path(), document)
@@ -2525,6 +2609,34 @@ class JsonModel(RedisModel, abc.ABC):
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
         return validate_model_data(cls, document_data)
+
+    @classmethod
+    async def get_many(
+        cls: Type["Model"],
+        pks: Sequence[Any],
+        pipeline: Optional[redis.client.Pipeline] = None,
+    ) -> Sequence["Model"]:
+        """Retrieve multiple JsonModel instances by primary key using a pipeline."""
+        if not pks:
+            return []
+        keys = [cls.make_key(pk) for pk in pks]
+        if pipeline is not None:
+            for key in keys:
+                pipeline.json().get(key)
+            return []  # caller will execute the pipeline
+        db = cls.db().pipeline(transaction=False)
+        for key in keys:
+            db.json().get(key)
+        results = await db.execute()
+        model_fields = get_model_fields(cls)
+        models = []
+        for document_data in results:
+            if document_data is None:
+                continue
+            document_data = convert_timestamp_to_datetime(document_data, model_fields)
+            document_data = convert_base64_to_bytes(document_data, model_fields)
+            models.append(validate_model_data(cls, document_data))
+        return models
 
     @classmethod
     def redisearch_schema(cls):
