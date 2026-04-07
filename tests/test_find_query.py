@@ -183,6 +183,50 @@ async def test_find_query_eq(m):
 
 
 @py_test_mark_asyncio
+async def test_find_query_eq_embedded_field(key_prefix):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class Address(EmbeddedJsonModel):
+        city: str = Field(index=True)
+
+    class Member(BaseJsonModel):
+        address: Address
+
+    model_name, fq = await FindQuery(
+        expressions=[Member.address.city == "Portland"], model=Member
+    ).get_query()
+    assert fq == ["FT.SEARCH", model_name, "@address_city:{Portland}", "LIMIT", 0, 1000]
+
+
+@py_test_mark_asyncio
+async def test_find_query_in_embedded_field(key_prefix):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class Personality(EmbeddedJsonModel):
+        mbti: str = Field(index=True)
+
+    class Member(BaseJsonModel):
+        personality: Personality
+
+    model_name, fq = await FindQuery(
+        expressions=[Member.personality.mbti << ["INTJ", "ENTP"]],
+        model=Member,
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "(@personality_mbti:{INTJ|ENTP})",
+        "LIMIT",
+        0,
+        1000,
+    ]
+
+
+@py_test_mark_asyncio
 async def test_find_query_ne(m):
     model_name, fq = await FindQuery(
         expressions=[m.Member.first_name != "Andrew"], model=m.Member
