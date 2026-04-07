@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyredis-om"
-version = "0.4.3"
+version = "0.4.4"
 description = "A true `redis-om` alternative, built out of frustration."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Srikanth <srikanth@psync.club>"]
@@ -37,13 +37,13 @@ include=[
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-redis = "^6.2.0"
+redis = "^7.4.0"
 pydantic = ">=1.10.26"
 click = "^8.1.7"
 types-redis = "^4.6.0"
 python-ulid = "^3.0.0"
-hiredis = "^3.2.1"
-more-itertools = "^10.7.0"
+hiredis = "^3.3.1"
+more-itertools = "^11.0.1"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.16"
