@@ -18,8 +18,8 @@ from aredis_om.model.model import (
     convert_timestamp_to_datetime,
 )
 from aredis_om.model.query_resolver import Not
-from redis_om import has_redis_json as sync_has_redis_json
-from redis_om import has_redisearch as sync_has_redisearch
+from tests._sync_redis import has_redis_json as sync_has_redis_json
+from tests._sync_redis import has_redisearch as sync_has_redisearch
 
 from .conftest import py_test_mark_asyncio
 

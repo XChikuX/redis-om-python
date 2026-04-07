@@ -9,9 +9,7 @@ import pytest
 import pytest_asyncio
 
 from aredis_om import Field, HashModel, JsonModel, Migrator
-
-# We need to run this check as sync code (during tests) even in async mode
-from redis_om import has_redisearch
+from tests._sync_redis import has_redisearch
 
 from .conftest import py_test_mark_asyncio
 

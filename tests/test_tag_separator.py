@@ -5,7 +5,7 @@ import abc
 import pytest
 
 from aredis_om import Field, HashModel, JsonModel, Migrator
-from redis_om import has_redis_json, has_redisearch
+from tests._sync_redis import has_redis_json, has_redisearch
 
 from .conftest import py_test_mark_asyncio
 
