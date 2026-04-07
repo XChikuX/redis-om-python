@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
+from aredis_om._compat import PYDANTIC_V2
 from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
 
 try:
@@ -99,6 +100,47 @@ def test_v1_validator_on_hashmodel():
         tag: str = "default"
 
         @v1_validator("tag", always=True, allow_reuse=True)
+        def normalize_tag(cls, v):
+            return v.upper()
+
+        class Meta:
+            embedded = True
+
+    item = TaggedItem(name="test", tag="hello")
+    assert item.tag == "HELLO"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
+def test_v2_root_validator_still_supported_as_compat_path():
+    from pydantic import root_validator
+
+    class EmbeddedLike(HashModel):
+        user_id: str
+        liked_user_id: str
+
+        @root_validator(skip_on_failure=True)
+        def assign_pk(cls, values):
+            values["pk"] = ":".join(
+                sorted([values["user_id"], values["liked_user_id"]])
+            )
+            return values
+
+        class Meta:
+            embedded = True
+
+    like = EmbeddedLike(user_id="alice", liked_user_id="bob")
+    assert like.pk == "alice:bob"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
+def test_v2_validator_still_supported_as_compat_path():
+    from pydantic import validator as v2_validator
+
+    class TaggedItem(HashModel):
+        name: str
+        tag: str = "default"
+
+        @v2_validator("tag", always=True, allow_reuse=True)
         def normalize_tag(cls, v):
             return v.upper()
 
