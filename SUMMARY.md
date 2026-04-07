@@ -292,6 +292,7 @@ After base:
 - Added tests:
   - `tests/test_regressions.py`
   - `tests/test_tag_separator.py`
+  - updated Pydantic-focused tests to be explicitly v1-first (`tests/_compat.py`, `tests/test_pydantic_compat.py`)
 
 - Targeted validation now passing:
   - `poetry build`
@@ -305,6 +306,15 @@ After base:
     - `tests/test_json_model.py::test_merged_model_error`
     - `tests/test_hash_model.py::test_saves_many`
     - `tests/test_pydantic_integrations.py::test_email_str`
+
+## Pydantic stance in this fork
+
+- The implementation remains **Pydantic v1-focused**.
+- Pydantic v2 is treated as a compatibility layer / fallback, not the primary programming model.
+- The test suite was adjusted the same way:
+  - shared test type imports now prefer `pydantic.v1`
+  - validator-focused tests now exercise `pydantic.v1` decorators directly
+  - v2 compatibility support remains in the codebase, but it is no longer the center of the test story
 
 ## Upstream open-issue comparison (`redis/redis-om-python`)
 

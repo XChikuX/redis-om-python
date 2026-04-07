@@ -1322,7 +1322,9 @@ class FindQuery:
         return self.execute()
 
     def page(self, offset=0, limit=10):
-        return self.copy(offset=offset, limit=limit).execute(exhaust_results=False)
+        return self.copy(offset=offset, limit=limit).execute(
+            exhaust_results=False
+        )
 
     def sort_by(self, *fields: str):
         if not fields:
@@ -1981,7 +1983,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return db.delete(*pks)
 
     @classmethod
-    def delete(cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None) -> int:
+    def delete(
+        cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> int:
         """Delete data at this key."""
         db = cls._get_db(pipeline)
 
