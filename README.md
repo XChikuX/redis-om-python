@@ -70,14 +70,14 @@ The current release includes:
 
 ## 💻 Installation
 
-Installation is simple with `pip`, Poetry, or Pipenv.
+Installation is simple with `pip` or `uv`.
 
 ```sh
 # With pip
 $ pip install pyredis-om
 
-# Or, using Poetry
-$ poetry add pyredis-om
+# Or, using uv
+$ uv add pyredis-om
 ```
 
 ## 🏁 Getting started

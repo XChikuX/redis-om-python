@@ -181,7 +181,7 @@ tests_sync/            # Synchronous tests
 - `_compat.py` — Pydantic v1 code paths only reachable on older Pydantic versions
 
 ## Version
-- **Current Version:** 0.4.4
+- **Current Version:** 0.5.0b2
 - **Branch:** main
 
 
@@ -196,16 +196,16 @@ Project: redis-om-python (fork: pyredis-om)
 Overview
 - Python library providing object mapping (OM) for Redis, with both async (primary) and generated sync APIs.
 - The async package lives under aredis_om/. A sync mirror is generated into redis_om/ via unasync (see make_sync.py). Tests are mirrored similarly from tests/ to tests_sync/.
-- Tooling is Poetry for packaging and venv management, pytest for tests, isort/black/flake8/mypy/bandit for lint, and tox for matrix runs. Local Redis services are provided via docker-compose.
+- Tooling is **uv** for packaging and venv management (PEP 621 format in pyproject.toml). pytest for tests, ruff/black/flake8/mypy/bandit for lint, and tox for matrix runs. Local Redis services are provided via docker-compose.
 
 Prerequisites
 - Python >= 3.10
-- Poetry available on PATH
+- uv available on PATH (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - Docker installed (to run local Redis services)
 
 Quick start
 - Create the virtualenv and install dependencies:
-  poetry install
+  uv sync --all-extras
 - Generate sync modules and mirrored tests (also done implicitly by many make targets):
   make sync
 - Bring up Redis services (`redis:8-alpine` on 6380; OSS Redis on 6381):
@@ -218,17 +218,15 @@ Common commands
   make install
 - Generate sync package/tests:
   make sync
-- Lint (isort, black check, flake8, mypy, bandit) and build dist first:
+- Lint (ruff, black check, flake8, mypy, bandit) and build dist first:
   make lint
-- Auto-format (isort + black):
+- Auto-format (ruff, isort + black):
   make format
 - Run full test suite (async + sync) against the module-enabled local Redis service:
   make test
   # Produces coverage, brings Redis up via docker-compose and tears it down
 - Run tests specifically against OSS Redis (no modules):
   make test_oss
-- Open a Poetry shell:
-  make shell
 - Build a source/wheel distribution:
   make dist
 - Clean generated artifacts and containers:
@@ -236,16 +234,16 @@ Common commands
 
 Running tests directly with pytest
 - Ensure Redis is running and REDIS_OM_URL is set (see Quick start). Then:
-  poetry run pytest -n auto -vv tests/ tests_sync/ --cov-report term-missing --cov aredis_om redis_om
+  uv run pytest -n auto -vv tests/ tests_sync/ --cov-report term-missing --cov aredis_om redis_om
 - Run a single test file:
-  poetry run pytest tests/test_hash_model.py -vv
+  uv run pytest tests/test_hash_model.py -vv
 - Run a single test by node id:
-  poetry run pytest tests/test_hash_model.py::test_basic_crud -vv
+  uv run pytest tests/test_hash_model.py::test_basic_crud -vv
 - Filter by expression:
-  poetry run pytest -k "json and not oss" -vv
+  uv run pytest -k "json and not oss" -vv
 
 Using tox
-- Tox runs with Poetry in each env and passes REDIS_OM_URL through:
+- Tox runs with uv in each env and passes REDIS_OM_URL through:
   tox
   # envlist: py310, py311, py312, py313
 
@@ -261,8 +259,8 @@ Local Redis services
   export REDIS_OM_URL="redis://localhost:6380?decode_responses=True"
 
 CLI entry points
-- Migrations CLI is exposed via Poetry script:
-  poetry run migrate
+- Migrations CLI is exposed via uv:
+  uv run migrate
   # Entry point: redis_om.model.cli.migrate:migrate
 
 High-level architecture
@@ -280,7 +278,7 @@ High-level architecture
     - checks.py, util.py, _compat.py: Helpers and compatibility shims.
   - redis_om/: Generated sync mirror from aredis_om via unasync. Do not edit by hand; use make sync to regenerate.
 - Generation pipeline:
-  - make_sync.py defines unasync rules mapping aredis_om -> redis_om and tests -> tests_sync with additional string replacements (e.g., async_redis -> sync_redis, pytest_asyncio -> pytest). The Makefile’s make sync runs this.
+  - make_sync.py defines unasync rules mapping aredis_om -> redis_om and tests -> tests_sync with additional string replacements (e.g., async_redis -> sync_redis, pytest_asyncio -> pytest). The Makefile's make sync runs this.
 - Tests layout:
   - tests/: Async-first tests.
   - tests_sync/: Generated sync tests via unasync. Keep edits in tests/ and regenerate.
@@ -293,15 +291,15 @@ Development workflow notes
   - For OSS-only scenarios use 6381 and avoid module-dependent features.
 
 CI reference
-- GitHub Actions uses Poetry, runs make sync, installs, lints (make dist; make lint), then tests on ubuntu with a redis/redis-stack service. Coverage is uploaded to Codecov. Matrix across Python 3.10–3.13.
+- GitHub Actions uses uv, runs make sync, installs, lints (make dist; make lint), then tests on ubuntu with a redis/redis-stack service. Coverage is uploaded to Codecov. Matrix across Python 3.10–3.14.
 
 Release
-- Version is managed in pyproject.toml (tool.poetry.version). GitHub release workflow updates it from the tag and runs poetry publish. Local build artifacts are produced by make dist or poetry build.
+- Version is managed in pyproject.toml (project.version). GitHub release workflow updates it from the tag and runs uv publish. Local build artifacts are produced by make dist or uv build.
 
 Key files
-- pyproject.toml: Poetry config, package metadata, dependencies, CLI scripts.
+- pyproject.toml: uv-compatible PEP 621 config, package metadata, dependencies, CLI scripts.
 - Makefile: Primary developer entry points for install, sync, lint, test, dist.
 - docker-compose.yml: Local Redis services (stack and OSS) and ports.
 - make_sync.py: unasync rules to generate sync code/tests.
 - pytest.ini: asyncio mode configuration (strict).
-- tox.ini: Test env matrix using Poetry.
+- tox.ini: Test env matrix using uv.
