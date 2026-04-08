@@ -24,8 +24,6 @@ except ImportError:
 
 from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
 
-py_test_mark_asyncio = pytest.mark.asyncio
-
 pytestmark = pytest.mark.skipif(
     not HAS_STRAWBERRY, reason="strawberry-graphql not installed"
 )

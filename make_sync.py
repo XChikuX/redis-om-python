@@ -9,6 +9,8 @@ ADDITIONAL_REPLACEMENTS = {
     ":tests.": ":tests_sync.",
     "pytest_asyncio": "pytest",
     "py_test_mark_asyncio": "py_test_mark_sync",
+    "pytest.mark.asyncio(f)": "f",
+    "pytest.mark.asyncio": "py_test_mark_sync",
 }
 
 

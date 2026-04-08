@@ -10,19 +10,14 @@ from ._sync_redis import get_sync_redis_connection
 TEST_PREFIX = "redis-om:testing"
 
 
-py_test_mark_asyncio = pytest.mark.asyncio
+def py_test_mark_asyncio(f):
+    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""
+    return pytest.mark.asyncio(f)
 
 
-# "pytest_mark_sync" causes problem in pytest
-def py_test_mark_sync(f):
-    return f  # no-op decorator
-
-
-@pytest.fixture(scope="session")
-def event_loop(request):
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# NOTE: We intentionally do NOT define a custom event_loop fixture.
+# pytest-asyncio >= 0.21 handles event loop lifecycle automatically,
+# and a custom fixture triggers "unclosed event loop" deprecation warnings.
 
 
 @pytest.fixture
