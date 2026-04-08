@@ -23,7 +23,6 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
-
 from tests._compat import EmailStr, PositiveInt, ValidationError
 from tests._sync_redis import has_redis_json
 

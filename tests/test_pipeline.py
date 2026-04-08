@@ -28,7 +28,6 @@ from aredis_om import (
     Migrator,
     NotFoundError,
 )
-
 from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
@@ -187,8 +186,7 @@ async def test_hash_pipeline_batch_create_and_get_many(hash_models):
     HashProduct = hash_models["HashProduct"]
 
     products = [
-        HashProduct(name=f"HProduct_{i}", price=float(i * 5))
-        for i in range(30)
+        HashProduct(name=f"HProduct_{i}", price=float(i * 5)) for i in range(30)
     ]
     await HashProduct.add(products)
 
@@ -298,10 +296,7 @@ async def test_delete_many_hash_models(hash_models):
     """delete_many() for HashModel."""
     HashProduct = hash_models["HashProduct"]
 
-    products = [
-        HashProduct(name=f"HP_{i}", price=float(i))
-        for i in range(5)
-    ]
+    products = [HashProduct(name=f"HP_{i}", price=float(i)) for i in range(5)]
     await HashProduct.add(products)
 
     deleted = await HashProduct.delete_many(products)
@@ -331,8 +326,7 @@ async def test_mixed_raw_pipeline_and_get_many(json_models):
     await store.save()
 
     customers = [
-        Customer(name=f"C_{i}", email=f"c{i}@test.com", age=20 + i)
-        for i in range(3)
+        Customer(name=f"C_{i}", email=f"c{i}@test.com", age=20 + i) for i in range(3)
     ]
     await Customer.add(customers)
 
@@ -362,10 +356,7 @@ async def test_hash_model_raw_pipeline(hash_models):
     """Raw pipeline operations with HashModel."""
     HashProduct = hash_models["HashProduct"]
 
-    products = [
-        HashProduct(name=f"P_{i}", price=float(i * 10))
-        for i in range(5)
-    ]
+    products = [HashProduct(name=f"P_{i}", price=float(i * 10)) for i in range(5)]
     for p in products:
         await p.save()
 
@@ -417,9 +408,15 @@ async def test_pipeline_georadius_get_many_combined(json_models):
     await db.geoadd(
         geo_key,
         [
-            -122.6765, 45.5231, stores[0].pk,
-            -122.3321, 47.6062, stores[1].pk,
-            139.6503, 35.6762, stores[2].pk,
+            -122.6765,
+            45.5231,
+            stores[0].pk,
+            -122.3321,
+            47.6062,
+            stores[1].pk,
+            139.6503,
+            35.6762,
+            stores[2].pk,
         ],
     )
 
@@ -467,9 +464,7 @@ async def test_large_batch_json_pipeline(json_models):
     await Product.add(products)
 
     # Query with range
-    results = await Product.find(
-        (Product.price >= 50) & (Product.price <= 70)
-    ).all()
+    results = await Product.find((Product.price >= 50) & (Product.price <= 70)).all()
     assert len(results) == 21  # 50, 51, ... 70
 
 
@@ -478,10 +473,7 @@ async def test_large_batch_hash_pipeline(hash_models):
     """Create 100 hash items and get_many."""
     HashProduct = hash_models["HashProduct"]
 
-    products = [
-        HashProduct(name=f"HLarge_{i}", price=float(i))
-        for i in range(100)
-    ]
+    products = [HashProduct(name=f"HLarge_{i}", price=float(i)) for i in range(100)]
     await HashProduct.add(products)
 
     pks = [p.pk for p in products]
@@ -499,10 +491,7 @@ async def test_get_many_with_explicit_pipeline_hash(hash_models):
     """get_many with explicit pipeline (HashModel)."""
     HashProduct = hash_models["HashProduct"]
 
-    products = [
-        HashProduct(name=f"EP_{i}", price=float(i))
-        for i in range(3)
-    ]
+    products = [HashProduct(name=f"EP_{i}", price=float(i)) for i in range(3)]
     for p in products:
         await p.save()
 
@@ -561,8 +550,7 @@ async def test_interleaved_save_query(json_models):
     Customer = json_models["Customer"]
 
     batch1 = [
-        Customer(name=f"B1_{i}", email=f"b1_{i}@test.com", age=20 + i)
-        for i in range(5)
+        Customer(name=f"B1_{i}", email=f"b1_{i}@test.com", age=20 + i) for i in range(5)
     ]
     await Customer.add(batch1)
 
@@ -570,8 +558,7 @@ async def test_interleaved_save_query(json_models):
     initial_count = len(results1)
 
     batch2 = [
-        Customer(name=f"B2_{i}", email=f"b2_{i}@test.com", age=30 + i)
-        for i in range(5)
+        Customer(name=f"B2_{i}", email=f"b2_{i}@test.com", age=30 + i) for i in range(5)
     ]
     await Customer.add(batch2)
 
@@ -614,9 +601,7 @@ async def test_geo_search_combined_with_embedded_query(json_models):
     assert len(nearby) >= 1
 
     # Query products by embedded category
-    premium = await Product.find(
-        Product.category.name == "Premium"
-    ).all()
+    premium = await Product.find(Product.category.name == "Premium").all()
     assert len(premium) >= 1
     assert premium[0].name == "Special Widget"
 
@@ -632,8 +617,7 @@ async def test_pipeline_transaction_mode(json_models):
     Customer = json_models["Customer"]
 
     customers = [
-        Customer(name=f"TX_{i}", email=f"tx{i}@test.com", age=20 + i)
-        for i in range(3)
+        Customer(name=f"TX_{i}", email=f"tx{i}@test.com", age=20 + i) for i in range(3)
     ]
 
     db = Customer.db()
@@ -660,9 +644,21 @@ async def test_multiple_geo_indexes_pipeline(json_models):
     Store = json_models["Store"]
 
     stores = [
-        Store(name="S1", coordinates=Coordinates(latitude=45.5, longitude=-122.6), rating=4.0),
-        Store(name="S2", coordinates=Coordinates(latitude=47.6, longitude=-122.3), rating=4.5),
-        Store(name="S3", coordinates=Coordinates(latitude=35.6, longitude=139.6), rating=4.8),
+        Store(
+            name="S1",
+            coordinates=Coordinates(latitude=45.5, longitude=-122.6),
+            rating=4.0,
+        ),
+        Store(
+            name="S2",
+            coordinates=Coordinates(latitude=47.6, longitude=-122.3),
+            rating=4.5,
+        ),
+        Store(
+            name="S3",
+            coordinates=Coordinates(latitude=35.6, longitude=139.6),
+            rating=4.8,
+        ),
     ]
     for s in stores:
         await s.save()
@@ -684,11 +680,15 @@ async def test_multiple_geo_indexes_pipeline(json_models):
     results = await pipe.execute()
 
     # First geo: Portland radius should include Portland + Seattle
-    nearby_1 = [pk.decode("utf-8") if isinstance(pk, bytes) else pk for pk in results[0]]
+    nearby_1 = [
+        pk.decode("utf-8") if isinstance(pk, bytes) else pk for pk in results[0]
+    ]
     assert stores[0].pk in nearby_1
 
     # Second geo: Tokyo radius should only include Tokyo
-    nearby_2 = [pk.decode("utf-8") if isinstance(pk, bytes) else pk for pk in results[1]]
+    nearby_2 = [
+        pk.decode("utf-8") if isinstance(pk, bytes) else pk for pk in results[1]
+    ]
     assert stores[2].pk in nearby_2
 
     await db.delete(geo_key_1)

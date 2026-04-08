@@ -7,7 +7,6 @@ from typing import List, Optional, Union
 
 from aredis_om.util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 
-
 # ---------------------------------------------------------------------------
 # is_numeric_type
 # ---------------------------------------------------------------------------

@@ -33,7 +33,6 @@ from aredis_om import (
     NotFoundError,
     QueryNotSupportedError,
 )
-
 from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
@@ -57,17 +56,20 @@ async def nested_models(key_prefix, redis):
 
     class Personality(EmbeddedJsonModel):
         """Level 3: personality with MBTI."""
+
         mbti: str = Field(index=True)
         openness: Optional[float] = Field(index=True, default=None)
 
     class Location(EmbeddedJsonModel):
         """Level 3: location with city/country/coordinates."""
+
         city: str = Field(index=True)
         country: str = Field(index=True)
         coordinates: Optional[Coordinates] = Field(index=True, default=None)
 
     class Gender(EmbeddedJsonModel):
         """Level 3: gender info."""
+
         pgender: str = Field(index=True)
 
     class RedisUser(BaseJsonModel):
@@ -223,9 +225,7 @@ async def test_query_embedded_gender(nested_models, users):
 async def test_in_operator_embedded_mbti(nested_models, users):
     """IN operator (<<) on embedded model TAG field."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.personality.mbti << ["INTJ", "ENTP"]
-    ).all()
+    results = await RedisUser.find(RedisUser.personality.mbti << ["INTJ", "ENTP"]).all()
     pks = {r.pk for r in results}
     assert users["alice"].pk in pks
     assert users["bob"].pk in pks
@@ -246,9 +246,7 @@ async def test_in_operator_top_level_interests(nested_models, users):
 async def test_in_operator_ethnicity(nested_models, users):
     """IN operator on top-level TAG field."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.ethnicity << ["Asian", "Hispanic"]
-    ).all()
+    results = await RedisUser.find(RedisUser.ethnicity << ["Asian", "Hispanic"]).all()
     pks = {r.pk for r in results}
     assert users["alice"].pk in pks
     assert users["carol"].pk in pks
@@ -382,9 +380,7 @@ async def test_complex_country_filter_no_city(nested_models, users):
 async def test_negated_embedded_city(nested_models, users):
     """NOT query on embedded city."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        ~(RedisUser.location.city == "Portland")
-    ).all()
+    results = await RedisUser.find(~(RedisUser.location.city == "Portland")).all()
     pks = {r.pk for r in results}
     assert users["alice"].pk not in pks
     assert users["dave"].pk not in pks
@@ -396,9 +392,7 @@ async def test_negated_embedded_city(nested_models, users):
 async def test_negated_in_operator_mbti(nested_models, users):
     """NOT IN query on embedded MBTI."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.personality.mbti >> ["INTJ"]
-    ).all()
+    results = await RedisUser.find(RedisUser.personality.mbti >> ["INTJ"]).all()
     pks = {r.pk for r in results}
     # Everyone except INTJ users
     assert users["alice"].pk not in pks
@@ -533,9 +527,9 @@ async def test_geo_filter_large_radius(nested_models, users):
 async def test_sort_by_age_on_nested_query(nested_models, users):
     """Sort by age combined with nested field query."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).sort_by("age").all()
+    results = (
+        await RedisUser.find(RedisUser.location.country == "USA").sort_by("age").all()
+    )
     ages = [r.age for r in results]
     assert ages == sorted(ages)
 
@@ -543,9 +537,9 @@ async def test_sort_by_age_on_nested_query(nested_models, users):
 @py_test_mark_asyncio
 async def test_sort_by_age_desc(nested_models, users):
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).sort_by("-age").all()
+    results = (
+        await RedisUser.find(RedisUser.location.country == "USA").sort_by("-age").all()
+    )
     ages = [r.age for r in results]
     assert ages == sorted(ages, reverse=True)
 
@@ -554,9 +548,11 @@ async def test_sort_by_age_desc(nested_models, users):
 async def test_page_with_nested_query(nested_models, users):
     """page() with nested field query."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).sort_by("age").page(offset=0, limit=2)
+    results = (
+        await RedisUser.find(RedisUser.location.country == "USA")
+        .sort_by("age")
+        .page(offset=0, limit=2)
+    )
     assert len(results) == 2
 
 
@@ -564,18 +560,14 @@ async def test_page_with_nested_query(nested_models, users):
 async def test_count_with_nested_query(nested_models, users):
     """count() on nested field query."""
     RedisUser = nested_models["RedisUser"]
-    count = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).count()
+    count = await RedisUser.find(RedisUser.location.country == "USA").count()
     assert count == 3
 
 
 @py_test_mark_asyncio
 async def test_first_with_nested_query(nested_models, users):
     RedisUser = nested_models["RedisUser"]
-    result = await RedisUser.find(
-        RedisUser.location.city == "Tokyo"
-    ).first()
+    result = await RedisUser.find(RedisUser.location.city == "Tokyo").first()
     assert result.pk == users["carol"].pk
 
 
@@ -583,9 +575,7 @@ async def test_first_with_nested_query(nested_models, users):
 async def test_first_not_found_raises(nested_models, users):
     RedisUser = nested_models["RedisUser"]
     with pytest.raises(NotFoundError):
-        await RedisUser.find(
-            RedisUser.location.city == "NonexistentCity"
-        ).first()
+        await RedisUser.find(RedisUser.location.city == "NonexistentCity").first()
 
 
 # ---------------------------------------------------------------------------
@@ -596,9 +586,11 @@ async def test_first_not_found_raises(nested_models, users):
 @py_test_mark_asyncio
 async def test_get_item_on_nested_query(nested_models, users):
     RedisUser = nested_models["RedisUser"]
-    result = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).sort_by("age").get_item(0)
+    result = (
+        await RedisUser.find(RedisUser.location.country == "USA")
+        .sort_by("age")
+        .get_item(0)
+    )
     # First by age ascending among USA users
     assert result.age == 22  # Dave
 
@@ -630,9 +622,7 @@ async def test_async_iteration_nested_query(nested_models, users):
 async def test_find_update_on_nested_query(nested_models, users):
     """update() changes matching records."""
     RedisUser = nested_models["RedisUser"]
-    await RedisUser.find(
-        RedisUser.location.city == "Tokyo"
-    ).update(ethnicity="updated")
+    await RedisUser.find(RedisUser.location.city == "Tokyo").update(ethnicity="updated")
 
     carol = await RedisUser.get(users["carol"].pk)
     assert carol.ethnicity == "updated"
@@ -648,9 +638,7 @@ async def test_find_delete_on_nested_query(nested_models, users):
     """delete() removes matching records."""
     RedisUser = nested_models["RedisUser"]
     # Delete Tokyo users
-    await RedisUser.find(
-        RedisUser.location.city == "Tokyo"
-    ).delete()
+    await RedisUser.find(RedisUser.location.city == "Tokyo").delete()
 
     # Carol should be gone
     with pytest.raises(NotFoundError):
@@ -808,9 +796,7 @@ async def test_sort_by_empty_is_noop(nested_models, users):
 async def test_aggregate_ct_nested_query(nested_models, users):
     """aggregate_ct() returns approximate count."""
     RedisUser = nested_models["RedisUser"]
-    ct = await RedisUser.find(
-        RedisUser.location.country == "USA"
-    ).aggregate_ct()
+    ct = await RedisUser.find(RedisUser.location.country == "USA").aggregate_ct()
     assert ct >= 3
 
 
@@ -842,10 +828,8 @@ async def test_save_and_retrieve_nested_location(nested_models, users):
 async def test_query_openness_numeric_on_embedded(nested_models, users):
     """NUMERIC query on embedded float field (personality.openness)."""
     RedisUser = nested_models["RedisUser"]
-    results = await RedisUser.find(
-        RedisUser.personality.openness >= 0.8
-    ).all()
+    results = await RedisUser.find(RedisUser.personality.openness >= 0.8).all()
     pks = {r.pk for r in results}
     assert users["alice"].pk in pks  # openness 0.8
-    assert users["bob"].pk in pks    # openness 0.9
+    assert users["bob"].pk in pks  # openness 0.9
     assert users["carol"].pk not in pks  # openness 0.5

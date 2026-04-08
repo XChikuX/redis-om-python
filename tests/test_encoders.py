@@ -9,11 +9,7 @@ from typing import Optional
 
 import pytest
 
-from aredis_om.model.encoders import (
-    generate_encoders_by_class_tuples,
-    jsonable_encoder,
-)
-
+from aredis_om.model.encoders import generate_encoders_by_class_tuples, jsonable_encoder
 
 # ---------------------------------------------------------------------------
 # Primitive pass-through

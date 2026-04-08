@@ -1883,9 +1883,14 @@ class ModelMeta(ModelMetaclass):
         # built-in (e.g. "dict", "json", "schema").  Redis OM intentionally
         # allows any user-defined field name, so we temporarily suppress that
         # check during class creation.
-        import pydantic.v1.main as _pv1_main
+        if PYDANTIC_V2:
+            import pydantic.v1.main as _pv1_main
+        else:
+            import pydantic.main as _pv1_main
 
-        _orig_validate_field_name = _pv1_main.validate_field_name
+        _orig_validate_field_name = getattr(
+            _pv1_main, "validate_field_name", lambda _bases, _field_name: None
+        )
         _pv1_main.validate_field_name = lambda _bases, _field_name: None  # noqa: E731
         try:
             new_class = super().__new__(cls, name, bases, attrs, **kwargs)

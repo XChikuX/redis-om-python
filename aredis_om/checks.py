@@ -1,5 +1,6 @@
-from redis.exceptions import AuthenticationError
 from weakref import WeakKeyDictionary
+
+from redis.exceptions import AuthenticationError
 
 from aredis_om.connections import get_redis_connection
 

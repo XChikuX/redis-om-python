@@ -24,7 +24,6 @@ from aredis_om import (
     Migrator,
     NotFoundError,
 )
-
 from tests._sync_redis import has_redis_json, has_redisearch
 
 from .conftest import py_test_mark_asyncio

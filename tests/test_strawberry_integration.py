@@ -15,18 +15,14 @@ from tests._compat import ValidationError
 
 try:
     import strawberry
-    from strawberry.experimental.pydantic import type as pyd_type, input as pyd_input
+    from strawberry.experimental.pydantic import input as pyd_input
+    from strawberry.experimental.pydantic import type as pyd_type
 
     HAS_STRAWBERRY = True
 except ImportError:
     HAS_STRAWBERRY = False
 
-from aredis_om import (
-    EmbeddedJsonModel,
-    Field,
-    JsonModel,
-    Migrator,
-)
+from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
 
 py_test_mark_asyncio = pytest.mark.asyncio
 
@@ -208,14 +204,10 @@ async def test_strawberry_filter_by_ethnicity():
         fname="Alice", email="alice@test.com", ethnicity="polynesian"
     )
     await user1.save()
-    user2 = await _make_user(
-        fname="Bob", email="bob@test.com", ethnicity="melanesian"
-    )
+    user2 = await _make_user(fname="Bob", email="bob@test.com", ethnicity="melanesian")
     await user2.save()
 
-    results = await StrawberryUser.find(
-        StrawberryUser.ethnicity == "polynesian"
-    ).all()
+    results = await StrawberryUser.find(StrawberryUser.ethnicity == "polynesian").all()
     assert len(results) == 1
     assert results[0].fname == "Alice"
 
