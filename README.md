@@ -89,6 +89,7 @@ Before writing any code you'll need a Redis instance with the appropriate Redis 
 ```sh
 docker run -p 6379:6379 redis:8-alpine
 
+# bash / WSL
 export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
 ```
 
