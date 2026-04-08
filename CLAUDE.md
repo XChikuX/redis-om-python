@@ -137,7 +137,7 @@ tests_sync/            # Synchronous tests
 
 | Module | Coverage | Notes |
 |--------|----------|-------|
-| `model/model.py` | 85% | Core model logic |
+| `model/model.py` | 86% | Core model logic, Expression, FindQuery, save/get pipelines |
 | `model/query_resolver.py` | **100%** | Or, And, Not, QueryResolver |
 | `model/render_tree.py` | **100%** | Tree rendering |
 | `model/token_escaper.py` | **100%** | RediSearch token escaping |
@@ -149,7 +149,19 @@ tests_sync/            # Synchronous tests
 | `connections.py` | 93% | Connection management |
 | `_compat.py` | 62% | Pydantic v1/v2 compat |
 | `util.py` | 87% | Numeric type helpers |
-| **Overall** | **85%** | 676 tests (async + sync) |
+| **Overall** | **86%** | 808 tests (async + sync) |
+
+### Test Files Added
+- `test_nested.py` — 48 tests for deeply nested models, complex multi-condition queries, embedded field IN/NOT_IN, GeoFilter, FindQuery methods (sort_by, page, count, delete, update, get_item, __aiter__, aggregate_ct), Expression/NegatedExpression property coverage
+- `test_pipeline.py` — 18 tests for multi-model pipelines, batch create/get_many/delete_many, GEO radius + get_many combined, large batch operations (50-100 items), explicit pipeline usage, transaction mode, mixed JSON + Hash operations
+- `test_render_tree.py` — 15 tests (100% coverage)
+- `test_query_resolver.py` — 18 tests (100% coverage)
+- `test_token_escaper.py` — 29 tests (100% coverage)
+- `test_encoders.py` — 22 tests (85% coverage)
+- `test_types.py` — 20 tests (100% coverage)
+- `test_checks.py` — 8 tests (86% coverage)
+- `test_connections.py` — 6 tests (93% coverage)
+- `test_util.py` — 12 tests (87% coverage)
 
 ## Technical Debt
 
