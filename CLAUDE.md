@@ -43,9 +43,15 @@ tests_sync/            # Synchronous tests
 - Schema generation: `HashModel.schema_for_type` and `JsonModel.schema_for_type`
 
 ### Data Conversion Pipeline (save/get)
-- **Save order:** `model.dict()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `jsonable_encoder()` (HashModel only) → Redis
+- **Save order (HashModel):** `model.dict()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → `jsonable_encoder()` → Redis
+- **Save order (JsonModel):** `model.dict()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → Redis
 - **Get order (HashModel):** Redis → `convert_empty_strings_to_none()` → `convert_base64_to_bytes()` → `parse_obj()`
 - **Get order (JsonModel):** Redis → `convert_timestamp_to_datetime()` → `convert_base64_to_bytes()` → `model_validate()`
+
+### Bulk fetch / pipeline support
+- `HashModel.get_many(pks, pipeline=None)` batches `HGETALL` calls in a pipeline
+- `JsonModel.get_many(pks, pipeline=None)` batches `JSON.GET` calls in a pipeline
+- Both support composing with raw Redis commands (for example `GEORADIUSBYMEMBER`) in a single explicit pipeline
 
 ## Bug Fixes Applied
 
@@ -121,7 +127,7 @@ tests_sync/            # Synchronous tests
 - Cluster-specific tests needed when cluster test environment is available
 
 ## Version
-- **Current Version:** 0.4.2b1
+- **Current Version:** 0.4.4
 - **Branch:** main
 
 
@@ -136,19 +142,19 @@ Project: redis-om-python (fork: pyredis-om)
 Overview
 - Python library providing object mapping (OM) for Redis, with both async (primary) and generated sync APIs.
 - The async package lives under aredis_om/. A sync mirror is generated into redis_om/ via unasync (see make_sync.py). Tests are mirrored similarly from tests/ to tests_sync/.
-- Tooling is Poetry for packaging and venv management, pytest for tests, isort/black/flake8/mypy/bandit for lint, and tox for matrix runs. Redis (and Redis Stack) are provided via docker-compose.
+- Tooling is Poetry for packaging and venv management, pytest for tests, isort/black/flake8/mypy/bandit for lint, and tox for matrix runs. Local Redis services are provided via docker-compose.
 
 Prerequisites
 - Python >= 3.10
 - Poetry available on PATH
-- Docker installed (to run local Redis/Redis Stack)
+- Docker installed (to run local Redis services)
 
 Quick start
 - Create the virtualenv and install dependencies:
   poetry install
 - Generate sync modules and mirrored tests (also done implicitly by many make targets):
   make sync
-- Bring up Redis services (Redis Stack on 6380; OSS Redis on 6381):
+- Bring up Redis services (`redis:8-alpine` on 6380; OSS Redis on 6381):
   docker-compose up -d
 - Set the default test connection URL (bash/WSL):
   export REDIS_OM_URL="redis://localhost:6380?decode_responses=True"
@@ -162,7 +168,7 @@ Common commands
   make lint
 - Auto-format (isort + black):
   make format
-- Run full test suite (async + sync) against Redis Stack:
+- Run full test suite (async + sync) against the module-enabled local Redis service:
   make test
   # Produces coverage, brings Redis up via docker-compose and tears it down
 - Run tests specifically against OSS Redis (no modules):
@@ -190,7 +196,7 @@ Using tox
   # envlist: py310, py311, py312, py313
 
 Local Redis services
-- redis/redis-stack (modules) on localhost:6380
+- redis:8-alpine (modules included) on localhost:6380
 - redis (OSS) on localhost:6381
 - Compose file:
   docker-compose.yml
@@ -229,7 +235,7 @@ Development workflow notes
 - Edit only aredis_om/ and tests/; then run make sync to refresh the sync package and mirrored tests.
 - Many targets (lint, test, dist) call make sync automatically, but running it explicitly before imports avoids stale mirrors in editor sessions.
 - REDIS_OM_URL must point to a Redis compatible with the features you intend to test:
-  - For RediSearch/RedisJSON features use Redis Stack (default compose: 6380).
+  - For RediSearch/RedisJSON features use the local `redis:8-alpine` service (default compose: 6380).
   - For OSS-only scenarios use 6381 and avoid module-dependent features.
 
 CI reference

@@ -17,7 +17,6 @@ from typing import (
 from pydantic.version import VERSION as PYDANTIC_VERSION
 from typing_extensions import Annotated, Literal, get_args, get_origin
 
-
 PYDANTIC_V2 = PYDANTIC_VERSION.startswith("2.")
 
 if PYDANTIC_V2:
@@ -90,7 +89,12 @@ if PYDANTIC_V2:
 
 else:
     from pydantic import BaseModel, validator
-    from pydantic.fields import FieldInfo, ModelField, Undefined as PydanticUndefined, UndefinedType
+    from pydantic.fields import (
+        FieldInfo,
+        ModelField,
+        Undefined as PydanticUndefined,
+        UndefinedType,
+    )
     from pydantic.json import ENCODERS_BY_TYPE
     from pydantic.main import ModelMetaclass, validate_model
     from pydantic.typing import NoArgAnyCallable

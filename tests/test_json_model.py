@@ -25,13 +25,10 @@ from aredis_om import (
     RedisModelError,
 )
 
-# We need to run this check as sync code (during tests) even in async mode
-# because we call it in the top-level module scope.
-from redis_om import has_redis_json
 from tests._compat import EmailStr, PositiveInt, ValidationError
+from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
-
 
 if not has_redis_json():
     pytestmark = pytest.mark.skip
@@ -1155,12 +1152,16 @@ async def test_literals():
         "$.flavor AS flavor TAG SEPARATOR |"
     )
     await Migrator().run()
+
+    # Clean up stale data from previous runs
+    old_pks = [pk async for pk in await TestLiterals.all_pks()]
+    for pk in old_pks:
+        await TestLiterals.delete(pk)
+
     item = TestLiterals(flavor="pumpkin")
     await item.save()
     rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
     assert rematerialized.pk == item.pk
-
-
 
 
 @py_test_mark_asyncio

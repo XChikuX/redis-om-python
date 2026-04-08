@@ -5,6 +5,7 @@ import pytest
 
 from aredis_om import get_redis_connection
 
+from ._sync_redis import get_sync_redis_connection
 
 TEST_PREFIX = "redis-om:testing"
 
@@ -24,7 +25,7 @@ def event_loop(request):
     loop.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def redis():
     yield get_redis_connection()
 
@@ -45,12 +46,8 @@ def key_prefix(request, redis):
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_keys(request):
-    # Always use the sync Redis connection with finalizer. Setting up an
-    # async finalizer should work, but I'm not suer how yet!
-    from redis_om.connections import get_redis_connection as get_sync_redis
-
     # Increment for every pytest-xdist worker
-    conn = get_sync_redis()
+    conn = get_sync_redis_connection()
     once_key = f"{TEST_PREFIX}:cleanup_keys"
     conn.incr(once_key)
 

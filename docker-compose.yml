@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   redis:
-    image: "redis/redis-stack:latest"
+    image: "redis:8-alpine"
     restart: always
     ports:
       - "6380:6379"

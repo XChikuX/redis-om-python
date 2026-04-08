@@ -9,7 +9,6 @@ from aredis_om import Field, JsonModel, KNNExpression, Migrator, VectorFieldOpti
 
 from .conftest import py_test_mark_asyncio
 
-
 DIMENSIONS = 768
 
 

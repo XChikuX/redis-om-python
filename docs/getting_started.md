@@ -10,7 +10,7 @@ Redis OM requires Python version 3.10 or above and a Redis instance to connect t
 
 ## Python
 
-Make sure you are running **Python version 3.8 or higher**:
+Make sure you are running **Python version 3.10 or higher**:
 
 ```
 python --version
@@ -25,9 +25,9 @@ This library requires [redis-py](https://pypi.org/project/redis) version 4.2.0 o
 
 Redis OM saves data in Redis, so you will need Redis installed and running to complete this tutorial.
 
-We recommend the [redis](https://hub.docker.com/r/redis/redis) image because it includes Redis capabilities that this library uses to provide extra features. Later sections of this guide will provide more detail about these features.
+We recommend the official [redis](https://hub.docker.com/_/redis) image, specifically `redis:8-alpine`, for local development.
 
-You can also use the official Redis Docker image, which is hosted on [Docker Hub](https://hub.docker.com/_/redis).  However this does not include the Search and JSON modules required to store JSON models and use the `find` query interface.
+Recent Redis images include the modules Redis OM needs for JSON and search features, so you do not need a separate Redis Stack image just to work with `JsonModel` and rich queries.
 
 **NOTE**: We'll talk about how to actually start Redis with Docker when we discuss _running_ Redis later in this guide.
 
@@ -49,7 +49,7 @@ Redis OM relies on the [RediSearch][redisearch-url] and [RedisJSON][redis-json-u
 
 You don't need these Redis modules to use Redis OM's data modeling, validation, and persistence features, but we recommend them to get the most out of Redis OM.
 
-The easiest way to run these Redis modules during local development is to use the [redis-stack](https://hub.docker.com/r/redis/redis-stack) Docker image.
+The easiest way to run these Redis modules during local development is to use `redis:8-alpine`.
 
 For other installation methods, follow the "Quick Start" guides on both modules' home pages.
 
@@ -79,9 +79,9 @@ The command to start Redis with Docker depends on the image you've chosen to use
 
 **TIP:** The `-d` option in these examples runs Redis in the background, while `-p 6379:6379` makes Redis reachable at port 6379 on your localhost.
 
-#### Docker with the `redismod` image (recommended)
+#### Docker with the `redis:8-alpine` image (recommended)
 
-    $ docker run -d -p 6379:6379 redislabs/redismod
+    $ docker run -d -p 6379:6379 redis:8-alpine
 
 ### Docker with the `redis` image
 
@@ -91,15 +91,15 @@ The command to start Redis with Docker depends on the image you've chosen to use
 
 The recommended way to install Redis OM is with [Poetry](https://python-poetry.org/docs/). You can install Redis OM using Poetry with the following command:
 
-    $ poetry add redis-om
+    $ poetry add pyredis-om
 
 If you're using Pipenv, the command is:
 
-    $ pipenv install redis-om
+    $ pipenv install pyredis-om
 
 Finally, you can install Redis OM with `pip` by running the following command:
 
-    $ pip install redis-om
+    $ pip install pyredis-om
 
 **TIP:** If you aren't using Poetry or Pipenv and are instead installing directly with `pip`, we recommend that you install Redis OM in a virtual environment (AKA, a virtualenv). If you aren't familiar with this concept, see [Dan Bader's video and transcript](https://realpython.com/lessons/creating-virtual-environment/).
 

@@ -6,7 +6,6 @@ from typing import List, Optional, Union
 
 from ... import redis
 
-
 log = logging.getLogger(__name__)
 
 
@@ -39,7 +38,9 @@ def schema_hash_key(index_name):
     return f"{index_name}:hash"
 
 
-def _create_index_cluster(conn: redis.RedisCluster, index_name, schema, current_hash):
+def _create_index_cluster(
+    conn: redis.RedisCluster, index_name, schema, current_hash
+):
     """Create a search index on a Redis Cluster.
     This is a workaround for the fact that the `FT.CREATE` command is not supported in Redis Cluster.
     The implementation is same as `create_index` but with the following changes:
@@ -56,7 +57,9 @@ def _create_index_cluster(conn: redis.RedisCluster, index_name, schema, current_
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
-def create_index(conn: Union[redis.Redis, redis.RedisCluster], index_name, schema, current_hash):
+def create_index(
+    conn: Union[redis.Redis, redis.RedisCluster], index_name, schema, current_hash
+):
     if isinstance(conn, redis.RedisCluster):
         return _create_index_cluster(conn, index_name, schema, current_hash)
 
@@ -111,11 +114,17 @@ class IndexMigration:
 
 
 class Migrator:
-    def __init__(self, module=None):
+    def __init__(
+        self,
+        module=None,
+        conn: Optional[Union[redis.Redis, redis.RedisCluster]] = None,
+    ):
         self.module = module
+        self.conn = conn
         self.migrations: List[IndexMigration] = []
 
     def detect_migrations(self):
+        self.migrations = []
         # Try to load any modules found under the given path or module name.
         if self.module:
             import_submodules(self.module)
@@ -126,7 +135,7 @@ class Migrator:
 
         for name, cls in model_registry.items():
             hash_key = schema_hash_key(cls.Meta.index_name)
-            conn = cls.db()
+            conn = self.conn or cls.db()
             try:
                 schema = cls.redisearch_schema()
             except NotImplementedError:
@@ -151,7 +160,7 @@ class Migrator:
 
             stored_hash = conn.get(hash_key)
             if isinstance(stored_hash, bytes):
-                stored_hash = stored_hash.decode('utf-8')
+                stored_hash = stored_hash.decode("utf-8")
 
             schema_out_of_date = current_hash != stored_hash
 
@@ -183,6 +192,7 @@ class Migrator:
     def run(self):
         # TODO: Migration history
         # TODO: Dry run with output
-        self.detect_migrations()
+        if not self.migrations:
+            self.detect_migrations()
         for migration in self.migrations:
             migration.run()

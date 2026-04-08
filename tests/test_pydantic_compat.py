@@ -10,13 +10,9 @@ import pytest
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
 from aredis_om._compat import PYDANTIC_V2
 from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
+from tests._sync_redis import has_redis_json
 
-try:
-    from redis_om import has_redis_json
-
-    HAS_REDIS_JSON = has_redis_json()
-except (ImportError, ConnectionError, OSError):
-    HAS_REDIS_JSON = False
+HAS_REDIS_JSON = has_redis_json()
 
 from .conftest import py_test_mark_asyncio
 
@@ -49,15 +45,9 @@ def test_validate_model_data_uses_parse_obj_fallback():
     assert result.values == {"field": "value"}
 
 
-@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat only")
-def test_v2_root_validator_on_embedded_hashmodel():
-    """pydantic v2's @root_validator must work on HashModel with embedded=True.
-
-    When users import root_validator from pydantic (v2), it creates a
-    PydanticDescriptorProxy that pydantic v1's metaclass cannot handle.
-    ModelMeta should transparently convert these to v1 root validators.
-    """
-    from pydantic import root_validator
+def test_v1_root_validator_on_embedded_hashmodel():
+    """pydantic v1's @root_validator should remain the primary supported path."""
+    from pydantic.v1 import root_validator
 
     class EmbeddedLike(HashModel):
         user_id: str
@@ -97,9 +87,49 @@ def test_v2_root_validator_on_embedded_hashmodel():
     assert user.operations.likes[0].pk == "alice:bob"
 
 
-@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat only")
-def test_v2_validator_on_hashmodel():
-    """pydantic v2's @validator must also be converted for HashModel."""
+def test_v1_validator_on_hashmodel():
+    """pydantic v1's @validator should remain the primary supported path."""
+    from pydantic.v1 import validator as v1_validator
+
+    class TaggedItem(HashModel):
+        name: str
+        tag: str = "default"
+
+        @v1_validator("tag", always=True, allow_reuse=True)
+        def normalize_tag(cls, v):
+            return v.upper()
+
+        class Meta:
+            embedded = True
+
+    item = TaggedItem(name="test", tag="hello")
+    assert item.tag == "HELLO"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
+def test_v2_root_validator_still_supported_as_compat_path():
+    from pydantic import root_validator
+
+    class EmbeddedLike(HashModel):
+        user_id: str
+        liked_user_id: str
+
+        @root_validator(skip_on_failure=True)
+        def assign_pk(cls, values):
+            values["pk"] = ":".join(
+                sorted([values["user_id"], values["liked_user_id"]])
+            )
+            return values
+
+        class Meta:
+            embedded = True
+
+    like = EmbeddedLike(user_id="alice", liked_user_id="bob")
+    assert like.pk == "alice:bob"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
+def test_v2_validator_still_supported_as_compat_path():
     from pydantic import validator as v2_validator
 
     class TaggedItem(HashModel):

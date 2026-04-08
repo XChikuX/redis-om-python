@@ -91,9 +91,7 @@ class Not(LogicalOperatorForListOfExpressions):
     ```
     """
 
-    @property
-    def query(self):
-        return "-(expression1) -(expression2)"
+    operator = "-"
 
 
 class QueryResolver:

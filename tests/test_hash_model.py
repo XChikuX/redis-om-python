@@ -23,13 +23,10 @@ from aredis_om import (
     RedisModelError,
 )
 
-# We need to run this check as sync code (during tests) even in async mode
-# because we call it in the top-level module scope.
-from redis_om import has_redisearch
 from tests._compat import ValidationError
+from tests._sync_redis import has_redisearch
 
 from .conftest import py_test_mark_asyncio
-
 
 if not has_redisearch():
     pytestmark = pytest.mark.skip
@@ -807,7 +804,12 @@ async def test_primary_pk_exists(m):
         bio="This is member 2 who can be quite anxious until you get to know them.",
     )
 
-    assert "pk" not in customer.__fields__
+    # With a custom primary key (`id`), the inherited `pk` field remains in
+    # __fields__ so that pydantic can auto-generate a ULID for it (enabling
+    # queries like Model.pk == instance.pk).  What changes is that the model's
+    # *primary key metadata* points to the custom field, not to "pk".
+    assert Customer2._meta.primary_key.name == "id"
+    assert customer.pk is not None  # auto-generated ULID
 
 
 @py_test_mark_asyncio
@@ -949,11 +951,16 @@ async def test_literals():
         f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
     )
     await Migrator().run()
+
+    # Clean up stale data from previous runs
+    old_pks = [pk async for pk in await TestLiterals.all_pks()]
+    for pk in old_pks:
+        await TestLiterals.delete(pk)
+
     item = TestLiterals(flavor="pumpkin")
     await item.save()
     rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
     assert rematerialized.pk == item.pk
-
 
 
 @py_test_mark_asyncio
