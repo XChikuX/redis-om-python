@@ -759,7 +759,7 @@ redis_conn.set("hello", "world")
 
 Now that you know the basics of working with Redis OM, start playing around with it in your project!
 
-If you're a FastAPI user, check out [how to integrate Redis OM with FastAPI](https://github.com/redis/redis-om-python/blob/main/docs/fastapi_integration.md).
+If you're a FastAPI user, check out [how to integrate Redis OM with FastAPI](fastapi_integration.md).
 
 <!-- Links -->
 

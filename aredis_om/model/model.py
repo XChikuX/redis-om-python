@@ -71,7 +71,7 @@ SINGLE_VALUE_TAG_FIELD_SEPARATOR = "|"
 # multi-value field lookup, like a IN or NOT_IN.
 DEFAULT_REDISEARCH_FIELD_SEPARATOR = ","
 
-ERRORS_URL = "https://github.com/redis/redis-om-python/blob/main/docs/errors.md"
+ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.md"
 
 
 def get_outer_type(field):
