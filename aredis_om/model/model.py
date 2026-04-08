@@ -2038,6 +2038,68 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 exclude["pk"] = True
         return super().dict(*args, exclude=exclude, **kwargs)
 
+    @classmethod
+    @no_type_check
+    def _get_value(
+        cls,
+        v: Any,
+        to_dict: bool,
+        by_alias: bool,
+        include: Any,
+        exclude: Any,
+        exclude_unset: bool,
+        exclude_defaults: bool,
+        exclude_none: bool,
+    ) -> Any:
+        """Override pydantic v1's _get_value to call dict() via the class.
+
+        Pydantic v1 does ``v.dict(…)`` when serialising nested BaseModel
+        instances.  If the model has a **field** named ``dict``, attribute
+        access resolves to the field value (a plain ``dict`` object) rather
+        than the method, raising ``TypeError: 'dict' object is not callable``.
+
+        Calling through the class (``type(v).dict(v, …)``) always reaches
+        the method regardless of field names.
+        """
+        if isinstance(v, BaseModel):
+            if to_dict:
+                # Use RedisModel.dict or BaseModel.dict directly via __func__
+                # to avoid attribute lookup on the instance (which could
+                # shadow `dict` if there's a field with that name).
+                dict_method = None
+                for klass in type(v).__mro__:
+                    if "dict" in klass.__dict__:
+                        val = klass.__dict__["dict"]
+                        if callable(val):
+                            dict_method = val
+                            break
+                if dict_method is None:
+                    dict_method = BaseModel.dict
+                v_dict = dict_method(
+                    v,
+                    by_alias=by_alias,
+                    exclude_unset=exclude_unset,
+                    exclude_defaults=exclude_defaults,
+                    include=include,
+                    exclude=exclude,
+                    exclude_none=exclude_none,
+                )
+                if "__root__" in v_dict:
+                    return v_dict["__root__"]
+                return v_dict
+            else:
+                return v.copy(include=include, exclude=exclude)
+        return super()._get_value(
+            v,
+            to_dict=to_dict,
+            by_alias=by_alias,
+            include=include,
+            exclude=exclude,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            exclude_none=exclude_none,
+        )
+
     def __lt__(self, other):
         """Default sort: compare primary key of models."""
         return self.key() < other.key()
@@ -2888,12 +2950,17 @@ class JsonModel(RedisModel, abc.ABC):
             # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
             # a proper type, we can pull the type information from the origin of the first argument.
             if not isinstance(typ, type):
-                type_args = typing_get_args(typ)
-                typ = (
-                    getattr(type_args[0], "__origin__", type_args[0])
-                    if type_args
-                    else typ
-                )
+                # Handle Literal types: resolve to the type of the literal values
+                if get_origin(typ) is Literal:
+                    type_args = typing_get_args(typ)
+                    typ = type(type_args[0]) if type_args else str
+                else:
+                    type_args = typing_get_args(typ)
+                    typ = (
+                        getattr(type_args[0], "__origin__", type_args[0])
+                        if type_args
+                        else typ
+                    )
 
             if is_vector and vector_options:
                 schema = f"{path} AS {index_field_name} {vector_options.schema}"

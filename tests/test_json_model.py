@@ -1153,6 +1153,12 @@ async def test_literals():
         "$.flavor AS flavor TAG SEPARATOR |"
     )
     await Migrator().run()
+
+    # Clean up stale data from previous runs
+    old_pks = [pk async for pk in await TestLiterals.all_pks()]
+    for pk in old_pks:
+        await TestLiterals.delete(pk)
+
     item = TestLiterals(flavor="pumpkin")
     await item.save()
     rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()

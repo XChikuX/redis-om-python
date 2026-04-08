@@ -952,6 +952,12 @@ async def test_literals():
         f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
     )
     await Migrator().run()
+
+    # Clean up stale data from previous runs
+    old_pks = [pk async for pk in await TestLiterals.all_pks()]
+    for pk in old_pks:
+        await TestLiterals.delete(pk)
+
     item = TestLiterals(flavor="pumpkin")
     await item.save()
     rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
