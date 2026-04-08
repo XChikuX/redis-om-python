@@ -1394,7 +1394,9 @@ class FindQuery:
         return self.execute()
 
     def page(self, offset=0, limit=10):
-        return self.copy(offset=offset, limit=limit).execute(exhaust_results=False)
+        return self.copy(offset=offset, limit=limit).execute(
+            exhaust_results=False
+        )
 
     def sort_by(self, *fields: str):
         if not fields:
@@ -2158,7 +2160,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return db.delete(*pks)
 
     @classmethod
-    def delete(cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None) -> int:
+    def delete(
+        cls, pk: Any, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> int:
         """Delete data at this key."""
         db = cls._get_db(pipeline)
 
@@ -2259,7 +2263,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         # save + expire when a default TTL is configured, otherwise save only.
         return 2 if cls.default_ttl() is not None else 1
 
-    def finalize_save(self, pipeline: Optional[redis.client.Pipeline] = None) -> None:
+    def finalize_save(
+        self, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> None:
         self.apply_default_ttl(pipeline=pipeline)
         # Re-check index health on the next query after writes.
         type(self)._meta.index_health_checked = False
