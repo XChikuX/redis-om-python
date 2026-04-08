@@ -56,6 +56,20 @@ escaper = TokenEscaper()
 DatabaseConnection = Union[redis.Redis, redis.RedisCluster]
 DatabaseProvider = Callable[[], DatabaseConnection]
 
+
+def _is_cluster_pipeline(db) -> bool:
+    """Check if a database object is an async RedisCluster pipeline.
+
+    ClusterPipeline commands must NOT be awaited—doing so consumes the
+    response immediately instead of queuing the command for batch execution.
+    Regular async Pipeline commands may be safely awaited (they return the
+    pipeline instance for chaining while still queueing the command).
+
+    We explicitly check the class name because ``ClusterPipeline`` lives in
+    ``redis.asyncio.cluster`` and isn't always easy to import directly.
+    """
+    return type(db).__name__ == "ClusterPipeline"
+
 # For basic exact-match field types like an indexed string, we create a TAG
 # field in the RediSearch index. TAG is designed for multi-value fields
 # separated by a "separator" character. We're using the field for single values
@@ -2191,8 +2205,12 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     ):
         db = self._get_db(pipeline)
 
-        # TODO: Wrap any Redis response errors in a custom exception?
-        await db.expire(self.key(), num_seconds)
+        # ClusterPipeline commands must not be awaited; doing so consumes the
+        # response instead of queuing the command for batch execution.
+        if _is_cluster_pipeline(db):
+            db.expire(self.key(), num_seconds)
+        else:
+            await db.expire(self.key(), num_seconds)
 
     @validator("pk", always=True, allow_reuse=True)
     def validate_pk(cls, v):
@@ -2552,8 +2570,12 @@ class HashModel(RedisModel, abc.ABC):
 
         # filter out values which are `None` because they are not valid in a HSET
         document = {k: v for k, v in document.items() if v is not None}
-        # TODO: Wrap any Redis response errors in a custom exception?
-        await db.hset(self.key(), mapping=document)
+        # ClusterPipeline commands must not be awaited; doing so consumes the
+        # response instead of queuing the command for batch execution.
+        if _is_cluster_pipeline(db):
+            db.hset(self.key(), mapping=document)
+        else:
+            await db.hset(self.key(), mapping=document)
         await self.finalize_save(pipeline=pipeline)
         return self
 
@@ -2825,8 +2847,12 @@ class JsonModel(RedisModel, abc.ABC):
         document = convert_bytes_to_base64(document)
         document = convert_dataclasses_to_dicts(document)
 
-        # TODO: Wrap response errors in a custom exception?
-        await db.json().set(self.key(), Path.root_path(), document)
+        # ClusterPipeline commands must not be awaited; doing so consumes the
+        # response instead of queuing the command for batch execution.
+        if _is_cluster_pipeline(db):
+            db.json().set(self.key(), Path.root_path(), document)
+        else:
+            await db.json().set(self.key(), Path.root_path(), document)
         await self.finalize_save(pipeline=pipeline)
         return self
 

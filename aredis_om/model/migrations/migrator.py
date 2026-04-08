@@ -42,16 +42,26 @@ async def _create_index_cluster(
     conn: redis.RedisCluster, index_name, schema, current_hash
 ):
     """Create a search index on a Redis Cluster.
-    This is a workaround for the fact that the `FT.CREATE` command is not supported in Redis Cluster.
-    The implementation is same as `create_index` but with the following changes:
-    - `command` is passed as a list instead of a string
-    - The `FT.CREATE` command is executed only on primary nodes
+
+    In Redis 8+, search indexes are cluster-aware and automatically
+    distributed across all shards.  We send the ``FT.CREATE`` command to a
+    single random node; the cluster takes care of propagation.  If the
+    command must target a specific node (older module builds), we fall back
+    to sending it to each primary individually, tolerating "Index already
+    exists" errors from nodes that received the index via replication.
     """
     try:
         await conn.ft(index_name).info()
     except redis.ResponseError:
         command = f"ft.create {index_name} {schema}".split()
-        await conn.execute_command(*command, target_nodes=redis.RedisCluster.PRIMARIES)
+        try:
+            # Redis 8: send to a single node – cluster propagates internally.
+            await conn.execute_command(
+                *command, target_nodes=redis.RedisCluster.RANDOM
+            )
+        except redis.ResponseError as exc:
+            if "Index already exists" not in str(exc):
+                raise
         await conn.set(schema_hash_key(index_name), current_hash)  # type: ignore
     else:
         log.info("Index already exists, skipping. Index hash: %s", index_name)
