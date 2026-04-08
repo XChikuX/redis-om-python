@@ -32,7 +32,7 @@ class TestIsNumericType:
     def test_str_not_numeric(self):
         assert is_numeric_type(str) is False
 
-    def test_bool_not_numeric(self):
+    def test_bool_is_numeric(self):
         # bool is subclass of int so it should be numeric
         assert is_numeric_type(bool) is True
 
