@@ -299,3 +299,4 @@ async def test_strawberry_convertible_redis_dict():
     assert user_dict["fname"] == "Frank"
     assert user_dict["email"] == "frank@test.com"
     assert "pk" in user_dict
+
