@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pyredis-om"
-version = "0.4.4"
-description = "A true `redis-om` alternative, built out of frustration."
+version = "0.5.0b1"
+description = "A drop-in replacement for `redis-om`, built out of frustration."
 authors = ["Redis OSS <oss@redis.com>"]
 maintainers = ["Srikanth <srikanth@psync.club>"]
 license = "BSD-3-Clause"
@@ -12,7 +12,7 @@ packages = [
     { "include" = "redis_om" },
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
@@ -37,7 +37,7 @@ include=[
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-redis = "^7.4.0"
+redis = ">=6.4.0"
 pydantic = ">=1.10.26"
 click = "^8.1.7"
 types-redis = "^4.6.0"
