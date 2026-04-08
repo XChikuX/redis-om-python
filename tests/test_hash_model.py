@@ -22,7 +22,6 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
-
 from tests._compat import ValidationError
 from tests._sync_redis import has_redisearch
 
@@ -584,6 +583,24 @@ async def test_expire(m):
 
     ttl = await m.Member.db().ttl(member.key())
     assert ttl > 0
+
+
+@py_test_mark_asyncio
+async def test_default_ttl_is_applied_to_bulk_hash_add(m):
+    class CachedMember(m.BaseHashModel):
+        name: str = Field(index=True)
+
+        class Meta:
+            default_ttl = 120
+
+    await Migrator().run()
+
+    first = CachedMember(name="alpha")
+    second = CachedMember(name="beta")
+
+    assert await CachedMember.add([first, second]) == [first, second]
+    assert 0 < await CachedMember.db().ttl(first.key()) <= 120
+    assert 0 < await CachedMember.db().ttl(second.key()) <= 120
 
 
 def test_raises_error_with_embedded_models(m):

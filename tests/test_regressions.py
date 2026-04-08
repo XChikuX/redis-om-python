@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
 from aredis_om.checks import clear_command_cache, has_redis_json, has_redisearch
 from aredis_om.connections import get_redis_connection
+from aredis_om.model import model as model_module
 from aredis_om.model.cli import migrate as migrate_cli_module
 from aredis_om.model.model import (
     Expression,
@@ -45,6 +46,71 @@ def test_get_redis_connection_uses_latest_env_value(monkeypatch):
 
     assert first.connection_pool.connection_kwargs["port"] == 6380
     assert second.connection_pool.connection_kwargs["port"] == 6381
+
+
+def test_model_db_is_resolved_lazily(monkeypatch):
+    calls = {"count": 0}
+    sentinel = object()
+
+    def fake_get_redis_connection():
+        calls["count"] += 1
+        return sentinel
+
+    monkeypatch.setattr(model_module, "get_redis_connection", fake_get_redis_connection)
+
+    class LazyModel(JsonModel, abc.ABC):
+        name: str
+
+    assert calls["count"] == 0
+    assert LazyModel.db() is sentinel
+    assert LazyModel.db() is sentinel
+    assert calls["count"] == 1
+
+
+def test_model_meta_database_can_be_assigned_after_class_creation(monkeypatch):
+    def should_stay_lazy():
+        raise AssertionError("should stay lazy")
+
+    monkeypatch.setattr(
+        model_module,
+        "get_redis_connection",
+        should_stay_lazy,
+    )
+    runtime_connection = object()
+
+    class RuntimeConfiguredModel(HashModel, abc.ABC):
+        name: str
+
+    RuntimeConfiguredModel.Meta.database = runtime_connection
+
+    assert RuntimeConfiguredModel.db() is runtime_connection
+
+
+def test_model_meta_database_callable_is_cached(monkeypatch):
+    def should_use_callable():
+        raise AssertionError("callable should be used")
+
+    monkeypatch.setattr(
+        model_module,
+        "get_redis_connection",
+        should_use_callable,
+    )
+    calls = {"count": 0}
+    sentinel = object()
+
+    def connection_factory():
+        calls["count"] += 1
+        return sentinel
+
+    class CallableConfiguredModel(JsonModel, abc.ABC):
+        name: str
+
+        class Meta:
+            database = connection_factory
+
+    assert CallableConfiguredModel.db() is sentinel
+    assert CallableConfiguredModel.db() is sentinel
+    assert calls["count"] == 1
 
 
 @py_test_mark_asyncio
@@ -160,3 +226,39 @@ async def test_aggregate_ct_handles_decode_response_strings(key_prefix, redis):
     await Product(name="chair", category="furniture").save()
 
     assert await Product.find(Product.category == "toy").aggregate_ct() == 2
+
+
+@py_test_mark_asyncio
+async def test_find_query_warns_about_indexing_failures(monkeypatch, caplog):
+    class FakeIndex:
+        async def info(self):
+            return {"hash_indexing_failures": 2}
+
+    class FakeConnection:
+        def ft(self, _index_name):
+            return FakeIndex()
+
+        async def execute_command(self, *_args):
+            return [0]
+
+    fake_connection = FakeConnection()
+
+    async def fake_has_redisearch(_conn):
+        return True
+
+    monkeypatch.setattr(model_module, "has_redisearch", fake_has_redisearch)
+
+    class Product(JsonModel, abc.ABC):
+        name: str = Field(index=True)
+
+        class Meta:
+            database = fake_connection
+
+    health = await Product.check_index_health()
+
+    with caplog.at_level("WARNING"):
+        assert await Product.find(Product.name == "ball").all() == []
+
+    assert health["indexing_failures"] == 2
+    assert "RediSearch index" in caplog.text
+    assert "indexing failures" in caplog.text

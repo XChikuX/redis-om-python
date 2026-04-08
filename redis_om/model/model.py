@@ -37,16 +37,9 @@ from ulid import ULID
 from .. import redis
 from .._compat import PYDANTIC_V2, BaseModel
 from .._compat import FieldInfo as PydanticFieldInfo
-from .._compat import (
-    ModelField,
-    ModelMetaclass,
-    NoArgAnyCallable,
-    Representation,
-    PydanticUndefined as Undefined,
-    UndefinedType,
-    validate_model,
-    validator,
-)
+from .._compat import ModelField, ModelMetaclass, NoArgAnyCallable
+from .._compat import PydanticUndefined as Undefined
+from .._compat import Representation, UndefinedType, validate_model, validator
 from ..checks import has_redis_json, has_redisearch
 from ..connections import get_redis_connection
 from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
@@ -60,6 +53,8 @@ _T = TypeVar("_T")
 Model = TypeVar("Model", bound="RedisModel")
 log = logging.getLogger(__name__)
 escaper = TokenEscaper()
+DatabaseConnection = Union[redis.Redis, redis.RedisCluster]
+DatabaseProvider = Callable[[], DatabaseConnection]
 
 # For basic exact-match field types like an indexed string, we create a TAG
 # field in the RediSearch index. TAG is designed for multi-value fields
@@ -831,29 +826,69 @@ class FindQuery:
         return params
 
     def validate_sort_fields(self, sort_fields: List[str]):
+        resolved_sort_fields = []
         for sort_field in sort_fields:
             field_name = sort_field.lstrip("-")
             if self.knn and field_name == self.knn.score_field:
+                resolved_sort_fields.append(sort_field)
                 continue
-            if field_name not in self.model.__fields__:  # type: ignore
-                raise QueryNotSupportedError(
-                    f"You tried sort by {field_name}, but that field "
-                    f"does not exist on the model {self.model}"
-                )
-            field_proxy = getattr(self.model, field_name)
-            if isinstance(field_proxy.field, FieldInfo) or isinstance(
-                field_proxy.field, PydanticFieldInfo
-            ):
-                field_info = field_proxy.field
-            else:
-                field_info = field_proxy.field.field_info
-
+            resolved_field_name, field_info = self.resolve_sort_field(field_name)
             if not getattr(field_info, "sortable", False):
                 raise QueryNotSupportedError(
                     f"You tried sort by {field_name}, but {self.model} does "
                     f"not define that field as sortable. Docs: {ERRORS_URL}#E2"
                 )
-        return sort_fields
+            resolved_sort_fields.append(
+                f"-{resolved_field_name}"
+                if sort_field.startswith("-")
+                else resolved_field_name
+            )
+        return resolved_sort_fields
+
+    def resolve_sort_field(self, field_name: str) -> Tuple[str, PydanticFieldInfo]:
+        # Queries use `.` or `__` for embedded paths, but RediSearch SORTBY uses
+        # the flattened schema alias with underscores.
+        normalized_field_name = field_name.replace(".", "__")
+        parts = normalized_field_name.split("__")
+        current_model = self.model
+        resolved_parts = []
+        field_info = None
+
+        for index, part in enumerate(parts):
+            if part not in current_model.__fields__:  # type: ignore
+                raise QueryNotSupportedError(
+                    f"You tried sort by {field_name}, but that field "
+                    f"does not exist on the model {self.model}"
+                )
+            field = current_model.__fields__[part]  # type: ignore[index]
+            resolved_parts.append(part)
+            if isinstance(field, FieldInfo) or isinstance(field, PydanticFieldInfo):
+                field_info = field
+            else:
+                field_info = field.field_info
+
+            if index == len(parts) - 1:
+                break
+
+            field_type = outer_type_or_annotation(field)
+            if is_supported_container_type(field_type):
+                type_args = get_args(field_type)
+                field_type = type_args[0] if type_args else field_type
+            if not isinstance(field_type, type) or not issubclass(
+                field_type, RedisModel
+            ):
+                raise QueryNotSupportedError(
+                    f"You tried sort by {field_name}, but that field "
+                    f"does not exist on the model {self.model}"
+                )
+            current_model = field_type
+
+        if field_info is None:
+            raise QueryNotSupportedError(
+                f"You tried sort by {field_name}, but that field "
+                f"does not exist on the model {self.model}"
+            )
+        return "_".join(resolved_parts), field_info
 
     @staticmethod
     def resolve_field_type(
@@ -1266,6 +1301,9 @@ class FindQuery:
                 "or RedisJSON module installed. Querying requires that your Redis "
                 "instance has one of these modules installed."
             )
+        if not getattr(self.model._meta, "index_health_checked", False):
+            self.model.check_index_health()
+            self.model._meta.index_health_checked = True
 
         # Reset the cache if we're executing from offset 0.
         if self.offset == 0:
@@ -1688,12 +1726,14 @@ class BaseMeta(Protocol):
     global_key_prefix: str
     model_key_prefix: str
     primary_key_pattern: str
-    database: Union[redis.Redis, redis.RedisCluster]
+    database: Optional[Union[DatabaseConnection, DatabaseProvider]]
     primary_key: PrimaryKey
     primary_key_creator_cls: Type[PrimaryKeyCreator]
     index_name: str
     embedded: bool
     encoding: str
+    default_ttl: Optional[int]
+    index_health_checked: bool
 
 
 @dataclasses.dataclass
@@ -1707,12 +1747,15 @@ class DefaultMeta:
     global_key_prefix: Optional[str] = None
     model_key_prefix: Optional[str] = None
     primary_key_pattern: Optional[str] = None
-    database: Optional[Union[redis.Redis, redis.RedisCluster]] = None
+    # May be a connection instance or a callable that returns one lazily.
+    database: Optional[Union[DatabaseConnection, DatabaseProvider]] = None
     primary_key: Optional[PrimaryKey] = None
     primary_key_creator_cls: Optional[Type[PrimaryKeyCreator]] = None
     index_name: Optional[str] = None
     embedded: Optional[bool] = False
     encoding: str = "utf-8"
+    default_ttl: Optional[int] = None
+    index_health_checked: bool = False
 
 
 def _convert_v2_validators_to_v1(attrs: dict) -> dict:
@@ -1935,15 +1978,16 @@ class ModelMeta(ModelMetaclass):
                 base_meta, "primary_key_pattern", "{pk}"
             )
         if not getattr(new_class._meta, "database", None):
-            new_class._meta.database = getattr(
-                base_meta, "database", get_redis_connection()
-            )
+            new_class._meta.database = getattr(base_meta, "database", None)
         if not getattr(new_class._meta, "encoding", None):
             new_class._meta.encoding = getattr(base_meta, "encoding")
         if not getattr(new_class._meta, "primary_key_creator_cls", None):
             new_class._meta.primary_key_creator_cls = getattr(
                 base_meta, "primary_key_creator_cls", UlidPrimaryKey
             )
+        if getattr(new_class._meta, "default_ttl", None) is None:
+            new_class._meta.default_ttl = getattr(base_meta, "default_ttl", None)
+        new_class._meta.index_health_checked = False
         # TODO: Configurable key separate, defaults to ":"
         if not getattr(new_class._meta, "index_name", None):
             new_class._meta.index_name = (
@@ -2192,7 +2236,105 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def db(cls):
-        return cls._meta.database
+        # `Meta` is the user-facing configuration surface; `_meta` is the
+        # internal copy inherited and normalized by the metaclass.
+        database = getattr(cls.Meta, "database", None)
+        if database is None:
+            database = getattr(cls._meta, "database", None)
+        if callable(database):
+            database = database()
+            cls.Meta.database = database
+            cls._meta.database = database
+        if database is None:
+            database = get_redis_connection()
+            cls.Meta.database = database
+            cls._meta.database = database
+        return database
+
+    @classmethod
+    def default_ttl(cls) -> Optional[int]:
+        default_ttl = getattr(cls.Meta, "default_ttl", None)
+        if default_ttl is None:
+            default_ttl = getattr(cls._meta, "default_ttl", None)
+        return default_ttl
+
+    @classmethod
+    def save_response_count(cls) -> int:
+        # save + expire when a default TTL is configured, otherwise save only.
+        return 2 if cls.default_ttl() is not None else 1
+
+    def finalize_save(
+        self, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> None:
+        self.apply_default_ttl(pipeline=pipeline)
+        # Re-check index health on the next query after writes.
+        type(self)._meta.index_health_checked = False
+
+    def apply_default_ttl(
+        self, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> None:
+        default_ttl = self.default_ttl()
+        if default_ttl is None:
+            return
+        self.expire(default_ttl, pipeline=pipeline)
+
+    @staticmethod
+    def _normalize_redis_info(value: Any) -> Any:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "ignore")
+        if isinstance(value, dict):
+            return {
+                RedisModel._normalize_redis_info(key): RedisModel._normalize_redis_info(
+                    dict_value
+                )
+                for key, dict_value in value.items()
+            }
+        if isinstance(value, list):
+            return [RedisModel._normalize_redis_info(item) for item in value]
+        return value
+
+    @classmethod
+    def check_index_health(cls) -> Optional[Dict[str, Any]]:
+        try:
+            index_info = cls.db().ft(cls.Meta.index_name).info()
+        except (AttributeError, redis.ResponseError):
+            return None
+
+        info = cls._normalize_redis_info(index_info)
+        index_errors = info.get("Index Errors") or info.get("index_errors") or {}
+        # RediSearch response shapes vary by version, so we check the common
+        # top-level and nested key variants for indexing failures.
+        indexing_failures = 0
+        for mapping, key in (
+            (info, "hash_indexing_failures"),
+            (index_errors, "hash_indexing_failures"),
+            (index_errors, "indexing failures"),
+            (info, "indexing failures"),
+        ):
+            if isinstance(mapping, dict) and mapping.get(key) is not None:
+                indexing_failures = mapping.get(key)
+                break
+
+        try:
+            indexing_failures = int(indexing_failures)
+        except (TypeError, ValueError):
+            indexing_failures = 0
+
+        health = {
+            "index_name": cls.Meta.index_name,
+            "indexing_failures": indexing_failures,
+            "index_errors": index_errors,
+        }
+        if indexing_failures:
+            log.warning(
+                "RediSearch index %s for %s reports %s indexing failures. "
+                "Queries may return incomplete results. Run FT.INFO %s for details.",
+                cls.Meta.index_name,
+                cls.__name__,
+                indexing_failures,
+                cls.Meta.index_name,
+            )
+        return health
 
     @classmethod
     def find(
@@ -2275,7 +2417,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         # the one we just created.
         if pipeline is None:
             result = db.execute()
-            pipeline_verifier(result, expected_responses=len(models))
+            pipeline_verifier(
+                result, expected_responses=len(models) * cls.save_response_count()
+            )
 
         return models
 
@@ -2405,6 +2549,7 @@ class HashModel(RedisModel, abc.ABC):
         document = {k: v for k, v in document.items() if v is not None}
         # TODO: Wrap any Redis response errors in a custom exception?
         db.hset(self.key(), mapping=document)
+        self.finalize_save(pipeline=pipeline)
         return self
 
     @classmethod
@@ -2677,6 +2822,7 @@ class JsonModel(RedisModel, abc.ABC):
 
         # TODO: Wrap response errors in a custom exception?
         db.json().set(self.key(), Path.root_path(), document)
+        self.finalize_save(pipeline=pipeline)
         return self
 
     @classmethod

@@ -114,6 +114,55 @@ tests_sync/            # Synchronous tests
 - `test_optional_bytes_field` — Optional[bytes] with None and binary data
 - `test_bytes_field_in_embedded_model` — bytes inside EmbeddedJsonModel (JsonModel only)
 
+## Recent Changes (April 2026)
+
+### Lazy DB Resolution (Issues #519, PR #543)
+- `Meta.database` is no longer resolved at import time; connection is created on first `Model.db()` call
+- `Meta.database` accepts a callable provider (invoked once and cached)
+- Runtime reassignment via `MyModel.Meta.database = conn` works correctly
+
+### Default TTL (Issue #529)
+- `Meta.default_ttl` applies TTL automatically on `save()` and `add()` for both HashModel and JsonModel
+- `save_response_count()` accounts for the additional EXPIRE pipeline command
+
+### Embedded JSON Sort (Issue #431)
+- `FindQuery.sort_by()` resolves nested embedded field paths (e.g. `metrics.score` or `metrics__score`)
+- Validates sortability on resolved embedded fields rather than only top-level fields
+
+### Index Health Warnings (Issue #204)
+- `check_index_health()` queries `FT.INFO` and logs warnings on indexing failures
+- After each `save()`, the health check flag resets so the next query re-checks
+
+## Test Coverage (as of April 2026)
+
+| Module | Coverage | Notes |
+|--------|----------|-------|
+| `model/model.py` | 86% | Core model logic, Expression, FindQuery, save/get pipelines |
+| `model/query_resolver.py` | **100%** | Or, And, Not, QueryResolver |
+| `model/render_tree.py` | **100%** | Tree rendering |
+| `model/token_escaper.py` | **100%** | RediSearch token escaping |
+| `model/encoders.py` | 85% | JSON encoding |
+| `model/types.py` | **100%** | Coordinates, GeoFilter |
+| `model/cli/migrate.py` | 90% | CLI migration |
+| `model/migrations/migrator.py` | 71% | Index migration |
+| `checks.py` | 86% | Command detection |
+| `connections.py` | 93% | Connection management |
+| `_compat.py` | 62% | Pydantic v1/v2 compat |
+| `util.py` | 87% | Numeric type helpers |
+| **Overall** | **86%** | 808 tests (async + sync) |
+
+### Test Files Added
+- `test_nested.py` — 48 tests for deeply nested models, complex multi-condition queries, embedded field IN/NOT_IN, GeoFilter, FindQuery methods (sort_by, page, count, delete, update, get_item, __aiter__, aggregate_ct), Expression/NegatedExpression property coverage
+- `test_pipeline.py` — 18 tests for multi-model pipelines, batch create/get_many/delete_many, GEO radius + get_many combined, large batch operations (50-100 items), explicit pipeline usage, transaction mode, mixed JSON + Hash operations
+- `test_render_tree.py` — 15 tests (100% coverage)
+- `test_query_resolver.py` — 18 tests (100% coverage)
+- `test_token_escaper.py` — 29 tests (100% coverage)
+- `test_encoders.py` — 22 tests (85% coverage)
+- `test_types.py` — 20 tests (100% coverage)
+- `test_checks.py` — 8 tests (86% coverage)
+- `test_connections.py` — 6 tests (93% coverage)
+- `test_util.py` — 12 tests (87% coverage)
+
 ## Technical Debt
 
 ### DateTime
@@ -125,6 +174,11 @@ tests_sync/            # Synchronous tests
 - Models use hash tags for same-slot guarantee
 - Pipeline/transaction operations may have cluster-specific constraints
 - Cluster-specific tests needed when cluster test environment is available
+
+### Remaining Coverage Targets
+- `model/model.py` — many uncovered branches are error-handling paths and Pydantic v1-only compat code
+- `model/migrations/migrator.py` — requires complex index migration scenarios
+- `_compat.py` — Pydantic v1 code paths only reachable on older Pydantic versions
 
 ## Version
 - **Current Version:** 0.4.4
