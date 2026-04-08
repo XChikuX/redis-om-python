@@ -18,9 +18,23 @@ def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
 
     if cluster:
         if url:
-            return redis.RedisCluster.from_url(url, **kwargs)
+            # Strip the cluster=true query parameter from the URL so it
+            # doesn't get forwarded to RedisCluster.__init__().
+            clean_url = _strip_cluster_param(url)
+            return redis.RedisCluster.from_url(clean_url, **kwargs)
         return redis.RedisCluster(**kwargs)
     else:
         if url:
             return redis.Redis.from_url(url, **kwargs)
         return redis.Redis(**kwargs)
+
+
+def _strip_cluster_param(url: str) -> str:
+    """Remove 'cluster=true' from URL query parameters."""
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params.pop("cluster", None)
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))

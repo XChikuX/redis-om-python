@@ -66,6 +66,8 @@ The current release includes:
 - Lazy `Meta.database` resolution, including callable connection providers
 - Default model TTLs via `Meta.default_ttl`
 - Bulk fetches with `get_many()` and explicit pipeline composition
+- Redis Cluster connections via `cluster=True` or `cluster=true` in the URL
+- Cluster-safe bulk writes and pipeline-backed model operations
 - Nested embedded JSON sorting and index health warnings
 
 ## 💻 Installation
@@ -94,6 +96,33 @@ export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
 ```
 
 The current `redis:8-alpine` image includes the modules Redis OM needs for JSON and search features, so you can use a single lightweight image for local development. This is also the image used for local testing and CI.
+
+### Redis Cluster
+
+Redis OM also supports Redis Cluster connections.
+
+```python
+from aredis_om import get_redis_connection
+
+# Explicit flag
+cluster = get_redis_connection(
+    url="redis://localhost:7001?decode_responses=True",
+    cluster=True,
+)
+
+# Or use the URL parameter
+cluster = get_redis_connection(
+    url="redis://localhost:7001?decode_responses=True&cluster=true",
+)
+```
+
+Cluster support includes:
+
+- `HashModel` and `JsonModel` CRUD operations
+- bulk `add()` / `delete_many()` flows
+- `get_many()` and explicit pipeline composition
+- RediSearch-backed queries, including embedded JSON and GEO lookups
+- migrator support for creating search indexes on cluster deployments
 
 ## 📇 Modeling Your Data
 

@@ -133,6 +133,16 @@ tests_sync/            # Synchronous tests
 - `check_index_health()` queries `FT.INFO` and logs warnings on indexing failures
 - After each `save()`, the health check flag resets so the next query re-checks
 
+### Cluster Pipeline + Connection Improvements (April 2026)
+- `HashModel.save()`, `JsonModel.save()`, and `expire()` detect async `ClusterPipeline` and queue commands without awaiting them
+- `get_redis_connection()` strips `cluster=true` from the URL before calling `RedisCluster.from_url()`
+- Cluster migrations create indexes through a single cluster node instead of broadcasting `FT.CREATE` to every primary
+
+### Performance + Cluster Validation (April 2026)
+- `tests/test_performance_benchmark.py` adds 51 single-instance baseline benchmark tests across CRUD, queries, GEO, full-text, pipelines, and bulk operations
+- `tests/test_cluster_operations.py` adds 78 Redis Cluster tests against a 6-node `redis:8-alpine` cluster (3 masters, 3 replicas)
+- Cluster validation now covers direct Redis verification, model CRUD, GEO, JSON search, migrations, concurrent operations, and cluster-vs-single-instance slowdown checks
+
 ## Test Coverage (as of April 2026)
 
 | Module | Coverage | Notes |
@@ -162,6 +172,8 @@ tests_sync/            # Synchronous tests
 - `test_checks.py` — 8 tests (86% coverage)
 - `test_connections.py` — 6 tests (93% coverage)
 - `test_util.py` — 12 tests (87% coverage)
+- `test_performance_benchmark.py` — 51 single-instance baseline benchmark tests
+- `test_cluster_operations.py` — 78 Redis Cluster integration and performance-comparison tests
 
 ## Technical Debt
 
@@ -170,10 +182,10 @@ tests_sync/            # Synchronous tests
 - Existing datetime data stored as strings needs migration for NUMERIC indexing
 
 ### Cluster
-- RediSearch on cluster requires search index on each shard
-- Models use hash tags for same-slot guarantee
-- Pipeline/transaction operations may have cluster-specific constraints
-- Cluster-specific tests needed when cluster test environment is available
+- Models now support cluster-safe pipeline-backed save flows
+- Cluster-specific tests exist for a 6-node Redis 8 cluster environment
+- Pipeline/transaction behavior still depends on redis-py cluster semantics and slot routing
+- Cluster-specific CI coverage is still a future improvement
 
 ### Remaining Coverage Targets
 - `model/model.py` — many uncovered branches are error-handling paths and Pydantic v1-only compat code
