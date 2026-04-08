@@ -39,7 +39,7 @@ clean:
 	rm -rf redis_om
 	rm -rf tests_sync
 	rm -rf .venv
-	docker-compose down
+	-docker-compose down
 
 
 .PHONY: dist
@@ -48,6 +48,7 @@ dist: $(INSTALL_STAMP) clean sync
 
 .PHONY: sync
 sync: $(INSTALL_STAMP)
+	$(UV) sync --extra dev
 	$(UV) run python make_sync.py
 
 .PHONY: lint

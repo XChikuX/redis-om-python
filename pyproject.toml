@@ -61,6 +61,7 @@ dev = [
     "email-validator>=2.0,<3.0",
     "tox>=4.0,<6.0",
     "strawberry-graphql>=0.314.0",
+    "twine>=6.2.0",
 ]
 
 [build-system]
