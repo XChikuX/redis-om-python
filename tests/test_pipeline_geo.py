@@ -229,9 +229,17 @@ async def test_pipeline_with_georadius_and_get(json_models):
     geo_key = f"{portland.key()}:geo_index"
     await db.geoadd(
         geo_key,
-        [-122.6765, 45.5231, portland.pk,
-         -122.3321, 47.6062, seattle.pk,
-         139.6503, 35.6762, tokyo.pk],
+        [
+            -122.6765,
+            45.5231,
+            portland.pk,
+            -122.3321,
+            47.6062,
+            seattle.pk,
+            139.6503,
+            35.6762,
+            tokyo.pk,
+        ],
     )
 
     # Step 2: Pipeline a GEORADIUSBYMEMBER + multiple HGET/JSON.GET in one
@@ -273,8 +281,8 @@ async def test_pipeline_georadius_then_get_many(json_models):
     UserLocation = json_models["UserLocation"]
 
     # Create users
-    user_a = UserLocation(name="User A", coordinates=(40.7128, -74.0060))   # NYC
-    user_b = UserLocation(name="User B", coordinates=(40.7580, -73.9855))   # Midtown
+    user_a = UserLocation(name="User A", coordinates=(40.7128, -74.0060))  # NYC
+    user_b = UserLocation(name="User B", coordinates=(40.7580, -73.9855))  # Midtown
     user_c = UserLocation(name="User C", coordinates=(34.0522, -118.2437))  # LA
 
     await user_a.save()
@@ -288,16 +296,22 @@ async def test_pipeline_georadius_then_get_many(json_models):
     pipe = db.pipeline(transaction=False)
     pipe.geoadd(
         geo_key,
-        [-74.0060, 40.7128, user_a.pk,
-         -73.9855, 40.7580, user_b.pk,
-         -118.2437, 34.0522, user_c.pk],
+        [
+            -74.0060,
+            40.7128,
+            user_a.pk,
+            -73.9855,
+            40.7580,
+            user_b.pk,
+            -118.2437,
+            34.0522,
+            user_c.pk,
+        ],
     )
     await pipe.execute()
 
     # Query nearby PKs
-    nearby_pks = await db.georadiusbymember(
-        geo_key, user_a.pk, 50, unit="km", count=10
-    )
+    nearby_pks = await db.georadiusbymember(geo_key, user_a.pk, 50, unit="km", count=10)
     nearby_pks = [
         pk.decode("utf-8") if isinstance(pk, bytes) else pk for pk in nearby_pks
     ]
@@ -343,9 +357,17 @@ async def test_pipeline_geosearch_with_hash_model(hash_models):
     geo_key = f"{london.key()}:geo_index"
     await db.geoadd(
         geo_key,
-        [-0.1278, 51.5074, london.pk,
-         2.3522, 48.8566, paris.pk,
-         151.2093, -33.8688, sydney.pk],
+        [
+            -0.1278,
+            51.5074,
+            london.pk,
+            2.3522,
+            48.8566,
+            paris.pk,
+            151.2093,
+            -33.8688,
+            sydney.pk,
+        ],
     )
 
     # Pipeline: geo search + hgetall for specific model

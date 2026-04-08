@@ -33,13 +33,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .._compat import ENCODERS_BY_TYPE, BaseModel, PydanticUndefined
 
-
 SetIntStr = Set[Union[int, str]]
 DictIntStrAny = Dict[Union[int, str], Any]
 
 
 def generate_encoders_by_class_tuples(
-    type_encoder_map: Dict[Any, Callable[[Any], Any]]
+    type_encoder_map: Dict[Any, Callable[[Any], Any]],
 ) -> Dict[Callable[[Any], Any], Tuple[Any, ...]]:
     encoders_by_class_tuples: Dict[Callable[[Any], Any], Tuple[Any, ...]] = defaultdict(
         tuple

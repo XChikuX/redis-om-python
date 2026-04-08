@@ -55,7 +55,6 @@ from .render_tree import render_tree
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
 
-
 model_registry = {}
 _T = TypeVar("_T")
 Model = TypeVar("Model", bound="RedisModel")

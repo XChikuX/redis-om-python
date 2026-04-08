@@ -23,7 +23,6 @@ from tests._sync_redis import has_redisearch as sync_has_redisearch
 
 from .conftest import py_test_mark_asyncio
 
-
 HAS_REDIS_JSON = sync_has_redis_json()
 HAS_REDISEARCH = sync_has_redisearch()
 

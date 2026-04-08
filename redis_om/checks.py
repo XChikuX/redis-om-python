@@ -3,7 +3,6 @@ from weakref import WeakKeyDictionary
 
 from redis_om.connections import get_redis_connection
 
-
 _command_cache = WeakKeyDictionary()
 
 

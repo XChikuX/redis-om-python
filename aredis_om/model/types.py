@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Tuple, Union
 
-
 RadiusUnit = Literal["m", "km", "mi", "ft"]
 
 
@@ -45,7 +44,9 @@ class Coordinates:
             return cls(latitude=float(lat), longitude=float(lon))
         if isinstance(v, dict):
             if "latitude" in v and "longitude" in v:
-                return cls(latitude=float(v["latitude"]), longitude=float(v["longitude"]))
+                return cls(
+                    latitude=float(v["latitude"]), longitude=float(v["longitude"])
+                )
             if "lat" in v and "lon" in v:
                 return cls(latitude=float(v["lat"]), longitude=float(v["lon"]))
         raise TypeError(
@@ -79,7 +80,9 @@ class GeoFilter:
         # ).all()
     """
 
-    def __init__(self, longitude: float, latitude: float, radius: float, unit: RadiusUnit):
+    def __init__(
+        self, longitude: float, latitude: float, radius: float, unit: RadiusUnit
+    ):
         if not -180 <= longitude <= 180:
             raise ValueError(f"Longitude must be between -180 and 180, got {longitude}")
         if not -90 <= latitude <= 90:
@@ -97,6 +100,7 @@ class GeoFilter:
         return f"{self.longitude} {self.latitude} {self.radius} {self.unit}"
 
     @classmethod
-    def from_coordinates(cls, coords: Coordinates, radius: float, unit: RadiusUnit) -> "GeoFilter":
+    def from_coordinates(
+        cls, coords: Coordinates, radius: float, unit: RadiusUnit
+    ) -> "GeoFilter":
         return cls(coords.longitude, coords.latitude, radius, unit)
-

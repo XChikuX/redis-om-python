@@ -28,7 +28,6 @@ from tests._sync_redis import has_redisearch
 
 from .conftest import py_test_mark_asyncio
 
-
 if not has_redisearch():
     pytestmark = pytest.mark.skip
 
@@ -962,7 +961,6 @@ async def test_literals():
     await item.save()
     rematerialized = await TestLiterals.find(TestLiterals.flavor == "pumpkin").first()
     assert rematerialized.pk == item.pk
-
 
 
 @py_test_mark_asyncio

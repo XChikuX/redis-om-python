@@ -7,7 +7,6 @@ from aredis_om import get_redis_connection
 
 from ._sync_redis import get_sync_redis_connection
 
-
 TEST_PREFIX = "redis-om:testing"
 
 

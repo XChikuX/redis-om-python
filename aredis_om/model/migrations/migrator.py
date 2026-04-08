@@ -6,7 +6,6 @@ from typing import List, Optional, Union
 
 from ... import redis
 
-
 log = logging.getLogger(__name__)
 
 

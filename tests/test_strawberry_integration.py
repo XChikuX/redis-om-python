@@ -204,15 +204,17 @@ async def test_strawberry_filter_by_ethnicity():
     for pk in old_pks:
         await StrawberryUser.delete(pk)
 
-    user1 = await _make_user(fname="Alice", email="alice@test.com", ethnicity="indian")
+    user1 = await _make_user(
+        fname="Alice", email="alice@test.com", ethnicity="polynesian"
+    )
     await user1.save()
     user2 = await _make_user(
-        fname="Bob", email="bob@test.com", ethnicity="caucasian"
+        fname="Bob", email="bob@test.com", ethnicity="melanesian"
     )
     await user2.save()
 
     results = await StrawberryUser.find(
-        StrawberryUser.ethnicity == "indian"
+        StrawberryUser.ethnicity == "polynesian"
     ).all()
     assert len(results) == 1
     assert results[0].fname == "Alice"
@@ -272,9 +274,7 @@ async def test_strawberry_embedded_phone_indexed():
         await StrawberryUser.delete(pk)
 
     phone = _make_phone(number=9876543210, device_id="device-xyz")
-    user = await _make_user(
-        fname="Eve", email="eve@test.com", phone=phone
-    )
+    user = await _make_user(fname="Eve", email="eve@test.com", phone=phone)
     await user.save()
 
     found = await StrawberryUser.find(StrawberryUser.pk == user.pk).first()
@@ -299,4 +299,3 @@ async def test_strawberry_convertible_redis_dict():
     assert user_dict["fname"] == "Frank"
     assert user_dict["email"] == "frank@test.com"
     assert "pk" in user_dict
-
