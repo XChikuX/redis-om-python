@@ -20,6 +20,7 @@ help:
 	@echo "  redis       start a Redis instance with Docker"
 	@echo "  sync        generate modules redis_om, tests_sync from aredis_om, tests respectively"
 	@echo "  dist        build a redis-om package"
+	@echo "  upload      upload distributions to PyPI"
 	@echo "  all         equivalent to \"make lint format test\""
 	@echo ""
 	@echo "Check the Makefile to know exactly what each target is doing."
@@ -84,6 +85,10 @@ shell: $(INSTALL_STAMP)
 .PHONY: redis
 redis:
 	docker-compose up -d
+
+.PHONY: upload
+upload: dist
+	twine upload dist/* --verbose
 
 .PHONY: all
 all: lint format test
