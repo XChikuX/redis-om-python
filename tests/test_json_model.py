@@ -24,7 +24,6 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
-
 from tests._compat import EmailStr, PositiveInt, ValidationError
 from tests._sync_redis import has_redis_json
 
@@ -747,6 +746,52 @@ async def test_sorting(members, m):
     with pytest.raises(QueryNotSupportedError):
         # This field is not sortable.
         await m.Member.find().sort_by("join_date").all()
+
+
+@py_test_mark_asyncio
+async def test_sorting_by_embedded_sortable_field(key_prefix):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class Metrics(EmbeddedJsonModel):
+        score: int = Field(index=True, sortable=True)
+
+    class Book(BaseJsonModel):
+        title: str = Field(index=True)
+        metrics: Metrics
+
+    await Migrator().run()
+
+    low = Book(title="Low", metrics=Metrics(score=1))
+    high = Book(title="High", metrics=Metrics(score=5))
+    await low.save()
+    await high.save()
+
+    actual = await Book.find(Book.metrics.score > 0).sort_by("metrics.score").all()
+    assert actual == [low, high]
+
+    actual = await Book.find(Book.metrics.score > 0).sort_by("-metrics__score").all()
+    assert actual == [high, low]
+
+
+@py_test_mark_asyncio
+async def test_default_ttl_is_applied_to_json_models_on_save(key_prefix):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            default_ttl = 120
+
+    class Session(BaseJsonModel):
+        name: str = Field(index=True)
+
+    await Migrator().run()
+
+    session = Session(name="cached")
+    await session.save()
+
+    ttl = await Session.db().ttl(session.key())
+    assert 0 < ttl <= 120
 
 
 @py_test_mark_asyncio
