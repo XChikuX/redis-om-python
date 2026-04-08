@@ -153,7 +153,7 @@ async def _make_user(**overrides):
 # ── Tests ─────────────────────────────────────────────────────────────
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_type_wraps_model():
     """Strawberry @type decorator can wrap a JsonModel without error."""
     assert hasattr(User, "__strawberry_definition__") or hasattr(
@@ -161,7 +161,7 @@ async def test_strawberry_type_wraps_model():
     )
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_input_wraps_model():
     """Strawberry @input decorator can wrap a JsonModel without error."""
     assert hasattr(UserInput, "__strawberry_definition__") or hasattr(
@@ -169,7 +169,7 @@ async def test_strawberry_input_wraps_model():
     )
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_save_and_find():
     """Save a user via redis-om and retrieve it, then convert to Strawberry type."""
     await Migrator().run()
@@ -189,7 +189,7 @@ async def test_strawberry_save_and_find():
     assert found.phone.number == 5551234567
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_filter_by_ethnicity():
     """Filter users by ethnicity field."""
     await Migrator().run()
@@ -210,7 +210,7 @@ async def test_strawberry_filter_by_ethnicity():
     assert results[0].fname == "Alice"
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_filter_by_interests():
     """Filter users by interests (full-text search list field)."""
     await Migrator().run()
@@ -233,7 +233,7 @@ async def test_strawberry_filter_by_interests():
     assert any(u.fname == "Charlie" for u in results)
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_filter_by_bio():
     """Filter users by bio using full-text search (% operator)."""
     await Migrator().run()
@@ -254,7 +254,7 @@ async def test_strawberry_filter_by_bio():
     assert any(u.fname == "Diana" for u in results)
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_embedded_phone_indexed():
     """Verify that the embedded phone model's indexed fields work."""
     await Migrator().run()
@@ -272,7 +272,7 @@ async def test_strawberry_embedded_phone_indexed():
     assert found.phone.device_id == "device-xyz"
 
 
-@py_test_mark_asyncio
+@pytest.mark.asyncio
 async def test_strawberry_convertible_redis_dict():
     """Test that convertible_redis_dict (if present) works for Strawberry conversion."""
     await Migrator().run()
