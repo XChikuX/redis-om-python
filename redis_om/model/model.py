@@ -144,10 +144,10 @@ def embedded(cls):
 
 def is_supported_container_type(typ: Optional[type]) -> bool:
     # TODO: Wait, why don't we support indexing sets?
-    if typ == list or typ == tuple or typ == Literal:
+    if typ == list or typ == tuple:
         return True
     unwrapped = get_origin(typ)
-    return unwrapped == list or unwrapped == tuple or unwrapped == Literal
+    return unwrapped == list or unwrapped == tuple
 
 
 def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any]):
@@ -634,6 +634,7 @@ def convert_dataclasses_to_dicts(obj):
     - ``set`` / ``frozenset`` → ``list``
     - ``uuid.UUID`` → string
     - ``Enum`` → its ``.value``
+    - ``decimal.Decimal`` → ``float``
 
     Pydantic v1's ``.dict()`` does not automatically serialise these types,
     so this helper must run before ``json().set()``.
@@ -654,6 +655,8 @@ def convert_dataclasses_to_dicts(obj):
         return str(obj)
     if isinstance(obj, Enum):
         return obj.value
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
     return obj
 
 
@@ -2309,12 +2312,14 @@ class HashModel(RedisModel, abc.ABC):
                             f"or mapping fields. Field: {name}"
                         )
 
-            if issubclass(outer_type, RedisModel):
+            if isinstance(outer_type, type) and issubclass(outer_type, RedisModel):
                 raise RedisModelError(
                     f"HashModels cannot index embedded model fields. Field: {name}"
                 )
-            elif dataclasses.is_dataclass(outer_type) and not issubclass(
-                outer_type, Coordinates
+            elif (
+                isinstance(outer_type, type)
+                and dataclasses.is_dataclass(outer_type)
+                and not issubclass(outer_type, Coordinates)
             ):
                 raise RedisModelError(
                     f"HashModels cannot index dataclass fields. Field: {name}"
@@ -2508,7 +2513,7 @@ class HashModel(RedisModel, abc.ABC):
                 )
                 return ""
             embedded_cls = embedded_cls[0]
-            if sortable:
+            if sortable is True:
                 raise ValueError(
                     f"Field '{name}' is a container type and cannot be marked as sortable.\
                          Mark individual fields within the embedded model as sortable instead."
@@ -2528,7 +2533,7 @@ class HashModel(RedisModel, abc.ABC):
             schema = f"{name} GEO"
         elif typ in (datetime.date, datetime.datetime):
             schema = f"{name} NUMERIC"
-        elif issubclass(typ, str):
+        elif isinstance(typ, type) and issubclass(typ, str):
             separator = getattr(
                 field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
             )
@@ -2538,8 +2543,8 @@ class HashModel(RedisModel, abc.ABC):
                 )
             else:
                 schema = f"{name} TAG SEPARATOR {separator}"
-        elif issubclass(typ, RedisModel):
-            if sortable:
+        elif isinstance(typ, type) and issubclass(typ, RedisModel):
+            if sortable is True:
                 raise ValueError(
                     f"Field '{name}' is an embedded model and cannot be marked as sortable.\
                           Mark individual fields within the embedded model as sortable instead."
