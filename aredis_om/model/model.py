@@ -846,6 +846,8 @@ class FindQuery:
         return resolved_sort_fields
 
     def resolve_sort_field(self, field_name: str) -> Tuple[str, PydanticFieldInfo]:
+        # Queries use `.` or `__` for embedded paths, but RediSearch SORTBY uses
+        # the flattened schema alias with underscores.
         normalized_field_name = field_name.replace(".", "__")
         parts = normalized_field_name.split("__")
         current_model = self.model
@@ -1745,6 +1747,7 @@ class DefaultMeta:
     global_key_prefix: Optional[str] = None
     model_key_prefix: Optional[str] = None
     primary_key_pattern: Optional[str] = None
+    # May be a connection instance or a callable that returns one lazily.
     database: Optional[Union[DatabaseConnection, DatabaseProvider]] = None
     primary_key: Optional[PrimaryKey] = None
     primary_key_creator_cls: Optional[Type[PrimaryKeyCreator]] = None
@@ -2233,6 +2236,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def db(cls):
+        # `Meta` is the user-facing configuration surface; `_meta` is the
+        # internal copy inherited and normalized by the metaclass.
         database = getattr(cls.Meta, "database", None)
         if database is None:
             database = getattr(cls._meta, "database", None)
@@ -2255,7 +2260,15 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def save_response_count(cls) -> int:
+        # save + expire when a default TTL is configured, otherwise save only.
         return 2 if cls.default_ttl() is not None else 1
+
+    async def finalize_save(
+        self, pipeline: Optional[redis.client.Pipeline] = None
+    ) -> None:
+        await self.apply_default_ttl(pipeline=pipeline)
+        # Re-check index health on the next query after writes.
+        type(self)._meta.index_health_checked = False
 
     async def apply_default_ttl(
         self, pipeline: Optional[redis.client.Pipeline] = None
@@ -2272,9 +2285,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         if isinstance(value, dict):
             return {
                 RedisModel._normalize_redis_info(key): RedisModel._normalize_redis_info(
-                    item
+                    dict_value
                 )
-                for key, item in value.items()
+                for key, dict_value in value.items()
             }
         if isinstance(value, list):
             return [RedisModel._normalize_redis_info(item) for item in value]
@@ -2289,13 +2302,18 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
         info = cls._normalize_redis_info(index_info)
         index_errors = info.get("Index Errors") or info.get("index_errors") or {}
-        indexing_failures = info.get("hash_indexing_failures")
-        if indexing_failures is None and isinstance(index_errors, dict):
-            indexing_failures = index_errors.get("hash_indexing_failures")
-        if indexing_failures is None and isinstance(index_errors, dict):
-            indexing_failures = index_errors.get("indexing failures")
-        if indexing_failures is None:
-            indexing_failures = info.get("indexing failures", 0)
+        # RediSearch response shapes vary by version, so we check the common
+        # top-level and nested key variants for indexing failures.
+        indexing_failures = 0
+        for mapping, key in (
+            (info, "hash_indexing_failures"),
+            (index_errors, "hash_indexing_failures"),
+            (index_errors, "indexing failures"),
+            (info, "indexing failures"),
+        ):
+            if isinstance(mapping, dict) and mapping.get(key) is not None:
+                indexing_failures = mapping.get(key)
+                break
 
         try:
             indexing_failures = int(indexing_failures)
@@ -2531,8 +2549,7 @@ class HashModel(RedisModel, abc.ABC):
         document = {k: v for k, v in document.items() if v is not None}
         # TODO: Wrap any Redis response errors in a custom exception?
         await db.hset(self.key(), mapping=document)
-        await self.apply_default_ttl(pipeline=pipeline)
-        self._meta.index_health_checked = False
+        await self.finalize_save(pipeline=pipeline)
         return self
 
     @classmethod
@@ -2805,8 +2822,7 @@ class JsonModel(RedisModel, abc.ABC):
 
         # TODO: Wrap response errors in a custom exception?
         await db.json().set(self.key(), Path.root_path(), document)
-        await self.apply_default_ttl(pipeline=pipeline)
-        self._meta.index_health_checked = False
+        await self.finalize_save(pipeline=pipeline)
         return self
 
     @classmethod

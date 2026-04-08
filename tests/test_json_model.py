@@ -771,6 +771,7 @@ async def test_sorting_by_embedded_sortable_field(key_prefix):
     actual = await Book.find(Book.metrics.score > 0).sort_by("metrics.score").all()
     assert actual == [low, high]
 
+    # Support both dotted user-facing paths and the existing "__" alias syntax.
     actual = await Book.find(Book.metrics.score > 0).sort_by("-metrics__score").all()
     assert actual == [high, low]
 

@@ -68,10 +68,13 @@ def test_model_db_is_resolved_lazily(monkeypatch):
 
 
 def test_model_meta_database_can_be_assigned_after_class_creation(monkeypatch):
+    def should_stay_lazy():
+        raise AssertionError("should stay lazy")
+
     monkeypatch.setattr(
         model_module,
         "get_redis_connection",
-        lambda: (_ for _ in ()).throw(AssertionError("should stay lazy")),
+        should_stay_lazy,
     )
     runtime_connection = object()
 
@@ -84,10 +87,13 @@ def test_model_meta_database_can_be_assigned_after_class_creation(monkeypatch):
 
 
 def test_model_meta_database_callable_is_cached(monkeypatch):
+    def should_use_callable():
+        raise AssertionError("callable should be used")
+
     monkeypatch.setattr(
         model_module,
         "get_redis_connection",
-        lambda: (_ for _ in ()).throw(AssertionError("callable should be used")),
+        should_use_callable,
     )
     calls = {"count": 0}
     sentinel = object()
@@ -248,7 +254,11 @@ async def test_find_query_warns_about_indexing_failures(monkeypatch, caplog):
         class Meta:
             database = fake_connection
 
+    health = await Product.check_index_health()
+
     with caplog.at_level("WARNING"):
         assert await Product.find(Product.name == "ball").all() == []
 
+    assert health["indexing_failures"] == 2
+    assert "RediSearch index" in caplog.text
     assert "indexing failures" in caplog.text
