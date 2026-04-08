@@ -26,9 +26,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Python 3.12
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{env.pythonversion}}
         #----------------------------------------------
@@ -45,7 +45,7 @@ jobs:
         #----------------------------------------------
       - name: Load cached venv
         id: cached-poetry-dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
@@ -77,11 +77,10 @@ jobs:
       matrix:
         os: [ ubuntu-latest ]
         pyver: ["3.10", "3.11", "3.12", "3.13"]
-        redisstack: [ "latest" ]
       fail-fast: false
     services:
       redis:
-        image: redis/redis-stack:${{ matrix.redisstack }}
+        image: redis:8-alpine
         ports:
           # Maps port 6379 on service container to the host
           - 6379:6379
@@ -98,9 +97,9 @@ jobs:
       INSTALL_DIR: ${{ github.workspace }}/redis
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Python ${{ matrix.pyver }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.pyver }}
         #----------------------------------------------
@@ -117,7 +116,7 @@ jobs:
         #----------------------------------------------
       - name: Load cached venv
         id: cached-poetry-dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
@@ -137,14 +136,14 @@ jobs:
         #----------------------------------------------
       - name: Install library
         run: poetry install --no-interaction
-      - name: Run unittests (redisstack:${{ matrix.redisstack }}, ${{ matrix.os }})
+      - name: Run unittests (redis:8-alpine, ${{ matrix.os }})
         env:
           REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
         run: |
           make test
           poetry run coverage xml
       - name: Upload coverage
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           file: ./coverage.xml
           flags: unit

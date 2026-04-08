@@ -4,7 +4,7 @@
 <div align="center">
   <br/>
   <br/>
-  <img width="360" src="https://raw.githubusercontent.com/redis-developer/redis-om-python/main/images/logo.svg?token=AAAXXHUYL6RHPESRRAMBJOLBSVQXE" alt="Redis OM" />
+  <img width="360" src="https://raw.githubusercontent.com/XChikuX/redis-om-python/main/images/logo.svg" alt="Redis OM" />
   <br/>
   <br/>
 </div>
@@ -23,6 +23,8 @@
 [![Build Status][ci-svg]][ci-url]
 
 **Redis OM Python** makes it easy to model Redis data in your Python applications.
+
+Install the package from PyPI as `pyredis-om`, then import `aredis_om` for the async API or `redis_om` for the generated sync mirror.
 
 <details>
   <summary><strong>Table of contents</strong></summary>
@@ -55,11 +57,16 @@ span
 
 Redis OM provides high-level abstractions that make it easy to model and query data in Redis with modern Python applications.
 
-This **preview** release contains the following features:
+The current release includes:
 
 - Declarative object mapping for Redis objects
 - Declarative secondary-index generation
 - Fluent APIs for querying Redis
+- Async-first APIs with a generated sync mirror
+- Lazy `Meta.database` resolution, including callable connection providers
+- Default model TTLs via `Meta.default_ttl`
+- Bulk fetches with `get_many()` and explicit pipeline composition
+- Nested embedded JSON sorting and index health warnings
 
 ## 💻 Installation
 
@@ -81,9 +88,12 @@ Before writing any code you'll need a Redis instance with the appropriate Redis 
 
 ```sh
 docker run -p 6379:6379 redis:8-alpine
+
+# bash / WSL
+export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
 ```
 
-The current `redis:8-alpine` image includes the modules Redis OM needs for JSON and search features, so you can use a single lightweight image for local development.
+The current `redis:8-alpine` image includes the modules Redis OM needs for JSON and search features, so you can use a single lightweight image for local development. This is also the image used for local testing and CI.
 
 ## 📇 Modeling Your Data
 
@@ -173,6 +183,10 @@ andrew.expire(120)
 # To retrieve this customer with its primary key, we use `Customer.get()`:
 assert Customer.get(andrew.pk) == andrew
 ```
+
+`Meta.database` is resolved lazily, so you can assign a connection at runtime or provide a callable that returns one when the model first needs it.
+
+If you want models to expire automatically, set `Meta.default_ttl` and Redis OM will apply it on `save()` and `add()`.
 
 **Ready to learn more?** Check out the [getting started](docs/getting_started.md) guide.
 
@@ -598,6 +612,8 @@ users = await UserLocation.get_many(["pk1", "pk2", "pk3"])
 
 `get_many()` uses an internal pipeline so the requested models are fetched in a single network round-trip, and it also accepts an explicit `pipeline=` argument when you want to compose it with other commands.
 
+For embedded JSON models, `sort_by()` also resolves nested field paths such as `metrics.score` and `metrics__score`.
+
 The parameters expected by each command function are those documented on the command's page on [redis.io](https://redis.io/commands/).
 
 If you don't want to get a Redis connection from a model class, you can also use `get_redis_connection`:
@@ -714,7 +730,7 @@ The Redis OM documentation is available [here](docs/index.md).
 
 If you run into trouble or have any questions, we're here to help!
 
-Hit us up on the [Redis Discord Server](http://discord.gg/redis) or [open an issue on GitHub](https://github.com/redis-developer/redis-om-python/issues/new).
+Hit us up on the [Redis Discord Server](http://discord.gg/redis) or [open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new).
 
 ## ❤️ Contributing
 
@@ -730,10 +746,10 @@ Redis OM uses the [MIT license][license-url].
 
 <!-- Badges -->
 
-[version-svg]: https://img.shields.io/pypi/v/redis-om?style=flat-square
-[package-url]: https://pypi.org/project/redis-om/
-[ci-svg]: https://github.com/redis/redis-om-python/actions/workflows/ci.yml/badge.svg
-[ci-url]: https://github.com/redis/redis-om-python/actions/workflows/ci.yml
+[version-svg]: https://img.shields.io/pypi/v/pyredis-om?style=flat-square
+[package-url]: https://pypi.org/project/pyredis-om/
+[ci-svg]: https://github.com/XChikuX/redis-om-python/actions/workflows/ci.yml/badge.svg
+[ci-url]: https://github.com/XChikuX/redis-om-python/actions/workflows/ci.yml
 [license-image]: https://img.shields.io/badge/license-mit-green.svg?style=flat-square
 [license-url]: LICENSE
 
