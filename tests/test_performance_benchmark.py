@@ -17,6 +17,7 @@ import datetime
 import decimal
 import json
 import os
+import tempfile
 import time
 from collections import namedtuple
 from typing import Dict, List, Optional
@@ -1050,7 +1051,7 @@ async def test_zzz_print_benchmark_results(key_prefix, redis):
     print("=" * 80)
 
     # Write results to a file for cluster comparison
-    results_file = "/tmp/single_instance_benchmarks.txt"
+    results_file = os.path.join(tempfile.gettempdir(), "single_instance_benchmarks.txt")
     with open(results_file, "w") as f:
         for name, data in sorted(BENCHMARK_RESULTS.items()):
             f.write(

@@ -30,6 +30,7 @@ import datetime
 import decimal
 import json
 import os
+import tempfile
 import time
 from collections import namedtuple
 from typing import Dict, List, Optional, Set
@@ -61,7 +62,11 @@ CLUSTER_URL = f"redis://localhost:{CLUSTER_PORT}"
 SINGLE_URL = "redis://localhost:6380?decode_responses=True"
 
 # Performance: acceptable slowdown factor for cluster vs single instance
-# Cluster operations are expected to be slower due to slot routing, redirects, etc.
+# Cluster operations are expected to be slower due to slot routing, redirects,
+# etc.  The 5x threshold is based on empirical testing in a local Docker
+# environment where both cluster and single-instance run on the same host.
+# Adjust upward for CI environments with resource contention or cross-network
+# cluster topologies.
 ACCEPTABLE_SLOWDOWN_FACTOR = 5.0  # cluster can be up to 5x slower
 
 # ── Skip if cluster not available ─────────────────────────────────────
@@ -111,7 +116,7 @@ def record_cluster_benchmark(name: str, elapsed: float, ops: int = 1):
 def load_single_benchmarks():
     """Load single-instance benchmark results for comparison."""
     global SINGLE_BENCHMARKS
-    path = "/tmp/single_instance_benchmarks.txt"
+    path = os.path.join(tempfile.gettempdir(), "single_instance_benchmarks.txt")
     if os.path.exists(path):
         with open(path) as f:
             for line in f:
@@ -1700,7 +1705,7 @@ async def test_zzz_performance_comparison():
         print("\nAll comparisons within acceptable slowdown factor!")
 
     # Write cluster results
-    with open("/tmp/cluster_benchmarks.txt", "w") as f:
+    with open(os.path.join(tempfile.gettempdir(), "cluster_benchmarks.txt"), "w") as f:
         for name, data in sorted(CLUSTER_BENCHMARKS.items()):
             f.write(
                 f"{name}\t{data['elapsed_s']}\t{data['ops']}\t{data['ops_per_sec']}\n"

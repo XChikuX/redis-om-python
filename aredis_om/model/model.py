@@ -64,10 +64,15 @@ def _is_cluster_pipeline(db) -> bool:
     response immediately instead of queuing the command for batch execution.
     Regular async Pipeline commands may be safely awaited (they return the
     pipeline instance for chaining while still queueing the command).
-
-    We explicitly check the class name because ``ClusterPipeline`` lives in
-    ``redis.asyncio.cluster`` and isn't always easy to import directly.
     """
+    try:
+        from redis.asyncio.cluster import ClusterPipeline
+
+        if isinstance(db, ClusterPipeline):
+            return True
+    except ImportError:
+        pass
+    # Fallback: check class name in case the import path changes.
     return type(db).__name__ == "ClusterPipeline"
 
 # For basic exact-match field types like an indexed string, we create a TAG
