@@ -115,7 +115,7 @@ def record_cluster_benchmark(name: str, elapsed: float, ops: int = 1):
 
 def load_single_benchmarks():
     """Load single-instance benchmark results for comparison."""
-    global SINGLE_BENCHMARKS
+    # SINGLE_BENCHMARKS is loaded from file for comparison
     path = os.path.join(tempfile.gettempdir(), "single_instance_benchmarks.txt")
     if os.path.exists(path):
         with open(path) as f:
@@ -290,7 +290,7 @@ def make_full_json(m, i: int):
         orders=[
             m.Order(
                 items=[
-                    m.Item(name=f"Widget{j}", price=decimal.Decimal(f"{10+j}.99"))
+                    m.Item(name=f"Widget{j}", price=decimal.Decimal(f"{10 + j}.99"))
                     for j in range(2)
                 ],
                 total=decimal.Decimal("31.98"),
@@ -1489,7 +1489,7 @@ async def test_cluster_migration_detect(cluster_conn):
     # Should have detected at least 1 migration (CREATE for the new model)
     assert len(migrator.migrations) >= 1
 
-    # Run and then detect again - should have no NEW migrations beyond 
+    # Run and then detect again - should have no NEW migrations beyond
     # what was already handled (cluster may have drop+create pairs)
     await migrator.run()
     migrator2 = Migrator(conn=cluster_conn)
@@ -1569,7 +1569,7 @@ async def test_cluster_large_batch_200(cluster_json_models):
     await m.SimpleJson.add(models)
     pks = [model.pk for model in models]
     results = await m.SimpleJson.get_many(pks)
-    elapsed = time.perf_counter() - start
+    _ = time.perf_counter() - start  # elapsed time for debugging if needed
 
     assert len(results) == 200
 

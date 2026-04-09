@@ -11,10 +11,9 @@ from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
 from aredis_om._compat import PYDANTIC_V2
 from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
 from tests._sync_redis import has_redis_json
+from .conftest import py_test_mark_asyncio
 
 HAS_REDIS_JSON = has_redis_json()
-
-from .conftest import py_test_mark_asyncio
 
 
 def test_convert_timestamp_to_datetime_uses_v1_fields_fallback():

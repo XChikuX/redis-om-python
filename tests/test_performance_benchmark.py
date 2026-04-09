@@ -189,7 +189,7 @@ def make_json_full(m, i: int):
         orders=[
             m.Order(
                 items=[
-                    m.Item(name=f"Widget{j}", price=decimal.Decimal(f"{10+j}.99"))
+                    m.Item(name=f"Widget{j}", price=decimal.Decimal(f"{10 + j}.99"))
                     for j in range(2)
                 ],
                 total=decimal.Decimal("31.98"),

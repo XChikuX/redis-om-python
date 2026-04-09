@@ -38,7 +38,7 @@ class TestGetRedisConnection:
         # Just verifying no error is raised with cluster=True + url
         # We can't actually connect to a cluster here
         try:
-            conn = get_redis_connection(url="redis://localhost:6380", cluster=True)
+            get_redis_connection(url="redis://localhost:6380", cluster=True)
         except Exception:
             pass  # expected since there's no cluster
 

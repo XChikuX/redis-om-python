@@ -75,6 +75,7 @@ def _is_cluster_pipeline(db) -> bool:
     # Fallback: check class name in case the import path changes.
     return type(db).__name__ == "ClusterPipeline"
 
+
 # For basic exact-match field types like an indexed string, we create a TAG
 # field in the RediSearch index. TAG is designed for multi-value fields
 # separated by a "separator" character. We're using the field for single values
@@ -84,6 +85,7 @@ def _is_cluster_pipeline(db) -> bool:
 # the pipe, we'll warn but allow, and then warn again if they try to query for
 # values that contain this separator.
 SINGLE_VALUE_TAG_FIELD_SEPARATOR = "|"
+
 
 # This is the default field separator in RediSearch. We need it to determine if
 # someone has accidentally passed in the field separator with string value of a
@@ -3126,7 +3128,7 @@ class JsonModel(RedisModel, abc.ABC):
                 "In this Preview release, TAG fields cannot "
                 f"be marked as sortable. Problem field: {name}. "
                 "See docs: TODO"
-            )
+            )  # noqa: F841
 
             # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
             # a proper type, we can pull the type information from the origin of the first argument.

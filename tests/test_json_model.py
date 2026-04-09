@@ -1134,13 +1134,13 @@ async def test_boolean():
     exFalse = Example(b=False, name="foo", d=datetime.date.today())
     await ex.save()
     await exFalse.save()
-    res = await Example.find(Example.b == True).first()
+    res = await Example.find(Example.b == True).first()  # noqa: E712
     assert res.name == "steve"
 
-    res = await Example.find(Example.b == False).first()
+    res = await Example.find(Example.b == False).first()  # noqa: E712
     assert res.name == "foo"
 
-    res = await Example.find(Example.d == ex.d and Example.b == True).first()
+    res = await Example.find(Example.d == ex.d and Example.b == True).first()  # noqa: E712
     assert res.name == ex.name
 
 
