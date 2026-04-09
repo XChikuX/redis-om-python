@@ -3124,11 +3124,11 @@ class JsonModel(RedisModel, abc.ABC):
             sortable = getattr(field_info, "sortable", False)
             case_sensitive = getattr(field_info, "case_sensitive", False)
             full_text_search = getattr(field_info, "full_text_search", False)
-            sortable_tag_error = RedisModelError(
+            sortable_tag_error = RedisModelError(  # noqa: F841
                 "In this Preview release, TAG fields cannot "
                 f"be marked as sortable. Problem field: {name}. "
                 "See docs: TODO"
-            )  # noqa: F841
+            )
 
             # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
             # a proper type, we can pull the type information from the origin of the first argument.
