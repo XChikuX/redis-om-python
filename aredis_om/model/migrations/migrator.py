@@ -58,7 +58,9 @@ async def _create_index_cluster(
         command = f"ft.create {index_name} {schema}".split()
         try:
             # Redis 8: send to a single node – cluster propagates internally.
-            await conn.execute_command(*command, target_nodes=redis.RedisCluster.RANDOM)
+            await conn.execute_command(
+                *command, target_nodes=redis.RedisCluster.RANDOM
+            )
         except redis.ResponseError as exc:
             if "Index already exists" not in str(exc):
                 raise
