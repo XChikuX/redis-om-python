@@ -1050,15 +1050,17 @@ async def test_xfix_queries(m):
 
 @py_test_mark_asyncio
 async def test_none(key_prefix):
-    class BaseJsonModel(JsonModel, abc.ABC):
+    class ModelWithNoneDefault(JsonModel):
+        test: Optional[str] = Field(index=True, default=None)
+
         class Meta:
             global_key_prefix = key_prefix
 
-    class ModelWithNoneDefault(BaseJsonModel):
-        test: Optional[str] = Field(index=True, default=None)
-
-    class ModelWithStringDefault(BaseJsonModel):
+    class ModelWithStringDefault(JsonModel):
         test: Optional[str] = Field(index=True, default="None")
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
 
@@ -1215,11 +1217,11 @@ async def test_literals(key_prefix):
 
     schema = TestLiterals.redisearch_schema()
 
-    key_prefix = TestLiterals.make_key(
+    schema_key_prefix = TestLiterals.make_key(
         TestLiterals._meta.primary_key_pattern.format(pk="")
     )
     assert schema == (
-        f"ON JSON PREFIX 1 {key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | "
+        f"ON JSON PREFIX 1 {schema_key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | "
         "$.flavor AS flavor TAG SEPARATOR |"
     )
     await Migrator().run()
