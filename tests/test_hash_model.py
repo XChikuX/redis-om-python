@@ -868,13 +868,12 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid(key_prefix, redis):
+async def test_type_with_uuid(key_prefix):
     class TypeWithUuid(HashModel):
         uuid: uuid.UUID
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -917,11 +916,10 @@ async def test_xfix_queries(members, m):
 
 
 @py_test_mark_asyncio
-async def test_none(key_prefix, redis):
+async def test_none(key_prefix):
     class BaseHashModel(HashModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     class ModelWithNoneDefault(BaseHashModel):
         test: Optional[str] = Field(index=True, default=None)
@@ -943,14 +941,13 @@ async def test_none(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_update_validation(key_prefix, redis):
+async def test_update_validation(key_prefix):
     class TestUpdate(HashModel):
         name: str
         age: int
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
     t = TestUpdate(name="steve", age=34)
@@ -966,7 +963,7 @@ async def test_update_validation(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_literals(key_prefix, redis):
+async def test_literals(key_prefix):
     from typing import Literal
 
     class TestLiterals(HashModel):
@@ -974,7 +971,6 @@ async def test_literals(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     schema = TestLiterals.redisearch_schema()
 

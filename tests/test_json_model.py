@@ -987,13 +987,12 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid(key_prefix, redis):
+async def test_type_with_uuid(key_prefix):
     class TypeWithUuid(JsonModel):
         uuid: uuid.UUID
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -1050,11 +1049,10 @@ async def test_xfix_queries(m):
 
 
 @py_test_mark_asyncio
-async def test_none(key_prefix, redis):
+async def test_none(key_prefix):
     class BaseJsonModel(JsonModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     class ModelWithNoneDefault(BaseJsonModel):
         test: Optional[str] = Field(index=True, default=None)
@@ -1076,7 +1074,7 @@ async def test_none(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_update_validation(key_prefix, redis):
+async def test_update_validation(key_prefix):
     class Embedded(EmbeddedJsonModel):
         price: float
         name: str = Field(index=True)
@@ -1088,7 +1086,6 @@ async def test_update_validation(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
     embedded = Embedded(price=3.14, name="foo")
@@ -1111,7 +1108,7 @@ async def test_update_validation(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_model_with_dict(key_prefix, redis):
+async def test_model_with_dict(key_prefix):
     class EmbeddedJsonModelWithDict(EmbeddedJsonModel):
         dict: Dict
 
@@ -1121,7 +1118,6 @@ async def test_model_with_dict(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
     d = dict()
@@ -1139,7 +1135,7 @@ async def test_model_with_dict(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_boolean(key_prefix, redis):
+async def test_boolean(key_prefix):
     class Example(JsonModel):
         b: bool = Field(index=True)
         d: datetime.date = Field(index=True)
@@ -1147,7 +1143,6 @@ async def test_boolean(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
 
@@ -1166,13 +1161,12 @@ async def test_boolean(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_int_pk(key_prefix, redis):
+async def test_int_pk(key_prefix):
     class ModelWithIntPk(JsonModel):
         my_id: int = Field(index=True, primary_key=True)
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
     await ModelWithIntPk(my_id=42).save()
@@ -1182,7 +1176,7 @@ async def test_int_pk(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_pagination(key_prefix, redis):
+async def test_pagination(key_prefix):
     class Test(JsonModel):
         id: str = Field(primary_key=True, index=True)
         num: int = Field(sortable=True, index=True)
@@ -1193,7 +1187,6 @@ async def test_pagination(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     await Migrator().run()
 
@@ -1211,7 +1204,7 @@ async def test_pagination(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_literals(key_prefix, redis):
+async def test_literals(key_prefix):
     from typing import Literal
 
     class TestLiterals(JsonModel):
@@ -1219,7 +1212,6 @@ async def test_literals(key_prefix, redis):
 
         class Meta:
             global_key_prefix = key_prefix
-            database = redis
 
     schema = TestLiterals.redisearch_schema()
 
