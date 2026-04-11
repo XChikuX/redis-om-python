@@ -520,6 +520,26 @@ async def test_all_pks(m):
 
 
 @py_test_mark_asyncio
+async def test_all_pks_passes_count(m):
+    key_prefix = m.Member.make_key(m.Member._meta.primary_key_pattern.format(pk=""))
+
+    async def scan_results():
+        yield f"{key_prefix}0"
+        yield f"{key_prefix}1"
+
+    db = mock.Mock()
+    db.scan_iter.return_value = scan_results()
+
+    with mock.patch.object(m.Member, "db", return_value=db):
+        pk_list = []
+        async for pk in await m.Member.all_pks(count=500):
+            pk_list.append(pk)
+
+    db.scan_iter.assert_called_once_with(f"{key_prefix}*", _type="HASH", count=500)
+    assert pk_list == ["0", "1"]
+
+
+@py_test_mark_asyncio
 async def test_all_pks_with_complex_pks(key_prefix):
     class City(HashModel):
         name: str

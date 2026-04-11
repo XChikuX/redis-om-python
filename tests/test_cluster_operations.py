@@ -329,7 +329,10 @@ def check_slowdown(name: str, cluster_time: float):
     ratio = cluster_time / single_time
     passed = ratio <= ACCEPTABLE_SLOWDOWN_FACTOR
     status = "PASS" if passed else "FAIL"
-    return passed, f"{status} ({ratio:.1f}x slowdown, limit: {ACCEPTABLE_SLOWDOWN_FACTOR}x)"
+    return (
+        passed,
+        f"{status} ({ratio:.1f}x slowdown, limit: {ACCEPTABLE_SLOWDOWN_FACTOR}x)",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -387,7 +390,9 @@ async def test_cluster_modules_available(cluster_conn):
     # module_list might be a dict of node->result or a flat list
     if isinstance(module_list, dict):
         for node, mods in module_list.items():
-            module_names = [m[1] if isinstance(m, list) else m.get("name", "") for m in mods]
+            module_names = [
+                m[1] if isinstance(m, list) else m.get("name", "") for m in mods
+            ]
             assert "search" in module_names, f"RediSearch not on {node}"
             assert "ReJSON" in module_names, f"ReJSON not on {node}"
     else:
@@ -474,7 +479,9 @@ async def test_direct_cluster_search_index(cluster_conn):
     # Cleanup
     try:
         await cluster_conn.execute_command(
-            "FT.DROPINDEX", idx_name, "DD",
+            "FT.DROPINDEX",
+            idx_name,
+            "DD",
             target_nodes=aioredis.RedisCluster.PRIMARIES,
         )
     except Exception:
@@ -521,7 +528,9 @@ async def test_direct_cluster_geo_search(cluster_conn):
     # Cleanup
     try:
         await cluster_conn.execute_command(
-            "FT.DROPINDEX", idx_name, "DD",
+            "FT.DROPINDEX",
+            idx_name,
+            "DD",
             target_nodes=aioredis.RedisCluster.PRIMARIES,
         )
     except Exception:
@@ -822,7 +831,9 @@ async def test_cluster_hash_in_query(cluster_hash_models):
     await m.SimpleHash.add(models)
 
     start = time.perf_counter()
-    results = await m.SimpleHash.find(m.SimpleHash.value << [3001, 3003, 3005, 3007]).all()
+    results = await m.SimpleHash.find(
+        m.SimpleHash.value << [3001, 3003, 3005, 3007]
+    ).all()
     elapsed = time.perf_counter() - start
     record_cluster_benchmark("hash_in_query", elapsed, ops=len(results))
     assert len(results) >= 4
@@ -1212,9 +1223,7 @@ async def test_cluster_geo_json_small_radius(cluster_json_models):
     """Cluster: GEO query with a small radius (10km)."""
     m = cluster_json_models
     for name, lon, lat in CITIES_GEO:
-        model = m.GeoJson(
-            name=name, location=Coordinates(longitude=lon, latitude=lat)
-        )
+        model = m.GeoJson(name=name, location=Coordinates(longitude=lon, latitude=lat))
         await model.save()
 
     start = time.perf_counter()
@@ -1233,9 +1242,7 @@ async def test_cluster_geo_json_large_radius(cluster_json_models):
     """Cluster: GEO query with large radius (5000km, whole US)."""
     m = cluster_json_models
     for name, lon, lat in CITIES_GEO:
-        model = m.GeoJson(
-            name=name, location=Coordinates(longitude=lon, latitude=lat)
-        )
+        model = m.GeoJson(name=name, location=Coordinates(longitude=lon, latitude=lat))
         await model.save()
 
     start = time.perf_counter()
@@ -1259,9 +1266,7 @@ async def test_cluster_geo_combined_filter(cluster_json_models):
     results = await m.FullJson.find(
         (
             m.FullJson.location
-            == GeoFilter(
-                longitude=-122.4194, latitude=37.7749, radius=100, unit="km"
-            )
+            == GeoFilter(longitude=-122.4194, latitude=37.7749, radius=100, unit="km")
         )
         & (m.FullJson.age >= 25)
     ).all()
@@ -1440,7 +1445,11 @@ async def test_cluster_migration_creates_indexes(cluster_conn):
 
     # Cleanup
     try:
-        await cluster_conn.execute_command("FT.DROPINDEX", MigrTestJson.Meta.index_name, target_nodes=aioredis.RedisCluster.PRIMARIES)
+        await cluster_conn.execute_command(
+            "FT.DROPINDEX",
+            MigrTestJson.Meta.index_name,
+            target_nodes=aioredis.RedisCluster.PRIMARIES,
+        )
     except Exception:
         pass
 
@@ -1465,7 +1474,11 @@ async def test_cluster_migration_idempotent(cluster_conn):
 
     # Cleanup
     try:
-        await cluster_conn.execute_command("FT.DROPINDEX", IdempotentTestJson.Meta.index_name, target_nodes=aioredis.RedisCluster.PRIMARIES)
+        await cluster_conn.execute_command(
+            "FT.DROPINDEX",
+            IdempotentTestJson.Meta.index_name,
+            target_nodes=aioredis.RedisCluster.PRIMARIES,
+        )
     except Exception:
         pass
 
@@ -1500,7 +1513,11 @@ async def test_cluster_migration_detect(cluster_conn):
 
     # Cleanup
     try:
-        await cluster_conn.execute_command("FT.DROPINDEX", DetectTestJson.Meta.index_name, target_nodes=aioredis.RedisCluster.PRIMARIES)
+        await cluster_conn.execute_command(
+            "FT.DROPINDEX",
+            DetectTestJson.Meta.index_name,
+            target_nodes=aioredis.RedisCluster.PRIMARIES,
+        )
     except Exception:
         pass
 
@@ -1609,9 +1626,7 @@ async def test_cluster_json_scan_iter_all_pks(cluster_json_models):
 @py_test_mark_asyncio
 async def test_cluster_connection_via_get_redis_connection():
     """Verify get_redis_connection() returns RedisCluster with cluster=True."""
-    conn = get_redis_connection(
-        url=f"redis://localhost:{CLUSTER_PORT}", cluster=True
-    )
+    conn = get_redis_connection(url=f"redis://localhost:{CLUSTER_PORT}", cluster=True)
     assert isinstance(conn, aioredis.RedisCluster)
     result = await conn.ping()
     assert result is True
@@ -1621,9 +1636,7 @@ async def test_cluster_connection_via_get_redis_connection():
 @py_test_mark_asyncio
 async def test_cluster_connection_url_parameter():
     """Verify cluster=true in URL is detected."""
-    conn = get_redis_connection(
-        url=f"redis://localhost:{CLUSTER_PORT}?cluster=true"
-    )
+    conn = get_redis_connection(url=f"redis://localhost:{CLUSTER_PORT}?cluster=true")
     assert isinstance(conn, aioredis.RedisCluster)
     await conn.aclose()
 
@@ -1689,9 +1702,7 @@ async def test_zzz_performance_comparison():
                 f"{name:<40} {cluster_time:<15} {single_time:<15} {ratio:<10.1f} {status:<10}"
             )
         else:
-            print(
-                f"{name:<40} {cluster_time:<15} {'N/A':<15} {'N/A':<10} {'N/A':<10}"
-            )
+            print(f"{name:<40} {cluster_time:<15} {'N/A':<15} {'N/A':<10} {'N/A':<10}")
 
     print("=" * 100)
     print(f"\nTotal cluster benchmarks: {len(CLUSTER_BENCHMARKS)}")
@@ -1711,6 +1722,6 @@ async def test_zzz_performance_comparison():
                 f"{name}\t{data['elapsed_s']}\t{data['ops']}\t{data['ops_per_sec']}\n"
             )
 
-    assert len(CLUSTER_BENCHMARKS) >= 15, (
-        f"Expected at least 15 cluster benchmarks, got {len(CLUSTER_BENCHMARKS)}"
-    )
+    assert (
+        len(CLUSTER_BENCHMARKS) >= 15
+    ), f"Expected at least 15 cluster benchmarks, got {len(CLUSTER_BENCHMARKS)}"

@@ -2642,8 +2642,11 @@ class HashModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):
+    async def all_pks(cls, count: Optional[int] = None):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
+        scan_kwargs: Dict[str, Any] = {"_type": "HASH"}
+        if count is not None:
+            scan_kwargs["count"] = count
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
@@ -2652,7 +2655,7 @@ class HashModel(RedisModel, abc.ABC):
                 if isinstance(key, str)
                 else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
             )
-            async for key in cls.db().scan_iter(f"{key_prefix}*", _type="HASH")
+            async for key in cls.db().scan_iter(f"{key_prefix}*", **scan_kwargs)
         )
 
     @classmethod
@@ -2919,8 +2922,11 @@ class JsonModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):
+    async def all_pks(cls, count: Optional[int] = None):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
+        scan_kwargs: Dict[str, Any] = {"_type": "ReJSON-RL"}
+        if count is not None:
+            scan_kwargs["count"] = count
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
@@ -2929,7 +2935,7 @@ class JsonModel(RedisModel, abc.ABC):
                 if isinstance(key, str)
                 else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
             )
-            async for key in cls.db().scan_iter(f"{key_prefix}*", _type="ReJSON-RL")
+            async for key in cls.db().scan_iter(f"{key_prefix}*", **scan_kwargs)
         )
 
     async def update(self, **field_values):

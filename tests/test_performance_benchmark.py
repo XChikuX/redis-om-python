@@ -100,9 +100,9 @@ async def hash_models(key_prefix, redis):
 
     await Migrator().run()
 
-    return namedtuple(
-        "HashModels", ["SimpleHash", "FullHash", "OptionalHash"]
-    )(SimpleHash, FullHash, OptionalHash)
+    return namedtuple("HashModels", ["SimpleHash", "FullHash", "OptionalHash"])(
+        SimpleHash, FullHash, OptionalHash
+    )
 
 
 @pytest_asyncio.fixture
@@ -169,9 +169,7 @@ async def json_models(key_prefix, redis):
 
 
 def make_address(Address, city="San Francisco", state="CA"):
-    return Address(
-        street="123 Main St", city=city, state=state, zip_code="94105"
-    )
+    return Address(street="123 Main St", city=city, state=state, zip_code="94105")
 
 
 def make_json_full(m, i: int):
@@ -290,6 +288,20 @@ async def test_bench_hash_get_many(hash_models):
     elapsed = time.perf_counter() - start
     record_benchmark("hash_get_many_50", elapsed, ops=50)
     assert len(results) == 50
+
+
+@py_test_mark_asyncio
+async def test_bench_hash_all_pks(hash_models):
+    """Benchmark: Iterate all HashModel primary keys with a custom SCAN count."""
+    m = hash_models
+    models = [m.SimpleHash(name=f"allpk_{i}", value=i) for i in range(200)]
+    await m.SimpleHash.add(models)
+
+    start = time.perf_counter()
+    pks = [pk async for pk in await m.SimpleHash.all_pks(count=100)]
+    elapsed = time.perf_counter() - start
+    record_benchmark("hash_all_pks_count_100", elapsed, ops=len(pks))
+    assert len(pks) == 200
 
 
 @py_test_mark_asyncio
@@ -432,9 +444,7 @@ async def test_bench_hash_geo_filter(hash_models):
     start = time.perf_counter()
     results = await m.FullHash.find(
         m.FullHash.location
-        == GeoFilter(
-            longitude=-122.4194, latitude=37.7749, radius=50, unit="km"
-        )
+        == GeoFilter(longitude=-122.4194, latitude=37.7749, radius=50, unit="km")
     ).all()
     elapsed = time.perf_counter() - start
     record_benchmark("hash_geo_filter", elapsed, ops=len(results))
@@ -587,6 +597,20 @@ async def test_bench_json_get_many(json_models):
     elapsed = time.perf_counter() - start
     record_benchmark("json_get_many_50", elapsed, ops=50)
     assert len(results) == 50
+
+
+@py_test_mark_asyncio
+async def test_bench_json_all_pks(json_models):
+    """Benchmark: Iterate all JsonModel primary keys with a custom SCAN count."""
+    m = json_models
+    models = [m.SimpleJson(name=f"jallpk_{i}", value=i) for i in range(200)]
+    await m.SimpleJson.add(models)
+
+    start = time.perf_counter()
+    pks = [pk async for pk in await m.SimpleJson.all_pks(count=100)]
+    elapsed = time.perf_counter() - start
+    record_benchmark("json_all_pks_count_100", elapsed, ops=len(pks))
+    assert len(pks) == 200
 
 
 @py_test_mark_asyncio
@@ -858,9 +882,7 @@ async def test_bench_geo_json_small_radius(json_models):
     """Benchmark: GEO query with a small radius (10km)."""
     m = json_models
     for name, lon, lat in CITIES:
-        model = m.GeoJson(
-            name=name, location=Coordinates(longitude=lon, latitude=lat)
-        )
+        model = m.GeoJson(name=name, location=Coordinates(longitude=lon, latitude=lat))
         await model.save()
 
     start = time.perf_counter()
@@ -879,9 +901,7 @@ async def test_bench_geo_json_large_radius(json_models):
     """Benchmark: GEO query with large radius (5000km, whole US)."""
     m = json_models
     for name, lon, lat in CITIES:
-        model = m.GeoJson(
-            name=name, location=Coordinates(longitude=lon, latitude=lat)
-        )
+        model = m.GeoJson(name=name, location=Coordinates(longitude=lon, latitude=lat))
         await model.save()
 
     start = time.perf_counter()
@@ -1005,9 +1025,7 @@ async def test_bench_complex_negation_query(json_models):
     await m.FullJson.add(models)
 
     start = time.perf_counter()
-    results = await m.FullJson.find(
-        ~(m.FullJson.address.city == "Chicago")
-    ).all()
+    results = await m.FullJson.find(~(m.FullJson.address.city == "Chicago")).all()
     elapsed = time.perf_counter() - start
     record_benchmark("complex_negation_query", elapsed, ops=len(results))
 
@@ -1060,6 +1078,6 @@ async def test_zzz_print_benchmark_results(key_prefix, redis):
     print(f"\nResults saved to {results_file}")
 
     # Basic sanity: we should have recorded many benchmarks
-    assert len(BENCHMARK_RESULTS) >= 30, (
-        f"Expected at least 30 benchmark results, got {len(BENCHMARK_RESULTS)}"
-    )
+    assert (
+        len(BENCHMARK_RESULTS) >= 30
+    ), f"Expected at least 30 benchmark results, got {len(BENCHMARK_RESULTS)}"
