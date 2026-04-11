@@ -868,9 +868,13 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid():
+async def test_type_with_uuid(key_prefix, redis):
     class TypeWithUuid(HashModel):
         uuid: uuid.UUID
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -913,11 +917,16 @@ async def test_xfix_queries(members, m):
 
 
 @py_test_mark_asyncio
-async def test_none():
-    class ModelWithNoneDefault(HashModel):
+async def test_none(key_prefix, redis):
+    class BaseHashModel(HashModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class ModelWithNoneDefault(BaseHashModel):
         test: Optional[str] = Field(index=True, default=None)
 
-    class ModelWithStringDefault(HashModel):
+    class ModelWithStringDefault(BaseHashModel):
         test: Optional[str] = Field(index=True, default="None")
 
     await Migrator().run()
@@ -934,10 +943,14 @@ async def test_none():
 
 
 @py_test_mark_asyncio
-async def test_update_validation():
+async def test_update_validation(key_prefix, redis):
     class TestUpdate(HashModel):
         name: str
         age: int
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
     t = TestUpdate(name="steve", age=34)
@@ -953,11 +966,15 @@ async def test_update_validation():
 
 
 @py_test_mark_asyncio
-async def test_literals():
+async def test_literals(key_prefix, redis):
     from typing import Literal
 
     class TestLiterals(HashModel):
         flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     schema = TestLiterals.redisearch_schema()
 
@@ -968,11 +985,6 @@ async def test_literals():
         f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
     )
     await Migrator().run()
-
-    # Clean up stale data from previous runs
-    old_pks = [pk async for pk in await TestLiterals.all_pks()]
-    for pk in old_pks:
-        await TestLiterals.delete(pk)
 
     item = TestLiterals(flavor="pumpkin")
     await item.save()

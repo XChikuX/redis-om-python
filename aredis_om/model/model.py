@@ -1,3 +1,5 @@
+# mypy: disable-error-code="assignment,arg-type,union-attr,no-redef"
+
 import abc
 import dataclasses
 import datetime

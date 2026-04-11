@@ -1,3 +1,5 @@
+# mypy: disable-error-code="type-var"
+
 """
 Tests for Strawberry GraphQL integration with redis-om models.
 

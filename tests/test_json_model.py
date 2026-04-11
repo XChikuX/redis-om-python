@@ -987,9 +987,13 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid():
+async def test_type_with_uuid(key_prefix, redis):
     class TypeWithUuid(JsonModel):
         uuid: uuid.UUID
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -1046,11 +1050,16 @@ async def test_xfix_queries(m):
 
 
 @py_test_mark_asyncio
-async def test_none():
-    class ModelWithNoneDefault(JsonModel):
+async def test_none(key_prefix, redis):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class ModelWithNoneDefault(BaseJsonModel):
         test: Optional[str] = Field(index=True, default=None)
 
-    class ModelWithStringDefault(JsonModel):
+    class ModelWithStringDefault(BaseJsonModel):
         test: Optional[str] = Field(index=True, default="None")
 
     await Migrator().run()
@@ -1067,7 +1076,7 @@ async def test_none():
 
 
 @py_test_mark_asyncio
-async def test_update_validation():
+async def test_update_validation(key_prefix, redis):
     class Embedded(EmbeddedJsonModel):
         price: float
         name: str = Field(index=True)
@@ -1076,6 +1085,10 @@ async def test_update_validation():
         name: str
         age: int
         embedded: Embedded
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
     embedded = Embedded(price=3.14, name="foo")
@@ -1098,13 +1111,17 @@ async def test_update_validation():
 
 
 @py_test_mark_asyncio
-async def test_model_with_dict():
+async def test_model_with_dict(key_prefix, redis):
     class EmbeddedJsonModelWithDict(EmbeddedJsonModel):
         dict: Dict
 
     class ModelWithDict(JsonModel):
         embedded_model: EmbeddedJsonModelWithDict
         info: Dict
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
     d = dict()
@@ -1122,11 +1139,15 @@ async def test_model_with_dict():
 
 
 @py_test_mark_asyncio
-async def test_boolean():
+async def test_boolean(key_prefix, redis):
     class Example(JsonModel):
         b: bool = Field(index=True)
         d: datetime.date = Field(index=True)
         name: str = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
 
@@ -1145,9 +1166,13 @@ async def test_boolean():
 
 
 @py_test_mark_asyncio
-async def test_int_pk():
+async def test_int_pk(key_prefix, redis):
     class ModelWithIntPk(JsonModel):
         my_id: int = Field(index=True, primary_key=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
     await ModelWithIntPk(my_id=42).save()
@@ -1157,7 +1182,7 @@ async def test_int_pk():
 
 
 @py_test_mark_asyncio
-async def test_pagination():
+async def test_pagination(key_prefix, redis):
     class Test(JsonModel):
         id: str = Field(primary_key=True, index=True)
         num: int = Field(sortable=True, index=True)
@@ -1165,6 +1190,10 @@ async def test_pagination():
         @classmethod
         async def get_page(cls, offset, limit):
             return await cls.find().sort_by("num").page(limit=limit, offset=offset)
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     await Migrator().run()
 
@@ -1182,11 +1211,15 @@ async def test_pagination():
 
 
 @py_test_mark_asyncio
-async def test_literals():
+async def test_literals(key_prefix, redis):
     from typing import Literal
 
     class TestLiterals(JsonModel):
         flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
 
     schema = TestLiterals.redisearch_schema()
 
@@ -1198,11 +1231,6 @@ async def test_literals():
         "$.flavor AS flavor TAG SEPARATOR |"
     )
     await Migrator().run()
-
-    # Clean up stale data from previous runs
-    old_pks = [pk async for pk in await TestLiterals.all_pks()]
-    for pk in old_pks:
-        await TestLiterals.delete(pk)
 
     item = TestLiterals(flavor="pumpkin")
     await item.save()

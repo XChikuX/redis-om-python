@@ -4,7 +4,7 @@ from redis.exceptions import AuthenticationError
 
 from aredis_om.connections import get_redis_connection
 
-_command_cache = WeakKeyDictionary()
+_command_cache: WeakKeyDictionary = WeakKeyDictionary()
 
 
 def clear_command_cache():
