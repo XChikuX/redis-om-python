@@ -253,6 +253,28 @@ async def test_all_pks(address, m, redis):
 
 
 @py_test_mark_asyncio
+async def test_all_pks_passes_count(m):
+    key_prefix = m.Member.make_key(m.Member._meta.primary_key_pattern.format(pk=""))
+
+    async def scan_results():
+        yield f"{key_prefix}0"
+        yield f"{key_prefix}1"
+
+    db = mock.Mock()
+    db.scan_iter.return_value = scan_results()
+
+    with mock.patch.object(m.Member, "db", return_value=db):
+        pk_list = []
+        async for pk in await m.Member.all_pks(count=500):
+            pk_list.append(pk)
+
+    db.scan_iter.assert_called_once_with(
+        f"{key_prefix}*", _type="ReJSON-RL", count=500
+    )
+    assert pk_list == ["0", "1"]
+
+
+@py_test_mark_asyncio
 async def test_all_pks_with_complex_pks(key_prefix):
     class City(JsonModel):
         name: str
@@ -987,9 +1009,12 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid():
+async def test_type_with_uuid(key_prefix):
     class TypeWithUuid(JsonModel):
         uuid: uuid.UUID
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -1046,12 +1071,18 @@ async def test_xfix_queries(m):
 
 
 @py_test_mark_asyncio
-async def test_none():
+async def test_none(key_prefix):
     class ModelWithNoneDefault(JsonModel):
         test: Optional[str] = Field(index=True, default=None)
 
+        class Meta:
+            global_key_prefix = key_prefix
+
     class ModelWithStringDefault(JsonModel):
         test: Optional[str] = Field(index=True, default="None")
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
 
@@ -1067,7 +1098,7 @@ async def test_none():
 
 
 @py_test_mark_asyncio
-async def test_update_validation():
+async def test_update_validation(key_prefix):
     class Embedded(EmbeddedJsonModel):
         price: float
         name: str = Field(index=True)
@@ -1076,6 +1107,9 @@ async def test_update_validation():
         name: str
         age: int
         embedded: Embedded
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
     embedded = Embedded(price=3.14, name="foo")
@@ -1098,13 +1132,16 @@ async def test_update_validation():
 
 
 @py_test_mark_asyncio
-async def test_model_with_dict():
+async def test_model_with_dict(key_prefix):
     class EmbeddedJsonModelWithDict(EmbeddedJsonModel):
         dict: Dict
 
     class ModelWithDict(JsonModel):
         embedded_model: EmbeddedJsonModelWithDict
         info: Dict
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
     d = dict()
@@ -1122,11 +1159,14 @@ async def test_model_with_dict():
 
 
 @py_test_mark_asyncio
-async def test_boolean():
+async def test_boolean(key_prefix):
     class Example(JsonModel):
         b: bool = Field(index=True)
         d: datetime.date = Field(index=True)
         name: str = Field(index=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
 
@@ -1140,14 +1180,18 @@ async def test_boolean():
     res = await Example.find(Example.b == False).first()  # noqa: E712
     assert res.name == "foo"
 
-    res = await Example.find(Example.d == ex.d and Example.b == True).first()  # noqa: E712
+    true_filter = Example.b == True  # noqa: E712
+    res = await Example.find((Example.d == ex.d) & true_filter).first()
     assert res.name == ex.name
 
 
 @py_test_mark_asyncio
-async def test_int_pk():
+async def test_int_pk(key_prefix):
     class ModelWithIntPk(JsonModel):
         my_id: int = Field(index=True, primary_key=True)
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
     await ModelWithIntPk(my_id=42).save()
@@ -1157,7 +1201,7 @@ async def test_int_pk():
 
 
 @py_test_mark_asyncio
-async def test_pagination():
+async def test_pagination(key_prefix):
     class Test(JsonModel):
         id: str = Field(primary_key=True, index=True)
         num: int = Field(sortable=True, index=True)
@@ -1165,6 +1209,9 @@ async def test_pagination():
         @classmethod
         async def get_page(cls, offset, limit):
             return await cls.find().sort_by("num").page(limit=limit, offset=offset)
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
 
@@ -1182,27 +1229,25 @@ async def test_pagination():
 
 
 @py_test_mark_asyncio
-async def test_literals():
+async def test_literals(key_prefix):
     from typing import Literal
 
     class TestLiterals(JsonModel):
         flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
 
+        class Meta:
+            global_key_prefix = key_prefix
+
     schema = TestLiterals.redisearch_schema()
 
-    key_prefix = TestLiterals.make_key(
+    expected_schema_prefix = TestLiterals.make_key(
         TestLiterals._meta.primary_key_pattern.format(pk="")
     )
     assert schema == (
-        f"ON JSON PREFIX 1 {key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | "
+        f"ON JSON PREFIX 1 {expected_schema_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | "
         "$.flavor AS flavor TAG SEPARATOR |"
     )
     await Migrator().run()
-
-    # Clean up stale data from previous runs
-    old_pks = [pk async for pk in await TestLiterals.all_pks()]
-    for pk in old_pks:
-        await TestLiterals.delete(pk)
 
     item = TestLiterals(flavor="pumpkin")
     await item.save()

@@ -232,7 +232,13 @@ async def test_aggregate_ct_handles_decode_response_strings(key_prefix, redis):
 async def test_find_query_warns_about_indexing_failures(monkeypatch, caplog):
     class FakeIndex:
         async def info(self):
-            return {"hash_indexing_failures": 2}
+            return {
+                "hash_indexing_failures": 2,
+                "Index Errors": {
+                    "last indexing error": "Invalid numeric value",
+                    "last indexing error key": "Product:broken",
+                },
+            }
 
     class FakeConnection:
         def ft(self, _index_name):
@@ -260,5 +266,9 @@ async def test_find_query_warns_about_indexing_failures(monkeypatch, caplog):
         assert await Product.find(Product.name == "ball").all() == []
 
     assert health["indexing_failures"] == 2
+    assert health["last_indexing_error"] == "Invalid numeric value"
+    assert health["last_indexing_error_key"] == "Product:broken"
     assert "RediSearch index" in caplog.text
     assert "indexing failures" in caplog.text
+    assert "Invalid numeric value" in caplog.text
+    assert "Product:broken" in caplog.text

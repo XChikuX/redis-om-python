@@ -4,6 +4,7 @@ import random
 import pytest
 
 from aredis_om import get_redis_connection
+from aredis_om.model.model import model_registry
 
 from ._sync_redis import get_sync_redis_connection
 
@@ -51,3 +52,14 @@ def cleanup_keys(request):
     # Delete keys only once
     if conn.decr(once_key) == 0:
         _delete_test_keys(TEST_PREFIX, conn)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_model_registry():
+    existing_models = set(model_registry)
+
+    yield
+
+    for key in list(model_registry):
+        if key not in existing_models and key.startswith("tests."):
+            model_registry.pop(key, None)

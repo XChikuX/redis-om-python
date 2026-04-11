@@ -34,6 +34,7 @@ span
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
 - [💡 Why Redis OM?](#-why-redis-om)
+- [✅ Solved Upstream Issues in This Fork](#-solved-upstream-issues-in-this-fork)
 - [💻 Installation](#-installation)
 - [🏁 Getting started](#-getting-started)
 - [📇 Modeling Your Data](#-modeling-your-data)
@@ -69,6 +70,32 @@ The current release includes:
 - Redis Cluster connections via `cluster=True` or `cluster=true` in the URL
 - Cluster-safe bulk writes and pipeline-backed model operations
 - Nested embedded JSON sorting and index health warnings
+- A comprehensive async benchmark suite in `tests/test_performance_benchmark.py`
+
+## ✅ Solved Upstream Issues in This Fork
+
+This fork keeps landing fixes ahead of upstream. The table below tracks upstream
+issues from [`redis/redis-om-python`](https://github.com/redis/redis-om-python/issues)
+that are already implemented here, even if the upstream issue is still open.
+
+| Upstream issue | Title | Status in this fork | Coverage / notes |
+| --- | --- | --- | --- |
+| [#108](https://github.com/redis/redis-om-python/issues/108) | JsonModel: find not working with enum int not string | Fixed | Enum numeric values are converted correctly in query building; covered by `tests/test_bug_fixes.py` |
+| [#204](https://github.com/redis/redis-om-python/issues/204) | Find a way to make users aware of indexing issues. | Fixed | `check_index_health()` inspects `FT.INFO` and warns on indexing failures |
+| [#254](https://github.com/redis/redis-om-python/issues/254) | Allows writing but not reading, on model with optional field. | Fixed | HashModel now converts empty strings back to `None` for optional fields; covered by `tests/test_bug_fixes.py` |
+| [#431](https://github.com/redis/redis-om-python/issues/431) | EmbeddedJson fields are not able to be sorted on, even with the `sortable=True` flag | Fixed | `FindQuery.sort_by()` resolves embedded JSON field paths like `metrics.score` and `metrics__score` |
+| [#499](https://github.com/redis/redis-om-python/issues/499) | FindQuery.resolve_value can't resolve for Operations.IN and RedisSearchFieldTypes.NUMERIC | Fixed | `IN` / `NOT_IN` now work for numeric fields; covered by `tests/test_bug_fixes.py` |
+| [#519](https://github.com/redis/redis-om-python/issues/519) | Set `RedisModel.Meta.database` at runtime, not import time | Fixed | `Meta.database` is lazily resolved, accepts callables, and supports runtime reassignment |
+| [#523](https://github.com/redis/redis-om-python/issues/523) | [Enhancement] Retrieve multiple records at once with pipeline | Fixed | `get_many()` supports batch retrieval and explicit pipeline composition; covered by pipeline tests |
+| [#529](https://github.com/redis/redis-om-python/issues/529) | [Feature Request] Allow default expiry time for a model | Fixed | `Meta.default_ttl` applies TTL automatically on `save()` and `add()` |
+
+Additional upstream fixes already present here include:
+
+- embedded model OR-query prefix isolation and nested JSON list-path querying
+- binary `bytes` field round-tripping for both HashModel and JsonModel
+- KNN + OR query syntax fixes
+- custom TAG field separators
+- `all_pks(count=...)` scan tuning and corresponding benchmarks
 
 ## 💻 Installation
 

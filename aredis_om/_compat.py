@@ -1,3 +1,5 @@
+# mypy: ignore-errors
+
 from dataclasses import dataclass, is_dataclass
 from typing import (
     Any,

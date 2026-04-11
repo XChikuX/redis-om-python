@@ -520,6 +520,26 @@ async def test_all_pks(m):
 
 
 @py_test_mark_asyncio
+async def test_all_pks_passes_count(m):
+    key_prefix = m.Member.make_key(m.Member._meta.primary_key_pattern.format(pk=""))
+
+    async def scan_results():
+        yield f"{key_prefix}0"
+        yield f"{key_prefix}1"
+
+    db = mock.Mock()
+    db.scan_iter.return_value = scan_results()
+
+    with mock.patch.object(m.Member, "db", return_value=db):
+        pk_list = []
+        async for pk in await m.Member.all_pks(count=500):
+            pk_list.append(pk)
+
+    db.scan_iter.assert_called_once_with(f"{key_prefix}*", _type="HASH", count=500)
+    assert pk_list == ["0", "1"]
+
+
+@py_test_mark_asyncio
 async def test_all_pks_with_complex_pks(key_prefix):
     class City(HashModel):
         name: str
@@ -868,9 +888,12 @@ async def test_type_with_union(members, m):
 
 
 @py_test_mark_asyncio
-async def test_type_with_uuid():
+async def test_type_with_uuid(key_prefix):
     class TypeWithUuid(HashModel):
         uuid: uuid.UUID
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     item = TypeWithUuid(uuid=uuid.uuid4())
 
@@ -913,12 +936,18 @@ async def test_xfix_queries(members, m):
 
 
 @py_test_mark_asyncio
-async def test_none():
+async def test_none(key_prefix):
     class ModelWithNoneDefault(HashModel):
         test: Optional[str] = Field(index=True, default=None)
 
+        class Meta:
+            global_key_prefix = key_prefix
+
     class ModelWithStringDefault(HashModel):
         test: Optional[str] = Field(index=True, default="None")
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
 
@@ -934,10 +963,13 @@ async def test_none():
 
 
 @py_test_mark_asyncio
-async def test_update_validation():
+async def test_update_validation(key_prefix):
     class TestUpdate(HashModel):
         name: str
         age: int
+
+        class Meta:
+            global_key_prefix = key_prefix
 
     await Migrator().run()
     t = TestUpdate(name="steve", age=34)
@@ -953,26 +985,24 @@ async def test_update_validation():
 
 
 @py_test_mark_asyncio
-async def test_literals():
+async def test_literals(key_prefix):
     from typing import Literal
 
     class TestLiterals(HashModel):
         flavor: Literal["apple", "pumpkin"] = Field(index=True, default="apple")
 
+        class Meta:
+            global_key_prefix = key_prefix
+
     schema = TestLiterals.redisearch_schema()
 
-    key_prefix = TestLiterals.make_key(
+    expected_schema_prefix = TestLiterals.make_key(
         TestLiterals._meta.primary_key_pattern.format(pk="")
     )
     assert schema == (
-        f"ON HASH PREFIX 1 {key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
+        f"ON HASH PREFIX 1 {expected_schema_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
     )
     await Migrator().run()
-
-    # Clean up stale data from previous runs
-    old_pks = [pk async for pk in await TestLiterals.all_pks()]
-    for pk in old_pks:
-        await TestLiterals.delete(pk)
 
     item = TestLiterals(flavor="pumpkin")
     await item.save()

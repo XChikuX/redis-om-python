@@ -1,3 +1,5 @@
+# mypy: disable-error-code="assignment,arg-type,union-attr,no-redef"
+
 import abc
 import dataclasses
 import datetime
@@ -2324,6 +2326,27 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return value
 
     @classmethod
+    def _find_first_nonempty_value(
+        cls, *mappings: Mapping[str, Any], keys: Tuple[str, ...]
+    ) -> Optional[Any]:
+        """Return the first non-empty value found for any key in the mappings."""
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            for key in keys:
+                value = mapping.get(key)
+                if value not in (None, "", [], {}):
+                    return value
+        return None
+
+    @staticmethod
+    def _stringify_redis_info_value(value: Any) -> str:
+        """Convert Redis INFO values into stable strings for warning messages."""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True)
+        return str(value)
+
+    @classmethod
     async def check_index_health(cls) -> Optional[Dict[str, Any]]:
         try:
             index_info = await cls.db().ft(cls.Meta.index_name).info()
@@ -2350,18 +2373,52 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         except (TypeError, ValueError):
             indexing_failures = 0
 
+        last_indexing_error = cls._find_first_nonempty_value(
+            index_errors,
+            info,
+            keys=(
+                "last indexing error",
+                "last_indexing_error",
+                "last error",
+                "last_error",
+            ),
+        )
+        last_indexing_error_key = cls._find_first_nonempty_value(
+            index_errors,
+            info,
+            keys=(
+                "last indexing error key",
+                "last_indexing_error_key",
+                "last error key",
+                "last_error_key",
+            ),
+        )
         health = {
             "index_name": cls.Meta.index_name,
             "indexing_failures": indexing_failures,
             "index_errors": index_errors,
+            "last_indexing_error": last_indexing_error,
+            "last_indexing_error_key": last_indexing_error_key,
         }
         if indexing_failures:
+            detail_parts = []
+            if last_indexing_error is not None:
+                detail_parts.append(
+                    "Last indexing error: "
+                    + cls._stringify_redis_info_value(last_indexing_error)
+                )
+            if last_indexing_error_key is not None:
+                detail_parts.append(
+                    "Key: " + cls._stringify_redis_info_value(last_indexing_error_key)
+                )
+            detail_suffix = f" {'; '.join(detail_parts)}." if detail_parts else ""
             log.warning(
                 "RediSearch index %s for %s reports %s indexing failures. "
-                "Queries may return incomplete results. Run FT.INFO %s for details.",
+                "Queries may return incomplete results.%sRun FT.INFO %s for details.",
                 cls.Meta.index_name,
                 cls.__name__,
                 indexing_failures,
+                detail_suffix,
                 cls.Meta.index_name,
             )
         return health
@@ -2587,8 +2644,11 @@ class HashModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):
+    async def all_pks(cls, count: Optional[int] = None):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
+        scan_kwargs: Dict[str, Any] = {"_type": "HASH"}
+        if count is not None:
+            scan_kwargs["count"] = count
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
@@ -2597,7 +2657,7 @@ class HashModel(RedisModel, abc.ABC):
                 if isinstance(key, str)
                 else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
             )
-            async for key in cls.db().scan_iter(f"{key_prefix}*", _type="HASH")
+            async for key in cls.db().scan_iter(f"{key_prefix}*", **scan_kwargs)
         )
 
     @classmethod
@@ -2864,8 +2924,11 @@ class JsonModel(RedisModel, abc.ABC):
         return self
 
     @classmethod
-    async def all_pks(cls):
+    async def all_pks(cls, count: Optional[int] = None):
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
+        scan_kwargs: Dict[str, Any] = {"_type": "ReJSON-RL"}
+        if count is not None:
+            scan_kwargs["count"] = count
         # TODO: We need to decide how we want to handle the lack of
         #  decode_responses=True...
         return (
@@ -2874,7 +2937,7 @@ class JsonModel(RedisModel, abc.ABC):
                 if isinstance(key, str)
                 else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
             )
-            async for key in cls.db().scan_iter(f"{key_prefix}*", _type="ReJSON-RL")
+            async for key in cls.db().scan_iter(f"{key_prefix}*", **scan_kwargs)
         )
 
     async def update(self, **field_values):

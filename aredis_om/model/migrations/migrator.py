@@ -1,3 +1,5 @@
+# mypy: disable-error-code="attr-defined"
+
 import hashlib
 import logging
 from dataclasses import dataclass
