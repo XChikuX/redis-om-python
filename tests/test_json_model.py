@@ -1158,7 +1158,7 @@ async def test_boolean(key_prefix):
     res = await Example.find(Example.b == False).first()  # noqa: E712
     assert res.name == "foo"
 
-    res = await Example.find(Example.d == ex.d, Example.b == True).first()  # noqa: E712
+    res = await Example.find(Example.d == ex.d and Example.b == True).first()  # noqa: E712
     assert res.name == ex.name
 
 
