@@ -976,11 +976,11 @@ async def test_literals(key_prefix):
 
     schema = TestLiterals.redisearch_schema()
 
-    schema_key_prefix = TestLiterals.make_key(
+    expected_schema_prefix = TestLiterals.make_key(
         TestLiterals._meta.primary_key_pattern.format(pk="")
     )
     assert schema == (
-        f"ON HASH PREFIX 1 {schema_key_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
+        f"ON HASH PREFIX 1 {expected_schema_prefix} SCHEMA pk TAG SEPARATOR | flavor TAG SEPARATOR |"
     )
     await Migrator().run()
 

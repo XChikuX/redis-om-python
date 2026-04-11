@@ -2326,7 +2326,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return value
 
     @classmethod
-    def _redis_info_first_value(
+    def _find_first_nonempty_value(
         cls, *mappings: Mapping[str, Any], keys: Tuple[str, ...]
     ) -> Optional[Any]:
         for mapping in mappings:
@@ -2371,7 +2371,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         except (TypeError, ValueError):
             indexing_failures = 0
 
-        last_indexing_error = cls._redis_info_first_value(
+        last_indexing_error = cls._find_first_nonempty_value(
             index_errors,
             info,
             keys=(
@@ -2381,7 +2381,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 "last_error",
             ),
         )
-        last_indexing_error_key = cls._redis_info_first_value(
+        last_indexing_error_key = cls._find_first_nonempty_value(
             index_errors,
             info,
             keys=(
@@ -2412,8 +2412,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             detail_suffix = f" {'; '.join(detail_parts)}." if detail_parts else ""
             log.warning(
                 "RediSearch index %s for %s reports %s indexing failures. "
-                "Queries may return incomplete results.%s"
-                " Run FT.INFO %s for details.",
+                "Queries may return incomplete results.%sRun FT.INFO %s for details.",
                 cls.Meta.index_name,
                 cls.__name__,
                 indexing_failures,
