@@ -2324,6 +2324,25 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return value
 
     @classmethod
+    def _redis_info_first_value(
+        cls, *mappings: Any, keys: Tuple[str, ...]
+    ) -> Optional[Any]:
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            for key in keys:
+                value = mapping.get(key)
+                if value not in (None, "", [], {}):
+                    return value
+        return None
+
+    @staticmethod
+    def _stringify_redis_info_value(value: Any) -> str:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True)
+        return str(value)
+
+    @classmethod
     async def check_index_health(cls) -> Optional[Dict[str, Any]]:
         try:
             index_info = await cls.db().ft(cls.Meta.index_name).info()
@@ -2350,18 +2369,52 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         except (TypeError, ValueError):
             indexing_failures = 0
 
+        last_indexing_error = cls._redis_info_first_value(
+            index_errors,
+            info,
+            keys=(
+                "last indexing error",
+                "last_indexing_error",
+                "last error",
+                "last_error",
+            ),
+        )
+        last_indexing_error_key = cls._redis_info_first_value(
+            index_errors,
+            info,
+            keys=(
+                "last indexing error key",
+                "last_indexing_error_key",
+                "last error key",
+                "last_error_key",
+            ),
+        )
         health = {
             "index_name": cls.Meta.index_name,
             "indexing_failures": indexing_failures,
             "index_errors": index_errors,
+            "last_indexing_error": last_indexing_error,
+            "last_indexing_error_key": last_indexing_error_key,
         }
         if indexing_failures:
+            detail_parts = []
+            if last_indexing_error is not None:
+                detail_parts.append(
+                    "Last indexing error: "
+                    + cls._stringify_redis_info_value(last_indexing_error)
+                )
+            if last_indexing_error_key is not None:
+                detail_parts.append(
+                    "Key: " + cls._stringify_redis_info_value(last_indexing_error_key)
+                )
+            detail_suffix = f" {'; '.join(detail_parts)}." if detail_parts else ""
             log.warning(
                 "RediSearch index %s for %s reports %s indexing failures. "
-                "Queries may return incomplete results. Run FT.INFO %s for details.",
+                "Queries may return incomplete results.%s Run FT.INFO %s for details.",
                 cls.Meta.index_name,
                 cls.__name__,
                 indexing_failures,
+                detail_suffix,
                 cls.Meta.index_name,
             )
         return health
