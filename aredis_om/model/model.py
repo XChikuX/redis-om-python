@@ -2329,6 +2329,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def _find_first_nonempty_value(
         cls, *mappings: Mapping[str, Any], keys: Tuple[str, ...]
     ) -> Optional[Any]:
+        """Return the first non-empty value found for any key in the mappings."""
         for mapping in mappings:
             if not isinstance(mapping, dict):
                 continue
@@ -2340,6 +2341,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @staticmethod
     def _stringify_redis_info_value(value: Any) -> str:
+        """Convert Redis INFO values into stable strings for warning messages."""
         if isinstance(value, (dict, list)):
             return json.dumps(value, sort_keys=True)
         return str(value)
