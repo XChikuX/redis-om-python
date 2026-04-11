@@ -2325,7 +2325,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     @classmethod
     def _redis_info_first_value(
-        cls, *mappings: Any, keys: Tuple[str, ...]
+        cls, *mappings: Mapping[str, Any], keys: Tuple[str, ...]
     ) -> Optional[Any]:
         for mapping in mappings:
             if not isinstance(mapping, dict):
@@ -2410,7 +2410,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             detail_suffix = f" {'; '.join(detail_parts)}." if detail_parts else ""
             log.warning(
                 "RediSearch index %s for %s reports %s indexing failures. "
-                "Queries may return incomplete results.%s Run FT.INFO %s for details.",
+                "Queries may return incomplete results.%s"
+                " Run FT.INFO %s for details.",
                 cls.Meta.index_name,
                 cls.__name__,
                 indexing_failures,
