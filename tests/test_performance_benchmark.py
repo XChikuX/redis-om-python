@@ -43,6 +43,10 @@ from .conftest import py_test_mark_asyncio
 
 if not has_redisearch() or not has_redis_json():
     pytestmark = pytest.mark.skip
+else:
+    # Run all benchmark tests in the same xdist worker so BENCHMARK_RESULTS
+    # (a module-level dict) is fully populated before test_zzz_print_benchmark_results.
+    pytestmark = pytest.mark.xdist_group("benchmark_single_instance")
 
 # ── Global benchmark storage ──────────────────────────────────────────
 
