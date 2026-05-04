@@ -53,7 +53,7 @@ def test_model_validator_on_embedded_hashmodel():
         @model_validator(mode="before")
         @classmethod
         def assign_pk(cls, values):
-            if values.get("pk"):
+            if values.get("pk") is not None:
                 return values
             values["pk"] = ":".join(
                 sorted([values["user_id"], values["liked_user_id"]])

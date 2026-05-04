@@ -34,7 +34,7 @@ from typing import (
 )
 
 from more_itertools import ichunked
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
@@ -221,6 +221,7 @@ def validate_model_data(model: Any, values: Any) -> Any:
 
 
 def strip_null_embedded_pks(model: Any, values: Any) -> Any:
+    """Recursively remove null primary keys from embedded-model dump output."""
     if not isinstance(values, dict) or not has_model_field_mapping(model):
         return values
 
@@ -1617,6 +1618,8 @@ REDIS_OM_FIELD_DEFAULTS = {
     "separator": SINGLE_VALUE_TAG_FIELD_SEPARATOR,
 }
 REDIS_OM_METADATA_KEY = "redis_om"
+# Redis OM stores custom field metadata in Pydantic v2's json_schema_extra so
+# inherited/copied FieldInfo instances retain ORM-specific options.
 
 
 def _get_redis_om_metadata(field: Any) -> Dict[str, Any]:
@@ -1972,7 +1975,11 @@ class ModelMeta(ModelMetaclass):
                 f"{new_class._meta.model_key_prefix}:index"
             )
 
-        if name != "RedisModel" and hasattr(new_class, "redisearch_schema"):
+        if (
+            name != "RedisModel"
+            and abc.ABC not in bases
+            and hasattr(new_class, "redisearch_schema")
+        ):
             new_class.redisearch_schema()
 
         # Not an abstract model class or embedded model, so we should let the
@@ -2014,6 +2021,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         arbitrary_types_allowed=True,
         extra="allow",
     )
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
 
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
@@ -2100,11 +2110,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             db.expire(self.key(), num_seconds)
         else:
             await db.expire(self.key(), num_seconds)
-
-    @field_validator("pk", mode="before")
-    @classmethod
-    def validate_pk(cls, v):
-        return v
 
     @classmethod
     def validate_primary_key(cls):
@@ -2451,7 +2456,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
 class HashModel(RedisModel, abc.ABC):
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__()
+        super().__init_subclass__(**kwargs)
 
         if hasattr(cls, "__annotations__"):
             for name, field_type in cls.__annotations__.items():
@@ -2765,11 +2770,6 @@ class JsonModel(RedisModel, abc.ABC):
         ):
             return field.metadata[0]
         return field
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__()
-        # Generate the RediSearch schema once to validate fields.
-        cls.redisearch_schema()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
