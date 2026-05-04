@@ -1,6 +1,7 @@
 # mypy: disable-error-code="assignment,arg-type,union-attr,no-redef"
 
 import abc
+import asyncio
 import dataclasses
 import datetime
 import decimal
@@ -33,17 +34,18 @@ from typing import (
 )
 
 from more_itertools import ichunked
+from pydantic import ConfigDict, field_validator
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
 from ulid import ULID
 
 from .. import redis
-from .._compat import PYDANTIC_V2, BaseModel
+from .._compat import BaseModel
 from .._compat import FieldInfo as PydanticFieldInfo
 from .._compat import ModelField, ModelMetaclass, NoArgAnyCallable
 from .._compat import PydanticUndefined as Undefined
-from .._compat import Representation, UndefinedType, validate_model, validator
+from .._compat import Representation, UndefinedType
 from ..checks import has_redis_json, has_redisearch
 from ..connections import get_redis_connection
 from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
@@ -102,14 +104,21 @@ ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.m
 def get_outer_type(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    elif isinstance(field.annotation, type) or is_supported_container_type(
-        field.annotation
-    ):
-        return field.annotation
-    elif not hasattr(field.annotation, "__args__"):
+    annotation = field.annotation
+    origin = get_origin(annotation)
+    if origin == Literal:
+        return annotation
+    if origin is Union:
+        args = [
+            arg for arg in get_args(annotation) if arg is not type(None)
+        ]  # noqa: E721
+        if args:
+            return args[0]
+    if isinstance(annotation, type) or is_supported_container_type(annotation):
+        return annotation
+    if not hasattr(annotation, "__args__"):
         return None
-    else:
-        return field.annotation.__args__[0]
+    return annotation.__args__[0]
 
 
 class RedisModelError(Exception):
@@ -185,23 +194,20 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
                 obj = getattr(obj, sub_field)
             return
 
-        if field_name not in model.__fields__:  # type: ignore
+        if field_name not in model.model_fields:
             raise QuerySyntaxError(
                 f"The field {field_name} does not exist on the model {model.__name__}"
             )
 
 
 def get_model_fields(model: Any) -> Mapping[str, Any]:
-    """Return Pydantic field mappings from model_fields or __fields__."""
-    model_fields = getattr(model, "model_fields", None)
-    if model_fields is not None:
-        return model_fields
-    return getattr(model, "__fields__", {})
+    """Return Pydantic v2 field mappings."""
+    return getattr(model, "model_fields", {})
 
 
 def has_model_field_mapping(model: Any) -> bool:
     """Check whether a model exposes Pydantic field mappings."""
-    return hasattr(model, "model_fields") or hasattr(model, "__fields__")
+    return hasattr(model, "model_fields")
 
 
 def is_model_field_instance(value: Any) -> bool:
@@ -210,10 +216,48 @@ def is_model_field_instance(value: Any) -> bool:
 
 
 def validate_model_data(model: Any, values: Any) -> Any:
-    """Validate model data with model_validate or parse_obj, as available."""
-    if hasattr(model, "model_validate"):
-        return model.model_validate(values)
-    return model.parse_obj(values)
+    """Validate model data with Pydantic v2."""
+    return model.model_validate(values)
+
+
+def strip_null_embedded_pks(model: Any, values: Any) -> Any:
+    if not isinstance(values, dict) or not has_model_field_mapping(model):
+        return values
+
+    cleaned = dict(values)
+    for field_name, field in get_model_fields(model).items():
+        if field_name not in cleaned:
+            continue
+
+        field_type = outer_type_or_annotation(field)
+        value = cleaned[field_name]
+
+        if is_supported_container_type(field_type):
+            type_args = get_args(field_type)
+            inner_type = type_args[0] if type_args else None
+            if (
+                isinstance(value, list)
+                and isinstance(inner_type, type)
+                and issubclass(inner_type, RedisModel)
+            ):
+                cleaned[field_name] = [
+                    (
+                        strip_null_embedded_pks(inner_type, item)
+                        if isinstance(item, dict)
+                        else item
+                    )
+                    for item in value
+                ]
+        elif (
+            isinstance(field_type, type)
+            and issubclass(field_type, RedisModel)
+            and isinstance(value, dict)
+        ):
+            cleaned[field_name] = strip_null_embedded_pks(field_type, value)
+
+    if getattr(model._meta, "embedded", False) and cleaned.get("pk") is None:
+        cleaned.pop("pk", None)
+    return cleaned
 
 
 def decode_redis_value(
@@ -880,17 +924,14 @@ class FindQuery:
         field_info = None
 
         for index, part in enumerate(parts):
-            if part not in current_model.__fields__:  # type: ignore
+            if part not in current_model.model_fields:
                 raise QueryNotSupportedError(
                     f"You tried sort by {field_name}, but that field "
                     f"does not exist on the model {self.model}"
                 )
-            field = current_model.__fields__[part]  # type: ignore[index]
+            field = current_model.model_fields[part]
             resolved_parts.append(part)
-            if isinstance(field, FieldInfo) or isinstance(field, PydanticFieldInfo):
-                field_info = field
-            else:
-                field_info = field.field_info
+            field_info = field
 
             if index == len(parts) - 1:
                 break
@@ -1545,7 +1586,7 @@ def __dataclass_transform__(
     return lambda a: a
 
 
-class FieldInfo(PydanticFieldInfo):
+class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
     def __init__(self, default: Any = Undefined, **kwargs: Any) -> None:
         primary_key = kwargs.pop("primary_key", False)
         sortable = kwargs.pop("sortable", Undefined)
@@ -1554,18 +1595,9 @@ class FieldInfo(PydanticFieldInfo):
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
         separator = kwargs.pop("separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
-        # When PYDANTIC_V2=True, `Undefined` is pydantic_core.PydanticUndefined.
-        # Pydantic v1's FieldInfo only treats its own `Undefined` sentinel as
-        # "no default" / "required".  Passing pydantic v2's sentinel makes
-        # pydantic v1 treat the field as having a concrete default (the sentinel
-        # object itself), setting required=False.  Convert it to the v1 sentinel
-        # so that required fields are correctly marked as required.
-        if PYDANTIC_V2 and default is Undefined:
-            from pydantic.v1.fields import Undefined as _V1Undefined
-
-            super().__init__(default=_V1Undefined, **kwargs)
-        else:
-            super().__init__(default=default, **kwargs)
+        if primary_key and index is Undefined:
+            index = True
+        super().__init__(default=default, **kwargs)
         self.primary_key = primary_key
         self.sortable = sortable
         self.case_sensitive = case_sensitive
@@ -1573,6 +1605,65 @@ class FieldInfo(PydanticFieldInfo):
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
+
+
+REDIS_OM_FIELD_DEFAULTS = {
+    "primary_key": False,
+    "sortable": False,
+    "case_sensitive": False,
+    "index": False,
+    "full_text_search": False,
+    "vector_options": None,
+    "separator": SINGLE_VALUE_TAG_FIELD_SEPARATOR,
+}
+REDIS_OM_METADATA_KEY = "redis_om"
+
+
+def _get_redis_om_metadata(field: Any) -> Dict[str, Any]:
+    extra = getattr(field, "json_schema_extra", None) or {}
+    return dict(extra.get(REDIS_OM_METADATA_KEY, {}))
+
+
+def _get_redis_om_field_attr(field: Any, attr: str, default: Any = None) -> Any:
+    extra = _get_redis_om_metadata(field)
+    return extra.get(attr, default)
+
+
+def _set_redis_om_field_attr(field: Any, attr: str, value: Any) -> None:
+    extra = dict(getattr(field, "json_schema_extra", None) or {})
+    metadata = dict(extra.get(REDIS_OM_METADATA_KEY, {}))
+    metadata[attr] = value
+    extra[REDIS_OM_METADATA_KEY] = metadata
+    field.json_schema_extra = extra
+
+
+def _redis_om_field_property(attr: str, default: Any) -> property:
+    def getter(self):
+        return _get_redis_om_field_attr(self, attr, default)
+
+    def setter(self, value):
+        _set_redis_om_field_attr(self, attr, value)
+
+    return property(getter, setter)
+
+
+for _attr_name, _attr_default in REDIS_OM_FIELD_DEFAULTS.items():
+    setattr(
+        PydanticFieldInfo,
+        _attr_name,
+        _redis_om_field_property(_attr_name, _attr_default),
+    )
+
+
+def _apply_redis_om_field_metadata(target: Any, source: Optional[Any] = None) -> Any:
+    source = source or target
+    for attr, default in REDIS_OM_FIELD_DEFAULTS.items():
+        value = getattr(source, attr, Undefined)
+        if value is not Undefined:
+            setattr(target, attr, value)
+        elif not hasattr(target, attr):
+            setattr(target, attr, default)
+    return target
 
 
 class RelationshipInfo(Representation):
@@ -1781,106 +1872,8 @@ class DefaultMeta:
     encoding: str = "utf-8"
     default_ttl: Optional[int] = None
     index_health_checked: bool = False
-
-
-def _convert_v2_validators_to_v1(attrs: dict) -> dict:
-    """Convert pydantic v2 validator proxies in *attrs* to pydantic v1 form.
-
-    When a user decorates a method with ``@root_validator`` or ``@validator``
-    imported from ``pydantic`` (the v2 compatibility shim), the decorator
-    creates a ``PydanticDescriptorProxy`` wrapping a ``classmethod``.
-    Pydantic v1's ``ModelMetaclass`` does not recognise these objects and
-    attempts to deepcopy them as ordinary field defaults — which fails
-    because ``classmethod`` objects are not picklable.
-
-    This helper detects such proxies and re-wraps the underlying function
-    with the corresponding ``pydantic.v1`` decorator so that the v1
-    metaclass can process them normally.
-    """
-    try:
-        from pydantic._internal._decorators import (
-            PydanticDescriptorProxy,
-            RootValidatorDecoratorInfo,
-            ValidatorDecoratorInfo,
-        )
-    except ImportError:
-        return attrs
-
-    from pydantic.v1 import root_validator as v1_root_validator
-    from pydantic.v1 import validator as v1_validator
-
-    converted = dict(attrs)
-    for attr_name, value in list(converted.items()):
-        if not isinstance(value, PydanticDescriptorProxy):
-            continue
-        # Pydantic may wrap the original function in a classmethod for v1-style
-        # validators, but some proxies expose the raw callable directly.
-        func = getattr(value.wrapped, "__func__", value.wrapped)
-        info = value.decorator_info
-
-        if isinstance(info, RootValidatorDecoratorInfo):
-            pre = info.mode == "before"
-            # In pydantic v1, post-root-validators (pre=False) require
-            # skip_on_failure=True so they are skipped when field
-            # validation has already failed.  Pre-validators run before
-            # field validation, so the flag is irrelevant for them.
-            skip = not pre
-            converted[attr_name] = v1_root_validator(
-                pre=pre, skip_on_failure=skip, allow_reuse=True
-            )(func)
-        elif isinstance(info, ValidatorDecoratorInfo):
-            converted[attr_name] = v1_validator(
-                *info.fields,
-                pre=(info.mode == "before"),
-                always=info.always,
-                each_item=info.each_item,
-                allow_reuse=True,
-            )(func)
-    return converted
-
-
-def _convert_v2_annotation_to_v1(annotation: Any) -> Any:
-    origin = get_origin(annotation)
-    if origin is not None:
-        converted_args = tuple(
-            _convert_v2_annotation_to_v1(arg) for arg in get_args(annotation)
-        )
-        if not converted_args:
-            return annotation
-        if origin is Union:
-            return Union[converted_args]
-        if origin is Annotated:
-            return annotation
-        if origin is Literal:
-            return annotation
-        if hasattr(annotation, "copy_with"):
-            try:
-                return annotation.copy_with(converted_args)
-            except TypeError:
-                return annotation
-        try:
-            if len(converted_args) == 1:
-                return origin[converted_args[0]]
-            return origin[converted_args]
-        except TypeError:
-            return annotation
-
-    if isinstance(annotation, type):
-        module_name = getattr(annotation, "__module__", "")
-        annotation_name = getattr(annotation, "__name__", None)
-        if (
-            module_name.startswith("pydantic.")
-            and not module_name.startswith("pydantic.v1")
-            and annotation_name
-        ):
-            try:
-                import pydantic.v1 as pydantic_v1
-
-                if hasattr(pydantic_v1, annotation_name):
-                    return getattr(pydantic_v1, annotation_name)
-            except ImportError:
-                return annotation
-    return annotation
+    _database_generated: bool = False
+    _database_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 class ModelMeta(ModelMetaclass):
@@ -1888,39 +1881,7 @@ class ModelMeta(ModelMetaclass):
 
     def __new__(cls, name, bases, attrs, **kwargs):  # noqa C901
         meta = attrs.pop("Meta", None)
-
-        # Convert pydantic v2 compat validators to pydantic v1 validators.
-        # When users apply @root_validator or @validator from pydantic (v2),
-        # they produce PydanticDescriptorProxy objects that pydantic v1's
-        # ModelMetaclass cannot handle (deepcopy fails on the inner
-        # classmethod).  Re-wrap them with the v1 equivalents so the v1
-        # metaclass processes them correctly.
-        if PYDANTIC_V2:
-            attrs = _convert_v2_validators_to_v1(attrs)
-            annotations = attrs.get("__annotations__", {})
-            if annotations:
-                attrs["__annotations__"] = {
-                    key: _convert_v2_annotation_to_v1(value)
-                    for key, value in annotations.items()
-                }
-
-        # pydantic v1 raises NameError when a field name shadows a BaseModel
-        # built-in (e.g. "dict", "json", "schema").  Redis OM intentionally
-        # allows any user-defined field name, so we temporarily suppress that
-        # check during class creation.
-        if PYDANTIC_V2:
-            import pydantic.v1.main as _pv1_main
-        else:
-            import pydantic.main as _pv1_main
-
-        _orig_validate_field_name = getattr(
-            _pv1_main, "validate_field_name", lambda _bases, _field_name: None
-        )
-        _pv1_main.validate_field_name = lambda _bases, _field_name: None  # noqa: E731
-        try:
-            new_class = super().__new__(cls, name, bases, attrs, **kwargs)
-        finally:
-            _pv1_main.validate_field_name = _orig_validate_field_name
+        new_class = super().__new__(cls, name, bases, attrs, **kwargs)
 
         # The fact that there is a Meta field and _meta field is important: a
         # user may have given us a Meta object with their configuration, while
@@ -1949,20 +1910,17 @@ class ModelMeta(ModelMetaclass):
 
         # Create proxies for each model field so that we can use the field
         # in queries, like Model.get(Model.field_name == 1)
-        for field_name, field in new_class.__fields__.items():
-            if not isinstance(field, FieldInfo):
-                for base_candidate in bases:
-                    if hasattr(base_candidate, field_name):
-                        inner_field = getattr(base_candidate, field_name)
-                        if hasattr(inner_field, "field") and isinstance(
-                            getattr(inner_field, "field"), FieldInfo
-                        ):
-                            field.metadata.append(getattr(inner_field, "field"))
-                            field = getattr(inner_field, "field")
-
-            if not field.alias:
-                field.alias = field_name
-            setattr(new_class, field_name, ExpressionProxy(field, []))
+        for field_name, field in new_class.model_fields.items():
+            inherited_field = None
+            for base_candidate in bases:
+                inherited_field = getattr(base_candidate, "model_fields", {}).get(
+                    field_name
+                )
+                if inherited_field is not None:
+                    break
+            _apply_redis_om_field_metadata(field, inherited_field or field)
+            model_field = ModelField(field_info=field, name=field_name)
+            setattr(new_class, field_name, ExpressionProxy(model_field, []))
             annotation = new_class.get_annotations().get(field_name)
             if annotation:
                 new_class.__annotations__[field_name] = Union[
@@ -1970,25 +1928,14 @@ class ModelMeta(ModelMetaclass):
                 ]
             else:
                 new_class.__annotations__[field_name] = ExpressionProxy
-            # Check if this is our FieldInfo version with extended ORM metadata.
-            field_info = None
-            if hasattr(field, "field_info") and isinstance(field.field_info, FieldInfo):
-                field_info = field.field_info
-            elif field_name in attrs and isinstance(
-                attrs.__getitem__(field_name), FieldInfo
-            ):
-                field_info = attrs.__getitem__(field_name)
-                field.field_info = field_info
-
-            if field_info is not None:
-                if field_info.primary_key:
-                    new_class._meta.primary_key = PrimaryKey(
-                        name=field_name, field=field
-                    )
-                if field_info.vector_options:
-                    score_attr = f"_{field_name}_score"
-                    setattr(new_class, score_attr, None)
-                    new_class.__annotations__[score_attr] = Union[float, None]
+            if field.primary_key:
+                new_class._meta.primary_key = PrimaryKey(
+                    name=field_name, field=model_field
+                )
+            if field.vector_options:
+                score_attr = f"_{field_name}_score"
+                setattr(new_class, score_attr, None)
+                new_class.__annotations__[score_attr] = Union[float, None]
 
         # If this is an embedded model, we don't want to allow primary keys at all,
         if getattr(new_class._meta, "embedded", False):
@@ -2025,6 +1972,9 @@ class ModelMeta(ModelMetaclass):
                 f"{new_class._meta.model_key_prefix}:index"
             )
 
+        if name != "RedisModel" and hasattr(new_class, "redisearch_schema"):
+            new_class.redisearch_schema()
+
         # Not an abstract model class or embedded model, so we should let the
         # Migrator create indexes for it.
         if abc.ABC not in bases and not getattr(new_class._meta, "embedded", False):
@@ -2037,68 +1987,49 @@ class ModelMeta(ModelMetaclass):
 def outer_type_or_annotation(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    elif not hasattr(field.annotation, "__args__"):
-        if not isinstance(field.annotation, type):
-            raise AttributeError(f"could not extract outer type from field {field}")
-        return field.annotation
-    elif get_origin(field.annotation) == Literal:
-        return str
-    else:
-        return field.annotation.__args__[0]
+    annotation = field.annotation
+    origin = get_origin(annotation)
+    if origin == Literal:
+        return annotation
+    if origin is Union:
+        args = [
+            arg for arg in get_args(annotation) if arg is not type(None)
+        ]  # noqa: E721
+        if args:
+            return args[0]
+    if isinstance(annotation, type) or origin is not None:
+        return annotation
+    if hasattr(annotation, "__args__") and annotation.__args__:
+        return annotation.__args__[0]
+    raise AttributeError(f"could not extract outer type from field {field}")
 
 
 class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     pk: Optional[str] = Field(default=None, primary_key=True)
-    if PYDANTIC_V2:
-        ConfigDict: ClassVar
 
     Meta = DefaultMeta
 
-    if PYDANTIC_V2:
-        from pydantic import ConfigDict
-
-        # Annotate as ClassVar so pydantic v1's ModelMetaclass does not include
-        # this as a model field (which would produce empty schema parts and show
-        # up in model repr).
-        model_config: ClassVar[dict] = ConfigDict(
-            from_attributes=True, arbitrary_types_allowed=True, extra="allow"
-        )
-
-        # pydantic.v1.BaseModel (used under the hood) ignores model_config and
-        # requires a nested Config class.  Define one so that extra fields are
-        # allowed, arbitrary types work, and smart_union avoids silently coercing
-        # int/str Union values.
-        class Config:
-            orm_mode = True
-            arbitrary_types_allowed = True
-            extra = "allow"
-            smart_union = True
-
-    else:
-
-        class Config:
-            orm_mode = True
-            arbitrary_types_allowed = True
-            extra = "allow"
-            smart_union = True
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        from_attributes=True,
+        arbitrary_types_allowed=True,
+        extra="allow",
+    )
 
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
         super().__init__(**data)
 
-    def dict(self, *args, **kwargs):
-        """Return model data, omitting null ``pk`` on embedded models only."""
-        exclude = kwargs.pop("exclude", None)
-        if PYDANTIC_V2:
-            if exclude is None:
-                exclude = {"model_config"}
-            elif isinstance(exclude, AbstractSet):
-                exclude = set(exclude)
-                exclude.add("model_config")
-            elif isinstance(exclude, dict):
-                exclude = dict(exclude)
-                exclude["model_config"] = True
-        is_embedded = getattr(self._meta, "embedded", False)
+    def model_post_init(self, __context: Any) -> None:
+        if getattr(type(self)._meta, "embedded", False):
+            if isinstance(self.pk, ExpressionProxy):
+                object.__setattr__(self, "pk", None)
+        elif not self.pk or isinstance(self.pk, ExpressionProxy):
+            object.__setattr__(
+                self, "pk", type(self)._meta.primary_key_creator_cls().create_pk()
+            )
+
+    def _model_dump_exclude(self, exclude: Any) -> Any:
+        is_embedded = getattr(type(self)._meta, "embedded", False)
         pk_value = getattr(self, "pk", None)
         if is_embedded and pk_value is None:
             if exclude is None:
@@ -2109,69 +2040,16 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             elif isinstance(exclude, dict):
                 exclude = dict(exclude)
                 exclude["pk"] = True
-        return super().dict(*args, exclude=exclude, **kwargs)
+        return exclude
 
-    @classmethod
-    @no_type_check
-    def _get_value(
-        cls,
-        v: Any,
-        to_dict: bool,
-        by_alias: bool,
-        include: Any,
-        exclude: Any,
-        exclude_unset: bool,
-        exclude_defaults: bool,
-        exclude_none: bool,
-    ) -> Any:
-        """Override pydantic v1's _get_value to call dict() via the class.
+    def model_dump(self, *args, **kwargs):
+        exclude = self._model_dump_exclude(kwargs.pop("exclude", None))
+        data = super().model_dump(*args, exclude=exclude, **kwargs)
+        return strip_null_embedded_pks(type(self), data)
 
-        Pydantic v1 does ``v.dict(…)`` when serialising nested BaseModel
-        instances.  If the model has a **field** named ``dict``, attribute
-        access resolves to the field value (a plain ``dict`` object) rather
-        than the method, raising ``TypeError: 'dict' object is not callable``.
-
-        Calling through the class (``type(v).dict(v, …)``) always reaches
-        the method regardless of field names.
-        """
-        if isinstance(v, BaseModel):
-            if to_dict:
-                # Use RedisModel.dict or BaseModel.dict directly via __func__
-                # to avoid attribute lookup on the instance (which could
-                # shadow `dict` if there's a field with that name).
-                dict_method = None
-                for klass in type(v).__mro__:
-                    if "dict" in klass.__dict__:
-                        val = klass.__dict__["dict"]
-                        if callable(val):
-                            dict_method = val
-                            break
-                if dict_method is None:
-                    dict_method = BaseModel.dict
-                v_dict = dict_method(
-                    v,
-                    by_alias=by_alias,
-                    exclude_unset=exclude_unset,
-                    exclude_defaults=exclude_defaults,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                )
-                if "__root__" in v_dict:
-                    return v_dict["__root__"]
-                return v_dict
-            else:
-                return v.copy(include=include, exclude=exclude)
-        return super()._get_value(
-            v,
-            to_dict=to_dict,
-            by_alias=by_alias,
-            include=include,
-            exclude=exclude,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-        )
+    def dict(self, *args, **kwargs):
+        """Backwards-compatible wrapper over Pydantic v2's model_dump()."""
+        return self.model_dump(*args, **kwargs)
 
     def __lt__(self, other):
         """Default sort: compare primary key of models."""
@@ -2223,33 +2101,16 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         else:
             await db.expire(self.key(), num_seconds)
 
-    @validator("pk", always=True, allow_reuse=True)
+    @field_validator("pk", mode="before")
+    @classmethod
     def validate_pk(cls, v):
-        # Skip pk generation for embedded models - they don't need primary keys
-        if getattr(cls._meta, "embedded", False):
-            return None
-        if not v or isinstance(v, ExpressionProxy):
-            v = cls._meta.primary_key_creator_cls().create_pk()
         return v
 
     @classmethod
     def validate_primary_key(cls):
         """Check for a primary key. We need one (and only one)."""
         primary_keys = 0
-        for name, field in cls.__fields__.items():
-            if not hasattr(field, "field_info"):
-                if (
-                    not isinstance(field, FieldInfo)
-                    and hasattr(field, "metadata")
-                    and len(field.metadata) > 0
-                    and isinstance(field.metadata[0], FieldInfo)
-                ):
-                    field_info = field.metadata[0]
-                else:
-                    field_info = field
-            else:
-                field_info = field.field_info
-
+        for name, field_info in cls.model_fields.items():
             if getattr(field_info, "primary_key", None):
                 primary_keys += 1
         if primary_keys == 0:
@@ -2275,14 +2136,33 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         database = getattr(cls.Meta, "database", None)
         if database is None:
             database = getattr(cls._meta, "database", None)
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
         if callable(database):
             database = database()
             cls.Meta.database = database
             cls._meta.database = database
+            cls.Meta._database_generated = False
+            cls._meta._database_generated = False
+            cls.Meta._database_loop = None
+            cls._meta._database_loop = None
+        elif (
+            database is not None
+            and getattr(cls.Meta, "_database_generated", False)
+            and current_loop is not None
+            and getattr(cls.Meta, "_database_loop", None) is not current_loop
+        ):
+            database = None
         if database is None:
             database = get_redis_connection()
             cls.Meta.database = database
             cls._meta.database = database
+            cls.Meta._database_generated = True
+            cls._meta._database_generated = True
+            cls.Meta._database_loop = current_loop
+            cls._meta._database_loop = current_loop
         return database
 
     @classmethod
@@ -2595,7 +2475,7 @@ class HashModel(RedisModel, abc.ABC):
                         f"HashModels cannot index dataclass fields. Field: {name}"
                     )
 
-        for name, field in cls.__fields__.items():
+        for name, field in cls.model_fields.items():
             outer_type = outer_type_or_annotation(field)
             origin = get_origin(outer_type)
             if origin:
@@ -2626,7 +2506,7 @@ class HashModel(RedisModel, abc.ABC):
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime objects first
-        document = self.dict()
+        document = self.model_dump()
         document = convert_datetime_to_timestamp(document)
         document = convert_bytes_to_base64(document)
         document = convert_dataclasses_to_dicts(document)
@@ -2672,7 +2552,7 @@ class HashModel(RedisModel, abc.ABC):
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
         try:
-            result = cls.parse_obj(document)
+            result = cls.model_validate(document)
         except TypeError as e:
             log.warning(
                 f'Could not parse Redis response. Error was: "{e}". Probably, the '
@@ -2683,7 +2563,7 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
-            result = cls.parse_obj(document)
+            result = cls.model_validate(document)
         return result
 
     @classmethod
@@ -2712,27 +2592,13 @@ class HashModel(RedisModel, abc.ABC):
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
             try:
-                models.append(cls.parse_obj(document))
+                models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
-                models.append(cls.parse_obj(document))
+                models.append(cls.model_validate(document))
         return models
-
-    @classmethod
-    @no_type_check
-    def _get_value(cls, *args, **kwargs) -> Any:
-        """
-        Always send None as an empty string.
-
-        TODO: We do this because redis-py's hset() method requires non-null
-        values. Is there a better way?
-        """
-        val = super()._get_value(*args, **kwargs)
-        if val is None:
-            return ""
-        return val
 
     @classmethod
     def redisearch_schema(cls):
@@ -2751,26 +2617,28 @@ class HashModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
 
-        for name, field in cls.__fields__.items():
+        for name, field in cls.model_fields.items():
             # TODO: Merge this code with schema_for_type()?
             _type = outer_type_or_annotation(field)
             is_subscripted_type = get_origin(_type)
-
-            if (
-                not isinstance(field, FieldInfo)
-                and hasattr(field, "metadata")
-                and len(field.metadata) > 0
-                and isinstance(field.metadata[0], FieldInfo)
-            ):
-                field = field.metadata[0]
-
-            if not hasattr(field, "field_info"):
-                field_info = field
-            else:
-                field_info = field.field_info
+            field_info = field
 
             if getattr(field_info, "primary_key", None):
-                if issubclass(_type, str):
+                primary_key_type = _type
+                if not isinstance(primary_key_type, type):
+                    type_args = typing_get_args(primary_key_type)
+                    primary_key_type = next(
+                        (
+                            arg
+                            for arg in type_args
+                            if isinstance(arg, type)
+                            and arg is not type(None)  # noqa: E721
+                        ),
+                        str,
+                    )
+                if isinstance(primary_key_type, type) and issubclass(
+                    primary_key_type, str
+                ):
                     separator = getattr(
                         field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                     )
@@ -2852,10 +2720,12 @@ class HashModel(RedisModel, abc.ABC):
                           Mark individual fields within the embedded model as sortable instead."
                 )
             sub_fields = []
-            for embedded_name, field in typ.__fields__.items():
+            for embedded_name, field in typ.model_fields.items():
                 sub_fields.append(
                     cls.schema_for_type(
-                        f"{name}_{embedded_name}", field.outer_type_, field.field_info
+                        f"{name}_{embedded_name}",
+                        outer_type_or_annotation(field),
+                        field,
                     )
                 )
             schema = " ".join(sub_fields)
@@ -2911,7 +2781,7 @@ class JsonModel(RedisModel, abc.ABC):
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime objects to timestamps
-        document = self.dict()
+        document = self.model_dump()
         document = convert_datetime_to_timestamp(document)
         document = convert_bytes_to_base64(document)
         document = convert_dataclasses_to_dicts(document)
@@ -3017,37 +2887,15 @@ class JsonModel(RedisModel, abc.ABC):
         schema_parts = []
         json_path = "$"
 
-        # 1. Initialize fields with existing model fields
-        fields = dict(cls.__fields__)
+        fields = dict(cls.model_fields)
 
-        # 2. Sync annotations and FieldInfo
-        # Note: Use cls.__annotations__ to avoid the scoping 'field' error
-        for name in cls.__annotations__:
-            if name in fields:
-                field = fields[name]
-                # Ensure the FieldInfo has the correct annotation if missing
-                if isinstance(field, FieldInfo) and not field.annotation:
-                    field.annotation = cls.__annotations__[name]
-            else:
-                # 3. Handle missing fields (Pydantic v2 vs v1 compatibility)
-                try:
-                    # In v2, we try to generate FieldInfo from the raw annotation
-                    fields[name] = PydanticFieldInfo.from_annotation(
-                        cls.__annotations__[name]
-                    )
-                except (AttributeError, NameError):
-                    continue
-
-        # 4. Process the consolidated fields
         for name, field in fields.items():
             _type = get_outer_type(field)
             if _type is None:
                 continue
 
-            # Extract FieldInfo safely (handling Annotated and field_info wrappers)
             field_info = cls._extract_field_info(field)
 
-            # 5. Generate Redis Schema parts
             # Call schema_for_type for both primary_key and indexed fields
             # The method handles the distinction internally
             schema_parts.append(
@@ -3140,18 +2988,8 @@ class JsonModel(RedisModel, abc.ABC):
         elif field_is_model:
             name_prefix = f"{name_prefix}_{name}" if name_prefix else name
             sub_fields = []
-            for embedded_name, field in typ.__fields__.items():
-                if hasattr(field, "field_info"):
-                    field_info = field.field_info
-                elif (
-                    hasattr(field, "metadata")
-                    and len(field.metadata) > 0
-                    and isinstance(field.metadata[0], FieldInfo)
-                ):
-                    field_info = field.metadata[0]
-                else:
-                    field_info = field
-
+            for embedded_name, field in typ.model_fields.items():
+                field_info = field
                 if parent_is_container_type:
                     # We'll store this value either as a JavaScript array, so
                     # the correct JSONPath expression is to refer directly to

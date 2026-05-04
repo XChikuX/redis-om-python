@@ -26,6 +26,8 @@
 
 Install the package from PyPI as `pyredis-om`, then import `aredis_om` for the async API or `redis_om` for the generated sync mirror.
 
+This release targets **Pydantic v2**.
+
 <details>
   <summary><strong>Table of contents</strong></summary>
 
@@ -180,7 +182,7 @@ Now that we have a `Customer` model, let's use it to save customer data to Redis
 ```python
 import datetime
 from typing import Optional
-from pydantic import EmailStr
+from pydantic import ConfigDict, EmailStr
 
 from aredis_om import (
     Field,
@@ -209,10 +211,10 @@ class Customer(HashModel):
     class Meta:
         database = redis_conn
 
-    class Config:
-        # Ensure that updates will undergo validation by pydantic
-        validate_assignment = True
-        anystr_strip_whitespace = True
+    model_config = ConfigDict(
+        validate_assignment=True,
+        str_strip_whitespace=True,
+    )
 
 
 # First, we create a new `Customer` object:

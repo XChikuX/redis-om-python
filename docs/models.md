@@ -129,14 +129,15 @@ Here is a table of the settings available in the Meta object and what they contr
 | encoding                | The default encoding to use for strings. This encoding is given to redis-py at the connection level. In both cases, Redis OM will decode binary strings from Redis using your chosen encoding.                                                  | "utf-8"                                                         |
 ## Configuring Pydantic
 
-Every Redis OM model is also a Pydantic model, so in addition to configuring Redis OM behavior with the Meta object, you can control Pydantic configuration via the Config object within a model class.
+Every Redis OM model is also a Pydantic model, so in addition to configuring Redis OM behavior with the Meta object, you can control Pydantic configuration via the `model_config` object within a model class.
 
-See the [Pydantic documentation for details](https://pydantic-docs.helpmanual.io/usage/model_config/) on how this object works and the settings that are available.
+See the [Pydantic documentation for details](https://docs.pydantic.dev/latest/concepts/config/) on how this object works and the settings that are available.
 
 The default Pydantic configuration for models, which Redis OM sets for you, is equivalent to the following (demonstrated on an actual model):
 
 ```python
 from redis_om import HashModel
+from pydantic import ConfigDict
 
 
 class Customer(HashModel):

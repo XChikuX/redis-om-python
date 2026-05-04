@@ -67,11 +67,11 @@ def jsonable_encoder(
     if exclude is not None and not isinstance(exclude, (set, dict)):
         exclude = set(exclude)
 
-    if isinstance(obj, BaseModel) and hasattr(obj, "__config__"):
-        encoder = getattr(obj.__config__, "json_encoders", {})
+    if isinstance(obj, BaseModel):
+        encoder = dict(getattr(obj, "model_config", {}).get("json_encoders", {}))
         if custom_encoder:
             encoder.update(custom_encoder)
-        obj_dict = obj.dict(
+        obj_dict = obj.model_dump(
             include=include,  # type: ignore # in Pydantic
             exclude=exclude,  # type: ignore # in Pydantic
             by_alias=by_alias,
@@ -149,15 +149,15 @@ def jsonable_encoder(
         if type(obj) in custom_encoder:
             return custom_encoder[type(obj)](obj)
         else:
-            for encoder_type, encoder in custom_encoder.items():
+            for encoder_type, encoder_fn in custom_encoder.items():
                 if isinstance(obj, encoder_type):
-                    return encoder(obj)
+                    return encoder_fn(obj)
 
     if type(obj) in ENCODERS_BY_TYPE:
         return ENCODERS_BY_TYPE[type(obj)](obj)
-    for encoder, classes_tuple in encoders_by_class_tuples.items():
+    for encoder_fn, classes_tuple in encoders_by_class_tuples.items():
         if isinstance(obj, classes_tuple):
-            return encoder(obj)
+            return encoder_fn(obj)
 
     errors: List[Exception] = []
     try:

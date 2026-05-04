@@ -16,85 +16,72 @@ from typing import (
     Union,
 )
 
-from pydantic.version import VERSION as PYDANTIC_VERSION
-from typing_extensions import Annotated, Literal, get_args, get_origin
+from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic._internal._model_construction import ModelMetaclass
+from pydantic._internal._repr import Representation
+from pydantic.deprecated.json import ENCODERS_BY_TYPE
+from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined, PydanticUndefinedType
+from typing_extensions import Annotated, Literal
 
-PYDANTIC_V2 = PYDANTIC_VERSION.startswith("2.")
+PYDANTIC_V2 = True
+Undefined = PydanticUndefined
+UndefinedType = PydanticUndefinedType
+NoArgAnyCallable = Callable[[], Any]
 
-if PYDANTIC_V2:
 
-    def use_pydantic_2_plus():
-        return True
+def use_pydantic_2_plus():
+    return True
 
-    from pydantic import TypeAdapter
-    from pydantic import ValidationError as ValidationError
-    from pydantic.v1 import BaseModel, validator
-    from pydantic.v1.fields import FieldInfo, Undefined, UndefinedType
-    from pydantic.v1.json import ENCODERS_BY_TYPE
-    from pydantic.v1.main import ModelMetaclass, validate_model
-    from pydantic.v1.typing import NoArgAnyCallable
-    from pydantic.v1.utils import Representation
-    from pydantic_core import PydanticUndefined
 
-    @dataclass
-    class ModelField:
-        field_info: FieldInfo
-        name: str
-        mode: Literal["validation", "serialization"] = "validation"
+@dataclass
+class ModelField:
+    field_info: FieldInfo
+    name: str
+    mode: Literal["validation", "serialization"] = "validation"
 
-        @property
-        def alias(self) -> str:
-            a = self.field_info.alias
-            return a if a is not None else self.name
+    @property
+    def alias(self) -> str:
+        a = self.field_info.alias
+        return a if a is not None else self.name
 
-        @property
-        def required(self) -> bool:
-            return self.field_info.is_required()
+    @property
+    def required(self) -> bool:
+        return self.field_info.is_required()
 
-        @property
-        def default(self) -> Any:
-            return self.get_default()
+    @property
+    def default(self) -> Any:
+        return self.get_default()
 
-        @property
-        def type_(self) -> Any:
-            return self.field_info.annotation
+    @property
+    def type_(self) -> Any:
+        return self.field_info.annotation
 
-        def __post_init__(self) -> None:
-            self._type_adapter: TypeAdapter[Any] = TypeAdapter(
-                Annotated[self.field_info.annotation, self.field_info]
-            )
+    @property
+    def annotation(self) -> Any:
+        return self.field_info.annotation
 
-        def get_default(self) -> Any:
-            if self.field_info.is_required():
-                return Undefined
-            return self.field_info.get_default(call_default_factory=True)
+    def __post_init__(self) -> None:
+        self._type_adapter: TypeAdapter[Any] = TypeAdapter(
+            Annotated[self.field_info.annotation, self.field_info]
+        )
 
-        def validate(
-            self,
-            value: Any,
-            values: Dict[str, Any] = {},  # noqa: B006
-            *,
-            loc: Tuple[Union[int, str], ...] = (),
-        ) -> Tuple[Any, Union[List[Dict[str, Any]], None]]:
-            return (
-                self._type_adapter.validate_python(value, from_attributes=True),
-                None,
-            )
+    def get_default(self) -> Any:
+        if self.field_info.is_required():
+            return Undefined
+        return self.field_info.get_default(call_default_factory=True)
 
-        def __hash__(self) -> int:
-            # Each ModelField is unique for our purposes, to allow making a dict from
-            # ModelField to its JSON Schema.
-            return id(self)
+    def validate(
+        self,
+        value: Any,
+        values: Dict[str, Any] = {},  # noqa: B006
+        *,
+        loc: Tuple[Union[int, str], ...] = (),
+    ) -> Tuple[Any, Union[List[Dict[str, Any]], None]]:
+        return (
+            self._type_adapter.validate_python(value, from_attributes=True),
+            None,
+        )
 
-else:
-    from pydantic import BaseModel, validator
-    from pydantic.fields import FieldInfo, ModelField
-    from pydantic.fields import Undefined as PydanticUndefined
-    from pydantic.fields import UndefinedType
-    from pydantic.json import ENCODERS_BY_TYPE
-    from pydantic.main import ModelMetaclass, validate_model
-    from pydantic.typing import NoArgAnyCallable
-    from pydantic.utils import Representation
-
-    def use_pydantic_2_plus():
-        return False
+    def __hash__(self) -> int:
+        return id(self)

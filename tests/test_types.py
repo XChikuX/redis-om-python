@@ -2,6 +2,7 @@
 """Tests for aredis_om.model.types – Coordinates and GeoFilter."""
 
 import pytest
+from pydantic import TypeAdapter
 
 from aredis_om.model.types import Coordinates, GeoFilter
 
@@ -65,10 +66,9 @@ class TestCoordinates:
         with pytest.raises(TypeError, match="Coordinates must be provided"):
             Coordinates.validate(12345)
 
-    def test_get_validators_yields_validate(self):
-        validators = list(Coordinates.__get_validators__())
-        assert len(validators) == 1
-        assert validators[0] == Coordinates.validate
+    def test_type_adapter_uses_pydantic_v2_schema(self):
+        result = TypeAdapter(Coordinates).validate_python("-122.6,45.5")
+        assert result == Coordinates(latitude=45.5, longitude=-122.6)
 
 
 # ---------------------------------------------------------------------------
