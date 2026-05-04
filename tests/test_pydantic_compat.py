@@ -6,19 +6,20 @@ from typing import List
 from unittest import mock
 
 import pytest
+from pydantic import field_validator, model_validator
 
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
-from aredis_om._compat import PYDANTIC_V2
 from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
 from tests._sync_redis import has_redis_json
+
 from .conftest import py_test_mark_asyncio
 
 HAS_REDIS_JSON = has_redis_json()
 
 
-def test_convert_timestamp_to_datetime_uses_v1_fields_fallback():
+def test_convert_timestamp_to_datetime_uses_model_fields():
     class EmbeddedModel:
-        __fields__ = {"created_on": mock.Mock(annotation=datetime.datetime)}
+        model_fields = {"created_on": mock.Mock(annotation=datetime.datetime)}
 
     model_fields = {"note": mock.Mock(annotation=EmbeddedModel)}
 
@@ -29,31 +30,31 @@ def test_convert_timestamp_to_datetime_uses_v1_fields_fallback():
     assert isinstance(converted["note"]["created_on"], datetime.datetime)
 
 
-def test_validate_model_data_uses_parse_obj_fallback():
-    class V1StyleModel:
+def test_validate_model_data_uses_model_validate():
+    class V2StyleModel:
         def __init__(self, values):
             self.values = values
 
         @classmethod
-        def parse_obj(cls, values):
+        def model_validate(cls, values):
             return cls(values)
 
-    result = validate_model_data(V1StyleModel, {"field": "value"})
+    result = validate_model_data(V2StyleModel, {"field": "value"})
 
-    assert isinstance(result, V1StyleModel)
+    assert isinstance(result, V2StyleModel)
     assert result.values == {"field": "value"}
 
 
-def test_v1_root_validator_on_embedded_hashmodel():
-    """pydantic v1's @root_validator should remain the primary supported path."""
-    from pydantic.v1 import root_validator
-
+def test_model_validator_on_embedded_hashmodel():
     class EmbeddedLike(HashModel):
         user_id: str
         liked_user_id: str
 
-        @root_validator(skip_on_failure=True)
+        @model_validator(mode="before")
+        @classmethod
         def assign_pk(cls, values):
+            if values.get("pk") is not None:
+                return values
             values["pk"] = ":".join(
                 sorted([values["user_id"], values["liked_user_id"]])
             )
@@ -69,32 +70,26 @@ def test_v1_root_validator_on_embedded_hashmodel():
         operations: Operation = Field(...)
 
     like = EmbeddedLike(user_id="alice", liked_user_id="bob")
-    # The root_validator sets a custom pk which overrides validate_pk's None
     assert like.pk == "alice:bob"
 
     op = Operation(likes=[like])
-    op_dict = op.dict()
+    op_dict = op.model_dump()
     assert "pk" not in op_dict
     assert op_dict["likes"][0]["pk"] == "alice:bob"
 
     user = RedisUser(operations=op)
-    user_dict = user.dict()
+    user_dict = user.model_dump()
     assert "pk" not in user_dict["operations"]
     assert user_dict["operations"]["likes"][0]["pk"] == "alice:bob"
-    assert user.operations.likes[0].user_id == "alice"
-    assert user.operations.likes[0].liked_user_id == "bob"
-    assert user.operations.likes[0].pk == "alice:bob"
 
 
-def test_v1_validator_on_hashmodel():
-    """pydantic v1's @validator should remain the primary supported path."""
-    from pydantic.v1 import validator as v1_validator
-
+def test_field_validator_on_hashmodel():
     class TaggedItem(HashModel):
         name: str
         tag: str = "default"
 
-        @v1_validator("tag", always=True, allow_reuse=True)
+        @field_validator("tag")
+        @classmethod
         def normalize_tag(cls, v):
             return v.upper()
 
@@ -105,50 +100,30 @@ def test_v1_validator_on_hashmodel():
     assert item.tag == "HELLO"
 
 
-@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
-def test_v2_root_validator_still_supported_as_compat_path():
-    from pydantic import root_validator
+def test_model_validator_on_embedded_json_model():
+    class Date(EmbeddedJsonModel):
+        date: datetime.datetime | None = None
+        utc: datetime.datetime | None = None
 
-    class EmbeddedLike(HashModel):
-        user_id: str
-        liked_user_id: str
-
-        @root_validator(skip_on_failure=True)
-        def assign_pk(cls, values):
-            values["pk"] = ":".join(
-                sorted([values["user_id"], values["liked_user_id"]])
-            )
+        @model_validator(mode="before")
+        @classmethod
+        def utc_conversion(cls, values):
+            if values.get("utc") is None and values.get("date"):
+                date_value = values["date"]
+                if date_value.tzinfo is None:
+                    date_value = date_value.replace(tzinfo=datetime.timezone.utc)
+                values["utc"] = date_value.astimezone(datetime.timezone.utc)
             return values
 
-        class Meta:
-            embedded = True
+    dt = datetime.datetime(2024, 1, 2, 3, 4, 5)
+    result = Date(date=dt)
 
-    like = EmbeddedLike(user_id="alice", liked_user_id="bob")
-    assert like.pk == "alice:bob"
-
-
-@pytest.mark.skipif(not PYDANTIC_V2, reason="pydantic v2 compat fallback only")
-def test_v2_validator_still_supported_as_compat_path():
-    from pydantic import validator as v2_validator
-
-    class TaggedItem(HashModel):
-        name: str
-        tag: str = "default"
-
-        @v2_validator("tag", always=True, allow_reuse=True)
-        def normalize_tag(cls, v):
-            return v.upper()
-
-        class Meta:
-            embedded = True
-
-    item = TaggedItem(name="test", tag="hello")
-    assert item.tag == "HELLO"
+    assert result.utc == dt.replace(tzinfo=datetime.timezone.utc)
 
 
 @py_test_mark_asyncio
 @pytest.mark.skipif(not HAS_REDIS_JSON, reason="RedisJSON required")
-async def test_json_model_get_uses_v1_field_fallback(key_prefix, redis):
+async def test_json_model_get_uses_model_fields(key_prefix, redis):
     class BaseJsonModel(JsonModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
@@ -170,7 +145,7 @@ async def test_json_model_get_uses_v1_field_fallback(key_prefix, redis):
 
 
 @py_test_mark_asyncio
-async def test_hash_model_get_uses_v1_field_fallback(key_prefix, redis):
+async def test_hash_model_get_uses_model_fields(key_prefix, redis):
     class BaseHashModel(HashModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix

@@ -14,7 +14,7 @@ aredis_om/               # ASynchronous version
 │   ├── token_escaper.py
 │   └── encoders.py    # JSON encoding utilities
 ├── connections.py     # Redis connection management (standalone + cluster)
-├── _compat.py         # Pydantic v1/v2 compatibility
+├── _compat.py         # Pydantic v2 helpers and field wrappers
 ├── checks.py
 └── util.py
 
@@ -43,9 +43,9 @@ tests_sync/            # Synchronous tests
 - Schema generation: `HashModel.schema_for_type` and `JsonModel.schema_for_type`
 
 ### Data Conversion Pipeline (save/get)
-- **Save order (HashModel):** `model.dict()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → `jsonable_encoder()` → Redis
-- **Save order (JsonModel):** `model.dict()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → Redis
-- **Get order (HashModel):** Redis → `convert_empty_strings_to_none()` → `convert_base64_to_bytes()` → `parse_obj()`
+- **Save order (HashModel):** `model.model_dump()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → `jsonable_encoder()` → Redis
+- **Save order (JsonModel):** `model.model_dump()` → `convert_datetime_to_timestamp()` → `convert_bytes_to_base64()` → `convert_dataclasses_to_dicts()` → Redis
+- **Get order (HashModel):** Redis → `convert_empty_strings_to_none()` → `convert_base64_to_bytes()` → `model_validate()`
 - **Get order (JsonModel):** Redis → `convert_timestamp_to_datetime()` → `convert_base64_to_bytes()` → `model_validate()`
 
 ### Bulk fetch / pipeline support
@@ -157,7 +157,7 @@ tests_sync/            # Synchronous tests
 | `model/migrations/migrator.py` | 71% | Index migration |
 | `checks.py` | 86% | Command detection |
 | `connections.py` | 93% | Connection management |
-| `_compat.py` | 62% | Pydantic v1/v2 compat |
+| `_compat.py` | 62% | Pydantic v2 helpers |
 | `util.py` | 87% | Numeric type helpers |
 | **Overall** | **86%** | 808 tests (async + sync) |
 
@@ -188,12 +188,12 @@ tests_sync/            # Synchronous tests
 - Cluster-specific CI coverage is still a future improvement
 
 ### Remaining Coverage Targets
-- `model/model.py` — many uncovered branches are error-handling paths and Pydantic v1-only compat code
+- `model/model.py` — many uncovered branches are error-handling paths
 - `model/migrations/migrator.py` — requires complex index migration scenarios
-- `_compat.py` — Pydantic v1 code paths only reachable on older Pydantic versions
+- `_compat.py` — helper paths around field metadata and Pydantic v2 wrappers
 
 ## Version
-- **Current Version:** 0.5.0b2
+- **Current Version:** 0.6.0
 - **Branch:** main
 
 

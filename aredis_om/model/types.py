@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Tuple, Union
 
+from pydantic_core import core_schema
+
 RadiusUnit = Literal["m", "km", "mi", "ft"]
 
 
@@ -15,10 +17,6 @@ class Coordinates:
 
     latitude: float
     longitude: float
-
-    @classmethod
-    def __get_validators__(cls):  # type: ignore[override]
-        yield cls.validate
 
     @classmethod
     def validate(cls, v: Any) -> "Coordinates":
@@ -51,6 +49,14 @@ class Coordinates:
                 return cls(latitude=float(v["lat"]), longitude=float(v["lon"]))
         raise TypeError(
             "Coordinates must be provided as 'lon,lat' string, (lat, lon) tuple, or dict with latitude/longitude"
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any):
+        return core_schema.no_info_after_validator_function(
+            cls.validate,
+            core_schema.any_schema(),
+            serialization=core_schema.plain_serializer_function_ser_schema(str),
         )
 
     def __post_init__(self):

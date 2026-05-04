@@ -268,9 +268,7 @@ async def test_all_pks_passes_count(m):
         async for pk in await m.Member.all_pks(count=500):
             pk_list.append(pk)
 
-    db.scan_iter.assert_called_once_with(
-        f"{key_prefix}*", _type="ReJSON-RL", count=500
-    )
+    db.scan_iter.assert_called_once_with(f"{key_prefix}*", _type="ReJSON-RL", count=500)
     assert pk_list == ["0", "1"]
 
 

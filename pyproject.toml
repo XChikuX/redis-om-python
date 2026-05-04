@@ -1,6 +1,6 @@
 [project]
 name = "pyredis-om"
-version = "0.5.1"
+version = "0.6.0"
 description = "A drop-in replacement for `redis-om`, built out of frustration."
 authors = [
     { name = "Redis OSS", email = "oss@redis.com" },
@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "redis>=6.4.0",
-    "pydantic>=1.10.26",
+    "pydantic>=2.0.0,<3.0.0",
     "click>=8.1.7,<9.0.0",
     "types-redis>=4.6.0,<5.0.0",
     "python-ulid>=3.0.0,<4.0.0",
