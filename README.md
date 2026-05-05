@@ -811,8 +811,9 @@ We'd love your contributions!
 
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
-Current local coverage baseline: **86% overall** across `aredis_om/` and the
-generated `redis_om/` mirror, including the cluster test suite.
+Current local coverage baseline: **88% overall** across `aredis_om/` and the
+generated `redis_om/` mirror, with **1168 passing tests** plus the cluster test
+suite.
 
 ## 📝 License
 

@@ -114,7 +114,8 @@ redis_cluster:
 
 .PHONY: test_cluster
 test_cluster: $(INSTALL_STAMP) sync redis redis_cluster
-	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -n auto -vv ./tests/test_performance_benchmark.py ./tests/test_cluster_operations.py ./tests_sync/test_cluster_operations.py
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests/test_cluster_operations.py
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_operations.py
 	$(CLUSTER_COMPOSE) down
 	$(DOCKER_COMPOSE) down
 

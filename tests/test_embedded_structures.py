@@ -35,6 +35,7 @@ from aredis_om import (
     NotFoundError,
     RedisModelError,
 )
+from aredis_om.model.model import model_registry
 from tests._sync_redis import has_redis_json, has_redisearch
 
 from .conftest import py_test_mark_asyncio
@@ -51,15 +52,18 @@ if not has_redis_json():
 @pytest_asyncio.fixture
 async def em(key_prefix, redis):
     """Return a namespace of all models used in this module."""
+    model_registry.clear()
 
     # ── Base classes ──────────────────────────────────────────────────────
     class BaseJson(JsonModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
+            database = redis
 
     class BaseHash(HashModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
+            database = redis
 
     # ── Level-4 (deepest) embedded ────────────────────────────────────────
     class ContactDetails(EmbeddedJsonModel):

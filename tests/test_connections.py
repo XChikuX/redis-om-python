@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from aredis_om import connections as connections_module
 from aredis_om.connections import _strip_cluster_param, get_redis_connection
 
 
@@ -67,9 +68,7 @@ class TestGetRedisConnection:
             calls["kwargs"] = kwargs
             return sentinel
 
-        monkeypatch.setattr(
-            "aredis_om.connections.redis.RedisCluster.from_url", fake_from_url
-        )
+        monkeypatch.setattr(connections_module.redis.RedisCluster, "from_url", fake_from_url)
 
         conn = get_redis_connection(
             url="redis://localhost:7001/0?decode_responses=True&Cluster=True&protocol=3"
