@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from aredis_om.connections import get_redis_connection
+from aredis_om.connections import _strip_cluster_param, get_redis_connection
 
 
 class TestGetRedisConnection:
@@ -41,6 +41,43 @@ class TestGetRedisConnection:
             get_redis_connection(url="redis://localhost:6380", cluster=True)
         except Exception:
             pass  # expected since there's no cluster
+
+    def test_strip_cluster_param_preserves_other_query_params(self):
+        clean = _strip_cluster_param(
+            "redis://localhost:7001/0?decode_responses=True&cluster=true&protocol=3"
+        )
+
+        assert clean == "redis://localhost:7001/0?decode_responses=True&protocol=3"
+
+    def test_strip_cluster_param_removes_case_insensitive_cluster_query_key(self):
+        clean = _strip_cluster_param(
+            "redis://localhost:7001/0?decode_responses=True&Cluster=True"
+        )
+
+        assert clean == "redis://localhost:7001/0?decode_responses=True"
+
+    def test_get_redis_connection_strips_cluster_query_before_from_url(
+        self, monkeypatch
+    ):
+        sentinel = object()
+        calls = {}
+
+        def fake_from_url(url, **kwargs):
+            calls["url"] = url
+            calls["kwargs"] = kwargs
+            return sentinel
+
+        monkeypatch.setattr(
+            "aredis_om.connections.redis.RedisCluster.from_url", fake_from_url
+        )
+
+        conn = get_redis_connection(
+            url="redis://localhost:7001/0?decode_responses=True&Cluster=True&protocol=3"
+        )
+
+        assert conn is sentinel
+        assert calls["url"] == "redis://localhost:7001/0?decode_responses=True&protocol=3"
+        assert calls["kwargs"]["decode_responses"] is True
 
     def test_no_url_no_env_uses_defaults(self, monkeypatch):
         monkeypatch.delenv("REDIS_OM_URL", raising=False)

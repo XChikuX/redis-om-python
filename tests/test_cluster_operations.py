@@ -12,7 +12,7 @@ Coverage includes:
 - GEO operations (save, search, GeoFilter) on cluster
 - Full-text search on cluster
 - Complex queries (AND, OR, NOT, IN, range) on cluster
-- Index creation / migration on cluster (FT.CREATE via target_nodes=PRIMARIES)
+- Index creation / migration on cluster (FT.CREATE via target_nodes=RANDOM)
 - Pipeline and batch operations on cluster
 - Performance comparison vs single-instance (pass/fail based on slowdown factor)
 - Direct Redis verification before redis-om layer queries
@@ -1421,7 +1421,7 @@ async def test_cluster_pipeline_mixed_ops(cluster_json_models, cluster_hash_mode
 
 @py_test_mark_asyncio
 async def test_cluster_migration_creates_indexes(cluster_conn):
-    """Cluster: Migrator creates indexes on cluster primaries."""
+    """Cluster: Migrator creates indexes on cluster."""
     model_registry.clear()
 
     class MigrTestJson(JsonModel):
