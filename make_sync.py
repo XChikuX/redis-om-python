@@ -20,6 +20,9 @@ POST_SYNC_FIXES = {
     "tests_sync/test_cluster_operations.py": {
         "import redis.asyncio as aioredis": "import redis as aioredis",
         "conn.aclose()": "conn.close()",
+        # In the generated sync mirror these call sites already contain eager
+        # return values, not coroutines, so the async gather wrapper must be
+        # removed.
         "asyncio.gather(*tasks)": "tasks",
     }
 }

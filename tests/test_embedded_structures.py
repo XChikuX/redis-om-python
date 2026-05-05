@@ -20,6 +20,7 @@ Covers:
 """
 
 import abc
+import collections
 from typing import List, Optional
 
 import pytest
@@ -183,8 +184,6 @@ async def em(key_prefix, redis):
         stops: List[Stop]
 
     await Migrator().run()
-
-    import collections
 
     Models = collections.namedtuple(
         "Models",

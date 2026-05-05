@@ -213,13 +213,13 @@ async def test_cluster_create_index_targets_one_random_node(monkeypatch):
     calls = []
     writes = []
 
-    class FakeIndex:
+    class MissingIndexStub:
         async def info(self):
             raise migrator_module.redis.ResponseError("missing index")
 
     class FakeClusterConn:
         def ft(self, _index_name):
-            return FakeIndex()
+            return MissingIndexStub()
 
         async def execute_command(self, *args, **kwargs):
             calls.append((args, kwargs))
