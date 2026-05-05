@@ -182,7 +182,19 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
             obj = model
             for sub_field in field_name.split("__"):
                 if not isinstance(obj, ModelMeta) and hasattr(obj, "field"):
-                    obj = getattr(obj, "field").annotation
+                    annotation = getattr(obj, "field").annotation
+                    # Unwrap Optional[X] (i.e. Union[X, None]) so that we can
+                    # traverse into the inner model's fields.
+                    if get_origin(annotation) is Union:
+                        annotation = next(
+                            (
+                                a
+                                for a in typing_get_args(annotation)
+                                if a is not type(None)
+                            ),
+                            annotation,
+                        )
+                    obj = annotation
 
                 if not hasattr(obj, sub_field):
                     raise QuerySyntaxError(
