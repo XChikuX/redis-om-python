@@ -24,6 +24,7 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
+from aredis_om.model.model import SINGLE_VALUE_TAG_FIELD_SEPARATOR
 from tests._compat import EmailStr, PositiveInt, ValidationError
 from tests._sync_redis import has_redis_json
 
@@ -892,8 +893,8 @@ async def test_string_list_field_allows_full_text_search(m):
         potions: List[str] = Field(index=True, full_text_search=True)
 
     assert (
-        "$.potions[*] AS potions TAG SEPARATOR | $.potions[*] AS potions_fts TEXT"
-        in AlchemicalWitch.redisearch_schema()
+        f"$.potions[*] AS potions TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
+        "$.potions[*] AS potions_fts TEXT" in AlchemicalWitch.redisearch_schema()
     )
 
     await Migrator().run()

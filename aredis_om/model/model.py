@@ -3063,10 +3063,10 @@ class JsonModel(RedisModel, abc.ABC):
                     field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                 )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
+                if case_sensitive is True and full_text_search is True:
+                    raise RedisModelError("Text fields cannot be case-sensitive.")
                 if full_text_search is True:
                     schema += f" {path} AS {index_field_name}_fts TEXT"
-                    if case_sensitive is True:
-                        raise RedisModelError("Text fields cannot be case-sensitive.")
                 elif case_sensitive is True:
                     schema += " CASESENSITIVE"
             elif typ is bool:
