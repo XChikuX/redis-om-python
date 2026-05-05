@@ -845,8 +845,8 @@ async def test_list_field_limitations(m, redis):
     with pytest.raises(RedisModelError):
 
         class SortableFullTextSearchAlchemicalWitch(m.BaseJsonModel):
-            # Sorting multi-value fields is still not supported even when they
-            # are also indexed for full-text search.
+            # Sorting multi-value fields is not supported, including when the
+            # same field is also indexed for full-text search.
             potions: List[str] = Field(index=True, full_text_search=True, sortable=True)
 
     with pytest.raises(RedisModelError):
