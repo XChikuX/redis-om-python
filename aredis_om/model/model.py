@@ -3054,11 +3054,6 @@ class JsonModel(RedisModel, abc.ABC):
                         "In this Preview release, list and tuple fields can only "
                         f"contain strings. Problem field: {name}. See docs: TODO"
                     )
-                if full_text_search is True:
-                    raise RedisModelError(
-                        "List and tuple fields cannot be indexed for full-text "
-                        f"search. Problem field: {name}. See docs: TODO"
-                    )
                 if sortable is True:
                     raise RedisModelError(
                         "In this Preview release, list and tuple fields cannot be "
@@ -3068,7 +3063,11 @@ class JsonModel(RedisModel, abc.ABC):
                     field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                 )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
-                if case_sensitive is True:
+                if full_text_search is True:
+                    schema += f" {path} AS {index_field_name}_fts TEXT"
+                    if case_sensitive is True:
+                        raise RedisModelError("Text fields cannot be case-sensitive.")
+                elif case_sensitive is True:
                     schema += " CASESENSITIVE"
             elif typ is bool:
                 schema = f"{path} AS {index_field_name} TAG"
