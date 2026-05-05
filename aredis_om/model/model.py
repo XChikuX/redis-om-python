@@ -3073,7 +3073,8 @@ class JsonModel(RedisModel, abc.ABC):
                     )
                 if case_sensitive is True and full_text_search is True:
                     raise RedisModelError(
-                        f"Text field '{name}' cannot be case-sensitive."
+                        f"List field '{name}' cannot be both case-sensitive and "
+                        "full-text searchable."
                     )
                 separator = getattr(
                     field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
