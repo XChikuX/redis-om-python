@@ -57,6 +57,13 @@ class TestGetRedisConnection:
 
         assert clean == "redis://localhost:7001/0?decode_responses=True"
 
+    def test_strip_cluster_param_removes_duplicate_case_variants(self):
+        clean = _strip_cluster_param(
+            "redis://localhost:7001/0?cluster=true&Cluster=false&decode_responses=True"
+        )
+
+        assert clean == "redis://localhost:7001/0?decode_responses=True"
+
     def test_get_redis_connection_strips_cluster_query_before_from_url(
         self, monkeypatch
     ):
