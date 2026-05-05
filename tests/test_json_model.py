@@ -847,9 +847,7 @@ async def test_list_field_limitations(m, redis):
         class SortableFullTextSearchAlchemicalWitch(m.BaseJsonModel):
             # Sorting multi-value fields is still not supported even when they
             # are also indexed for full-text search.
-            potions: List[str] = Field(
-                index=True, full_text_search=True, sortable=True
-            )
+            potions: List[str] = Field(index=True, full_text_search=True, sortable=True)
 
     with pytest.raises(RedisModelError):
 
@@ -894,7 +892,7 @@ async def test_string_list_field_allows_full_text_search(m):
         potions: List[str] = Field(index=True, full_text_search=True)
 
     assert (
-        '$.potions[*] AS potions TAG SEPARATOR | $.potions[*] AS potions_fts TEXT'
+        "$.potions[*] AS potions TAG SEPARATOR | $.potions[*] AS potions_fts TEXT"
         in AlchemicalWitch.redisearch_schema()
     )
 
@@ -912,9 +910,9 @@ async def test_string_list_field_allows_full_text_search(m):
     assert await AlchemicalWitch.find(AlchemicalWitch.potions << ["mana"]).all() == [
         first
     ]
-    assert await AlchemicalWitch.find(AlchemicalWitch.potions % "invisibility").all() == [
-        second
-    ]
+    assert await AlchemicalWitch.find(
+        AlchemicalWitch.potions % "invisibility"
+    ).all() == [second]
 
 
 @py_test_mark_asyncio
