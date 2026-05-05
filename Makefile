@@ -88,7 +88,7 @@ redis:
 
 .PHONY: upload
 upload: dist
-	twine upload dist/* --verbose
+	$(UV) run twine upload dist/* --verbose
 
 .PHONY: all
 all: lint format test
