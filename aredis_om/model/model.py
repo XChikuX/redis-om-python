@@ -3059,14 +3059,14 @@ class JsonModel(RedisModel, abc.ABC):
                         "In this Preview release, list and tuple fields cannot be "
                         f"marked as sortable. Problem field: {name}. See docs: TODO"
                     )
-                separator = getattr(
-                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
-                )
-                schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
                 if case_sensitive is True and full_text_search is True:
                     raise RedisModelError(
                         f"Text field '{name}' cannot be case-sensitive."
                     )
+                separator = getattr(
+                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                )
+                schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
                 if full_text_search is True:
                     schema += f" {path} AS {index_field_name}_fts TEXT"
                 elif case_sensitive is True:
