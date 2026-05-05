@@ -13,6 +13,7 @@ from aredis_om.checks import clear_command_cache, has_redis_json, has_redisearch
 from aredis_om.connections import get_redis_connection
 from aredis_om.model import model as model_module
 from aredis_om.model.cli import migrate as migrate_cli_module
+from aredis_om.model.migrations import migrator as migrator_module
 from aredis_om.model.model import (
     Expression,
     convert_datetime_to_timestamp,
@@ -205,6 +206,45 @@ def test_async_cli_migrate_runs_coroutines(monkeypatch):
     assert result.exit_code == 0
     assert "Pending migrations:" in result.output
     assert state == {"detected": 1, "ran": 1}
+
+
+@py_test_mark_asyncio
+async def test_cluster_create_index_targets_one_random_node(monkeypatch):
+    calls = []
+    writes = []
+
+    class MissingIndexStub:
+        async def info(self):
+            raise migrator_module.redis.ResponseError("missing index")
+
+    class FakeClusterConn:
+        def ft(self, _index_name):
+            return MissingIndexStub()
+
+        async def execute_command(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "OK"
+
+        async def set(self, key, value):
+            writes.append((key, value))
+            return True
+
+    conn = FakeClusterConn()
+
+    await migrator_module._create_index_cluster(
+        conn,
+        "test-index",
+        "ON HASH PREFIX 1 test: SCHEMA name TAG",
+        "schema-hash",
+    )
+
+    assert calls == [
+        (
+            ("ft.create", "test-index", "ON", "HASH", "PREFIX", "1", "test:", "SCHEMA", "name", "TAG"),
+            {"target_nodes": migrator_module.redis.RedisCluster.RANDOM},
+        )
+    ]
+    assert writes == [("test-index:hash", "schema-hash")]
 
 
 @pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")

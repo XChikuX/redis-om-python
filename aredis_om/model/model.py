@@ -29,7 +29,9 @@ from typing import (
     Union,
 )
 from typing import get_args as typing_get_args
-from typing import no_type_check
+from typing import (
+    no_type_check,
+)
 
 from more_itertools import ichunked
 from pydantic import ConfigDict
@@ -182,7 +184,19 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
             obj = model
             for sub_field in field_name.split("__"):
                 if not isinstance(obj, ModelMeta) and hasattr(obj, "field"):
-                    obj = getattr(obj, "field").annotation
+                    annotation = getattr(obj, "field").annotation
+                    # Unwrap Optional[X] (i.e. Union[X, None]) so that we can
+                    # traverse into the inner model's fields.
+                    if get_origin(annotation) is Union:
+                        annotation = next(
+                            (
+                                a
+                                for a in typing_get_args(annotation)
+                                if a is not type(None)
+                            ),
+                            annotation,
+                        )
+                    obj = annotation
 
                 if not hasattr(obj, sub_field):
                     raise QuerySyntaxError(
@@ -3054,21 +3068,23 @@ class JsonModel(RedisModel, abc.ABC):
                         "In this Preview release, list and tuple fields can only "
                         f"contain strings. Problem field: {name}. See docs: TODO"
                     )
-                if full_text_search is True:
-                    raise RedisModelError(
-                        "List and tuple fields cannot be indexed for full-text "
-                        f"search. Problem field: {name}. See docs: TODO"
-                    )
                 if sortable is True:
                     raise RedisModelError(
                         "In this Preview release, list and tuple fields cannot be "
                         f"marked as sortable. Problem field: {name}. See docs: TODO"
                     )
+                if case_sensitive is True and full_text_search is True:
+                    raise RedisModelError(
+                        f"List field '{name}' cannot be both case-sensitive and "
+                        "full-text searchable."
+                    )
                 separator = getattr(
                     field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
                 )
                 schema = f"{path} AS {index_field_name} TAG SEPARATOR {separator}"
-                if case_sensitive is True:
+                if full_text_search is True:
+                    schema += f" {path} AS {index_field_name}_fts TEXT"
+                elif case_sensitive is True:
                     schema += " CASESENSITIVE"
             elif typ is bool:
                 schema = f"{path} AS {index_field_name} TAG"

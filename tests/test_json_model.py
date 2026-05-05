@@ -24,6 +24,7 @@ from aredis_om import (
     QueryNotSupportedError,
     RedisModelError,
 )
+from aredis_om.model.model import SINGLE_VALUE_TAG_FIELD_SEPARATOR
 from tests._compat import EmailStr, PositiveInt, ValidationError
 from tests._sync_redis import has_redis_json
 
@@ -845,9 +846,9 @@ async def test_list_field_limitations(m, redis):
     with pytest.raises(RedisModelError):
 
         class SortableFullTextSearchAlchemicalWitch(m.BaseJsonModel):
-            # We don't support indexing a list of strings for full-text search
-            # queries. Support for this feature is not planned.
-            potions: List[str] = Field(index=True, full_text_search=True)
+            # Sorting multi-value fields is not supported, including when the
+            # same field is also indexed for full-text search.
+            potions: List[str] = Field(index=True, full_text_search=True, sortable=True)
 
     with pytest.raises(RedisModelError):
 
@@ -884,6 +885,35 @@ async def test_list_field_limitations(m, redis):
     await witch.save()
     actual = await TarotWitch.find(TarotWitch.tarot_cards << "death").all()
     assert actual == [witch]
+
+
+@py_test_mark_asyncio
+async def test_string_list_field_allows_full_text_search(m):
+    class AlchemicalWitch(m.BaseJsonModel):
+        potions: List[str] = Field(index=True, full_text_search=True)
+
+    assert (
+        f"$.potions[*] AS potions TAG SEPARATOR {SINGLE_VALUE_TAG_FIELD_SEPARATOR} "
+        "$.potions[*] AS potions_fts TEXT" in AlchemicalWitch.redisearch_schema()
+    )
+
+    await Migrator().run()
+
+    old_pks = [pk async for pk in await AlchemicalWitch.all_pks()]
+    for pk in old_pks:
+        await AlchemicalWitch.delete(pk)
+
+    first = AlchemicalWitch(potions=["healing", "mana"])
+    second = AlchemicalWitch(potions=["invisibility", "speed"])
+    await first.save()
+    await second.save()
+
+    assert await AlchemicalWitch.find(AlchemicalWitch.potions << ["mana"]).all() == [
+        first
+    ]
+    assert await AlchemicalWitch.find(
+        AlchemicalWitch.potions % "invisibility"
+    ).all() == [second]
 
 
 @py_test_mark_asyncio

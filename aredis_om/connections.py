@@ -31,10 +31,13 @@ def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
 
 def _strip_cluster_param(url: str) -> str:
     """Remove 'cluster=true' from URL query parameters."""
-    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     parsed = urlparse(url)
-    params = parse_qs(parsed.query, keep_blank_values=True)
-    params.pop("cluster", None)
+    params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() != "cluster"
+    ]
     new_query = urlencode(params, doseq=True)
     return urlunparse(parsed._replace(query=new_query))

@@ -3,6 +3,8 @@ SYNC_NAME := redis_om
 INSTALL_STAMP := .install.stamp
 UV := $(shell command -v uv 2> /dev/null)
 REDIS_OM_URL ?= redis://localhost:6380?decode_responses=True
+DOCKER_COMPOSE := docker compose
+CLUSTER_COMPOSE := $(DOCKER_COMPOSE) -f docker-compose.cluster.yml
 
 .DEFAULT_GOAL := help
 
@@ -40,7 +42,8 @@ clean:
 	rm -rf redis_om
 	rm -rf tests_sync
 	rm -rf .venv
-	-docker-compose down
+	-$(DOCKER_COMPOSE) down
+	-$(CLUSTER_COMPOSE) down
 
 
 .PHONY: dist
@@ -68,7 +71,7 @@ format: $(INSTALL_STAMP) sync
 .PHONY: test
 test: $(INSTALL_STAMP) sync redis
 	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -n auto -vv ./tests/ ./tests_sync/ --cov-report term-missing --cov $(NAME) $(SYNC_NAME)
-	docker-compose down
+	$(DOCKER_COMPOSE) down
 
 .PHONY: test_oss
 test_oss: $(INSTALL_STAMP) sync redis
@@ -84,7 +87,37 @@ shell: $(INSTALL_STAMP)
 
 .PHONY: redis
 redis:
-	docker-compose up -d
+	$(DOCKER_COMPOSE) up -d
+
+.PHONY: redis_cluster
+redis_cluster:
+	$(CLUSTER_COMPOSE) up -d
+	@echo "Waiting for Redis Cluster nodes to start..."
+	@sleep 5
+	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
+	if ! docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+		docker exec $$cluster_init_container redis-cli --cluster create \
+			127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
+			127.0.0.1:7004 127.0.0.1:7005 127.0.0.1:7006 \
+			--cluster-replicas 1 --cluster-yes; \
+	fi
+	@echo "Waiting for Redis Cluster to become healthy..."
+	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+			exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "Redis Cluster did not become healthy in time" >&2; \
+	exit 1
+
+.PHONY: test_cluster
+test_cluster: $(INSTALL_STAMP) sync redis redis_cluster
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests/test_cluster_operations.py
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_operations.py
+	$(CLUSTER_COMPOSE) down
+	$(DOCKER_COMPOSE) down
 
 .PHONY: upload
 upload: dist

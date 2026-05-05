@@ -153,6 +153,19 @@ Cluster support includes:
 - RediSearch-backed queries, including embedded JSON and GEO lookups
 - migrator support for creating search indexes on cluster deployments
 
+For local cluster validation, this repository includes a dedicated 6-node Redis
+Cluster test setup on ports `7001-7006`:
+
+```sh
+make redis
+make redis_cluster
+make test_cluster
+```
+
+`get_redis_connection()` accepts either `cluster=True` or `cluster=true` in the
+URL and strips the query flag before handing the URL to redis-py, so other URL
+parameters such as `decode_responses=True` continue to work unchanged.
+
 ## 📇 Modeling Your Data
 
 Redis OM contains powerful declarative models that give you data validation, serialization, and persistence to Redis.
@@ -797,6 +810,10 @@ We'd love your contributions!
 **Bug reports** are especially helpful at this stage of the project. [You can open a bug report on GitHub](https://github.com/XChikuX/redis-om-python/issues/new).
 
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
+
+Current local coverage baseline: **88% overall** across `aredis_om/` and the
+generated `redis_om/` mirror, with **1168 passing tests** plus the cluster test
+suite.
 
 ## 📝 License
 
