@@ -2076,6 +2076,13 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         """
         if isinstance(v, str) and v:
             return v
+        if v is not None and not (isinstance(v, str) and not v):
+            log.debug(
+                "Unexpected pk value %r (type %s) coerced to None during "
+                "model validation; stored data may be malformed.",
+                v,
+                type(v).__name__,
+            )
         return None
 
     def __init__(__pydantic_self__, **data: Any) -> None:
