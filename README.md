@@ -382,14 +382,16 @@ In the next example, we'll define a new `Address` model and embed it within the 
 
 ```python
 import datetime
-from typing import Optional
+from typing import List, Optional, Self
 
 from redis_om import (
     EmbeddedJsonModel,
+    HashModel,
     JsonModel,
     Field,
     Migrator,
 )
+from pydantic import model_validator
 
 
 class Address(EmbeddedJsonModel):
@@ -426,6 +428,70 @@ Migrator().run()
 Customer.find(Customer.address.city == "San Antonio",
               Customer.address.state == "TX")
 ```
+
+#### Two kinds of embedded models
+
+Redis OM supports two ways to embed models inside other models. They differ in
+how they handle the `pk` (primary key) field:
+
+**`EmbeddedJsonModel`** — the recommended approach for most cases:
+
+- Designed specifically for nesting inside `JsonModel` documents
+- `pk` is always excluded from `model_dump()` output, regardless of its value
+- Use this for structured sub-documents like addresses, phone numbers, metadata
+
+**Embedded `HashModel`** — when you need a meaningful identifier on the nested model:
+
+- A regular `HashModel` with `class Meta: embedded = True`
+- `pk` is excluded from `model_dump()` only when it is `None` or unset
+- If you set `pk` yourself (e.g. via a `model_validator`), it is **preserved** in the dump
+- Use this when the nested model needs a composite key or other meaningful identifier
+
+```python
+from typing import List, Self
+from pydantic import model_validator
+from redis_om import EmbeddedJsonModel, HashModel, JsonModel, Field
+
+
+# --- EmbeddedJsonModel: pk is always hidden ---
+
+class Address(EmbeddedJsonModel):
+    city: str
+
+class User(JsonModel):
+    address: Address
+
+user = User(address=Address(city="Austin"))
+user.model_dump()
+# {'pk': '<auto>', 'address': {'city': 'Austin'}}  — address has no pk
+
+
+# --- Embedded HashModel: pk preserved when set ---
+
+class EmbeddedLike(HashModel):
+    user_id: str
+    liked_user_id: str
+
+    @model_validator(mode="after")
+    def assign_pk(self) -> Self:
+        if self.pk is None:
+            self.pk = ":".join(sorted([self.user_id, self.liked_user_id]))
+        return self
+
+    class Meta:
+        embedded = True
+
+class Operation(EmbeddedJsonModel):
+    likes: List[EmbeddedLike] = []
+
+op = Operation(likes=[EmbeddedLike(user_id="alice", liked_user_id="bob")])
+op.model_dump()
+# {'likes': [{'user_id': 'alice', 'liked_user_id': 'bob', 'pk': 'alice:bob'}]}
+```
+
+> **Summary:** Use `EmbeddedJsonModel` when the nested model doesn't need its own
+> identity. Use an embedded `HashModel` with `model_validator` when the nested model
+> needs a composite key or identifier that must survive serialization.
 
 ### GEO Spatial Queries
 

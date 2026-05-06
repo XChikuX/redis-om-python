@@ -84,6 +84,64 @@ tests_sync/            # Synchronous tests
 - **Fix:** Added `separator` parameter to `FieldInfo` and `Field()`. All schema generation uses `getattr(field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)`
 - **Files:** `redis_om/model/model.py`, `aredis_om/model/model.py`
 
+### PR #810 — ExpressionProxy pk validation / strawberry-graphql integration
+- **Issue:** Passing `pk=Model.pk` (an `ExpressionProxy` used for query building) to `model_validate()` or strawberry-graphql's `to_pydantic()` caused `ValidationError` because Pydantic v2 received an `ExpressionProxy` instead of `Optional[str]`. This happened because: (1) `ModelMeta.__new__` sets `cls.pk = ExpressionProxy(...)` for query syntax like `User.find(User.pk == "abc")`, (2) strawberry's `@pyd_input.__init__` accepts the ExpressionProxy without error (defers validation), (3) `to_pydantic()` triggers full Pydantic v2 validation which rejects it.
+- **Fix:**
+  - `RedisModel._strip_expression_proxy_pk`: A `model_validator(mode="before")` that strips `ExpressionProxy` from `pk` before Pydantic validates, so `model_post_init` can generate a proper auto-generated pk.
+  - `ModelMeta.__new__`: Clears `pk_field.default = None` for all models and calls `model_rebuild(force=True)` to prevent ExpressionProxy from being baked into Pydantic v2's core schema as the field default.
+  - `EmbeddedJsonModel._model_dump_exclude`: Override that always excludes `pk` from dumps regardless of value.
+  - `RedisModel._model_dump_exclude`: Only excludes `pk` for embedded models when pk is `None` or `ExpressionProxy` — preserves user-set values (e.g. composite keys from `model_validator`).
+  - `strip_null_embedded_pks`: Uses `_is_embedded_json_model()` helper to distinguish `EmbeddedJsonModel` (always strips pk) from embedded `HashModel` (only strips null pk).
+- **Files:** `redis_om/model/model.py`, `aredis_om/model/model.py`
+
+### Embedded Model PK Behavior
+
+Redis OM has two kinds of embedded models with different `pk` semantics:
+
+| | `EmbeddedJsonModel` | Embedded `HashModel` (`class Meta: embedded = True`) |
+|---|---|---|
+| **Purpose** | Dedicated class for JSON document embedding | Regular `HashModel` repurposed as an embedded type |
+| **`pk` in `model_dump()`** | Always excluded, regardless of value | Excluded only when `None`; preserved if set by user (e.g. composite key via `model_validator`) |
+| **`_strip_stale_pk`** | Strips all `pk` from input before validation | N/A (uses `RedisModel._strip_expression_proxy_pk` only) |
+| **`_model_dump_exclude`** | Unconditional `pk` exclusion | Conditional — only excludes `None`/`ExpressionProxy` pk |
+| **Typical use** | Structured sub-documents (addresses, phone numbers) | Models needing a meaningful identifier inside a parent |
+
+**Example — EmbeddedJsonModel (pk always hidden):**
+```python
+class Address(EmbeddedJsonModel):
+    city: str
+
+class Customer(JsonModel):
+    address: Address
+
+customer = Customer(address=Address(city="Austin"))
+customer.model_dump()
+# {'address': {'city': 'Austin'}}  — no pk
+```
+
+**Example — Embedded HashModel (pk preserved when set):**
+```python
+class EmbeddedLike(HashModel):
+    user_id: str
+    liked_user_id: str
+
+    @model_validator(mode="after")
+    def assign_pk(self):
+        if self.pk is None:
+            self.pk = ":".join(sorted([self.user_id, self.liked_user_id]))
+        return self
+
+    class Meta:
+        embedded = True
+
+class Operation(EmbeddedJsonModel):
+    likes: List[EmbeddedLike] = []
+
+op = Operation(likes=[EmbeddedLike(user_id="alice", liked_user_id="bob")])
+op.model_dump()
+# {'likes': [{'user_id': 'alice', 'liked_user_id': 'bob', 'pk': 'alice:bob'}]}
+```
+
 ## Required Tests
 
 ### test_bug_fixes.py (PR #792)
@@ -115,6 +173,30 @@ tests_sync/            # Synchronous tests
 - `test_bytes_field_with_binary_data` — Store/retrieve non-UTF8 bytes (e.g., PNG headers)
 - `test_optional_bytes_field` — Optional[bytes] with None and binary data
 - `test_bytes_field_in_embedded_model` — bytes inside EmbeddedJsonModel (JsonModel only)
+
+### test_pydantic_compat.py (PR #810)
+- `test_model_validator_on_embedded_hashmodel` — Embedded HashModel with model_validator preserves pk in dump; EmbeddedJsonModel excludes pk
+- `test_json_model_validate_missing_pk` — model_validate on JsonModel with pk omitted
+- `test_json_model_validate_json_missing_pk` — model_validate_json on JsonModel with pk omitted
+- `test_hash_model_validate_missing_pk` — model_validate on HashModel with pk omitted
+- `test_hash_model_validate_json_missing_pk` — model_validate_json on HashModel with pk omitted
+- `test_json_model_validate_with_explicit_pk` — model_validate with explicit pk value
+- `test_hash_model_validate_with_explicit_pk` — model_validate with explicit pk value
+- `test_json_model_validate_strips_expression_proxy_pk` — model_validate strips ExpressionProxy from pk
+- `test_hash_model_validate_strips_expression_proxy_pk` — model_validate strips ExpressionProxy from pk
+
+### test_json_model.py (PR #810)
+- `test_embedded_model_pk_not_in_model_dump` — EmbeddedJsonModel pk never in model_dump, even if force-set
+- `test_json_model_pk_generated_but_embedded_pk_none` — JsonModel gets auto pk; EmbeddedJsonModel pk stays None
+- `test_nested_embedded_model_pk_exclusion` — Deeply nested embedded models exclude pk
+- `test_embedded_list_pk_exclusion` — List items that are embedded models exclude pk
+
+### test_strawberry_integration.py (PR #810)
+- `test_strawberry_input_to_model_validate` — strawberry pydantic input round-trips through model_validate
+- `test_strawberry_input_with_explicit_pk_to_model_validate` — model_validate accepts explicit pk from strawberry input
+- `test_strawberry_input_pk_not_in_dict` — pk not in strawberry embedded model input dict
+- `test_strawberry_input_with_expression_proxy_pk_stripped` — to_pydantic() strips ExpressionProxy pk
+- `test_strawberry_input_with_expression_proxy_to_pydantic_succeeds` — to_pydantic() + model_validate round-trip with ExpressionProxy pk
 
 ## Recent Changes (April 2026)
 
