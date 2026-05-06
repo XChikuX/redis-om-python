@@ -1950,6 +1950,7 @@ class ModelMeta(ModelMetaclass):
 
         # Create proxies for each model field so that we can use the field
         # in queries, like Model.get(Model.field_name == 1)
+        is_embedded_model = getattr(new_class._meta, "embedded", False)
         for field_name, field in new_class.model_fields.items():
             inherited_field = None
             for base_candidate in bases:
@@ -1959,6 +1960,19 @@ class ModelMeta(ModelMetaclass):
                 if inherited_field is not None:
                     break
             _apply_redis_om_field_metadata(field, inherited_field or field)
+
+            # Embedded models have no primary key.  Wrapping the inherited ``pk``
+            # field with an ExpressionProxy sets the class-level attribute to a
+            # non-string object.  Pydantic v2 may then use that object as the
+            # field's default when validating embedded sub-documents, causing a
+            # ValidationError because ExpressionProxy is not Optional[str].
+            # Explicitly shadow any ExpressionProxy inherited from a parent class
+            # (e.g. JsonModel) by setting pk to None on this class, then skip
+            # the rest of the ExpressionProxy / annotation / PrimaryKey setup.
+            if is_embedded_model and getattr(field, "primary_key", False):
+                setattr(new_class, field_name, None)
+                continue
+
             model_field = ModelField(field_info=field, name=field_name)
             setattr(new_class, field_name, ExpressionProxy(model_field, []))
             annotation = new_class.get_annotations().get(field_name)
@@ -1978,7 +1992,7 @@ class ModelMeta(ModelMetaclass):
                 new_class.__annotations__[score_attr] = Union[float, None]
 
         # If this is an embedded model, we don't want to allow primary keys at all,
-        if getattr(new_class._meta, "embedded", False):
+        if is_embedded_model:
             new_class._meta.primary_key = None
 
         if not getattr(new_class._meta, "global_key_prefix", None):

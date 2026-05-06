@@ -16,6 +16,7 @@ from aredis_om.model.cli import migrate as migrate_cli_module
 from aredis_om.model.migrations import migrator as migrator_module
 from aredis_om.model.model import (
     Expression,
+    ExpressionProxy,
     convert_datetime_to_timestamp,
     convert_timestamp_to_datetime,
 )
@@ -312,3 +313,57 @@ async def test_find_query_warns_about_indexing_failures(monkeypatch, caplog):
     assert "indexing failures" in caplog.text
     assert "Invalid numeric value" in caplog.text
     assert "Product:broken" in caplog.text
+
+
+def test_embedded_model_pk_is_not_expression_proxy():
+    """Metaclass must NOT replace the pk class attribute with ExpressionProxy on
+    embedded models.
+
+    When Pydantic v2 validates a nested embedded sub-document it may use the
+    class-level default for any field absent from the input dict.  If that
+    default is an ExpressionProxy the validator raises a ValidationError because
+    ExpressionProxy is not Optional[str].  The fix in ModelMeta.__new__ skips
+    the ExpressionProxy setup for the pk field on embedded models entirely.
+    """
+
+    class Address(EmbeddedJsonModel):
+        street: str = Field(index=True)
+
+    # The class-level attribute must NOT be an ExpressionProxy.
+    assert not isinstance(Address.pk, ExpressionProxy), (
+        "pk class attribute on an EmbeddedJsonModel must not be an ExpressionProxy; "
+        "it would cause Pydantic v2 to raise a ValidationError when the field is "
+        "absent from the input dict."
+    )
+
+
+def test_embedded_model_instantiation_without_pk():
+    """Directly instantiating an EmbeddedJsonModel must not raise ValidationError."""
+
+    class Profile(EmbeddedJsonModel):
+        bio: str
+
+    p = Profile(bio="hello")
+    assert p.pk is None
+    assert p.bio == "hello"
+
+
+def test_embedded_model_instantiation_with_stale_pk_in_dict():
+    """Loading stale Redis data that includes a pk entry must not crash.
+
+    Old records written before the embedded-pk fix may carry a ``pk`` key.
+    The _strip_pk model_validator (defence-in-depth) must silently drop it.
+    """
+    from typing import List
+
+    class Tag(EmbeddedJsonModel):
+        name: str
+
+    class Container(JsonModel):
+        tags: List[Tag]
+
+    # Simulate stale data: pk present with an invalid type (empty list)
+    stale = {"name": "python", "pk": []}
+    tag = Tag.model_validate(stale)
+    assert tag.pk is None
+    assert tag.name == "python"
