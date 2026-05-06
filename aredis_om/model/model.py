@@ -2880,6 +2880,9 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
+        if isinstance(document_data, dict) and not document_data.get("pk"):
+            document_data = dict(document_data)
+            document_data["pk"] = pk
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -2902,11 +2905,14 @@ class JsonModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for document_data in results:
+        for requested_pk, document_data in zip(pks, results):
             if document_data is None:
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
+            if isinstance(document_data, dict) and not document_data.get("pk"):
+                document_data = dict(document_data)
+                document_data["pk"] = requested_pk
             models.append(validate_model_data(cls, document_data))
         return models
 
