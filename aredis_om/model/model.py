@@ -282,6 +282,14 @@ def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
 
     Removes invalid embedded-model ``pk`` values and restores missing top-level
     ``pk`` values from the Redis key that was used to load the document.
+
+    Args:
+        model: The Redis model class whose field metadata should be used.
+        values: The raw Redis payload being prepared for validation.
+        pk: The primary-key value used to fetch the top-level document, if known.
+
+    Returns:
+        A normalized payload safe to pass to Pydantic validation.
     """
     if not isinstance(values, dict) or not has_model_field_mapping(model):
         return values
@@ -336,7 +344,16 @@ def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
 
 
 def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
-    """Strip the model key prefix and return only the raw primary-key value."""
+    """Strip the model key prefix and return only the raw primary-key value.
+
+    Args:
+        model: The Redis model class whose key prefix should be removed.
+        redis_key: The full Redis key, bytes key, or ``None``.
+
+    Returns:
+        The raw primary-key value when the prefix matches, ``None`` when no key
+        was provided, or the original key when it does not match the model prefix.
+    """
     if redis_key is None:
         return None
     if isinstance(redis_key, bytes):
