@@ -2056,7 +2056,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def model_post_init(self, __context: Any) -> None:
         if getattr(type(self)._meta, "embedded", False):
             # Always clear pk for embedded models — they don't have their own pk.
-            if self.pk is not None:
+            if isinstance(self.pk, ExpressionProxy):
                 object.__setattr__(self, "pk", None)
         elif not self.pk or isinstance(self.pk, ExpressionProxy):
             object.__setattr__(
