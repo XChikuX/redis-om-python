@@ -223,6 +223,29 @@ async def test_saves_model_and_creates_pk(address, m, redis):
 
 
 @py_test_mark_asyncio
+async def test_get_restores_missing_pk_from_requested_key(address, m):
+    member = m.Member(
+        first_name="Andrew",
+        last_name="Brookins",
+        email="a@example.com",
+        join_date=today,
+        age=38,
+        address=address,
+    )
+
+    await member.save()
+
+    raw = await m.Member.db().json().get(member.key())
+    raw.pop("pk", None)
+    await m.Member.db().json().set(member.key(), ".", raw)
+
+    reloaded = await m.Member.get(member.pk)
+
+    assert reloaded.pk == member.pk
+    assert reloaded.address == address
+
+
+@py_test_mark_asyncio
 async def test_all_pks(address, m, redis):
     member = m.Member(
         first_name="Andrew",

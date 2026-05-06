@@ -273,6 +273,72 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
     return cleaned
 
 
+def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
+    """Normalize loaded Redis data before model validation."""
+    if not isinstance(values, dict) or not has_model_field_mapping(model):
+        return values
+
+    cleaned = dict(values)
+    for field_name, field in get_model_fields(model).items():
+        if field_name not in cleaned:
+            continue
+
+        field_type = outer_type_or_annotation(field)
+        value = cleaned[field_name]
+
+        if is_supported_container_type(field_type):
+            type_args = get_args(field_type)
+            inner_type = type_args[0] if type_args else None
+            if (
+                isinstance(value, list)
+                and isinstance(inner_type, type)
+                and has_model_field_mapping(inner_type)
+            ):
+                cleaned[field_name] = [
+                    (
+                        normalize_loaded_model_data(inner_type, item)
+                        if isinstance(item, dict)
+                        else item
+                    )
+                    for item in value
+                ]
+        elif (
+            isinstance(field_type, type)
+            and has_model_field_mapping(field_type)
+            and isinstance(value, dict)
+        ):
+            cleaned[field_name] = normalize_loaded_model_data(field_type, value)
+
+    if getattr(model._meta, "embedded", False):
+        embedded_pk = cleaned.get("pk")
+        if embedded_pk in (None, "") or not isinstance(embedded_pk, str):
+            cleaned.pop("pk", None)
+        return cleaned
+
+    if pk is not None:
+        primary_key = getattr(model._meta, "primary_key", None)
+        if primary_key and cleaned.get(primary_key.name) in (None, ""):
+            cleaned[primary_key.name] = pk
+
+        model_pk = cleaned.get("pk")
+        if model_pk in (None, "") or not isinstance(model_pk, str):
+            cleaned["pk"] = str(pk)
+
+    return cleaned
+
+
+def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
+    """Extract the raw primary-key value from a Redis key."""
+    if redis_key is None:
+        return None
+    if isinstance(redis_key, bytes):
+        redis_key = redis_key.decode(model.Meta.encoding)
+    key_prefix = model.make_key(model._meta.primary_key_pattern.format(pk=""))
+    if isinstance(redis_key, str) and redis_key.startswith(key_prefix):
+        return remove_prefix(redis_key, key_prefix)
+    return redis_key
+
+
 def decode_redis_value(
     obj: Union[List[bytes], Dict[bytes, bytes], bytes], encoding: str
 ) -> Union[List[str], Dict[str, str], str]:
@@ -2348,6 +2414,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         for i in range(1, len(res), step):
             if res[i + offset] is None:
                 continue
+            redis_pk = pk_from_redis_key(cls, res[i])
             fields: Dict[str, str] = dict(
                 zip(
                     map(to_string, res[i + offset][::2]),
@@ -2360,6 +2427,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 json_fields = convert_timestamp_to_datetime(json_fields, model_fields)
                 json_fields = convert_base64_to_bytes(json_fields, model_fields)
+                json_fields = normalize_loaded_model_data(cls, json_fields, pk=redis_pk)
                 doc = cls(**json_fields)
                 for k, v in fields.items():
                     if k.startswith("__") and k.endswith("_score"):
@@ -2370,6 +2438,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 fields = convert_empty_strings_to_none(fields, model_fields)
                 fields = convert_base64_to_bytes(fields, model_fields)
+                fields = normalize_loaded_model_data(cls, fields, pk=redis_pk)
                 doc = cls(**fields)
 
             docs.append(doc)
@@ -2568,6 +2637,7 @@ class HashModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
+        document = normalize_loaded_model_data(cls, document, pk=pk)
         try:
             result = cls.model_validate(document)
         except TypeError as e:
@@ -2580,6 +2650,7 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = normalize_loaded_model_data(cls, document, pk=pk)
             result = cls.model_validate(document)
         return result
 
@@ -2603,17 +2674,19 @@ class HashModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for document in results:
+        for pk_value, document in zip(pks, results):
             if not document:
                 continue
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = normalize_loaded_model_data(cls, document, pk=pk_value)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
+                document = normalize_loaded_model_data(cls, document, pk=pk_value)
                 models.append(cls.model_validate(document))
         return models
 
@@ -2857,6 +2930,7 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
+        document_data = normalize_loaded_model_data(cls, document_data, pk=pk)
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -2879,11 +2953,14 @@ class JsonModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for document_data in results:
+        for pk_value, document_data in zip(pks, results):
             if document_data is None:
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
+            document_data = normalize_loaded_model_data(
+                cls, document_data, pk=pk_value
+            )
             models.append(validate_model_data(cls, document_data))
         return models
 

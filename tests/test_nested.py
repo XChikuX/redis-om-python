@@ -815,6 +815,39 @@ async def test_save_and_retrieve_nested_personality(nested_models, users):
 
 
 @py_test_mark_asyncio
+async def test_get_ignores_invalid_embedded_pk(nested_models, users):
+    """Invalid embedded pk values should not break model reconstruction."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+    raw["personality"]["pk"] = []
+    await RedisUser.db().json().set(alice.key(), ".", raw)
+
+    reloaded = await RedisUser.get(alice.pk)
+
+    assert reloaded.personality.pk is None
+    assert reloaded.personality.mbti == alice.personality.mbti
+
+
+@py_test_mark_asyncio
+async def test_query_ignores_invalid_embedded_pk(nested_models, users):
+    """Query results should tolerate invalid embedded pk payloads."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+    raw["personality"]["pk"] = []
+    await RedisUser.db().json().set(alice.key(), ".", raw)
+
+    results = await RedisUser.find(RedisUser.name == "Alice").all()
+
+    assert len(results) == 1
+    assert results[0].personality.pk is None
+    assert results[0].personality.mbti == alice.personality.mbti
+
+
+@py_test_mark_asyncio
 async def test_save_and_retrieve_nested_location(nested_models, users):
     """Verify nested location data round-trips correctly."""
     RedisUser = nested_models["RedisUser"]
