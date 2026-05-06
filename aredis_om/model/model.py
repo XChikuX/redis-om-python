@@ -34,7 +34,7 @@ from typing import (
 )
 
 from more_itertools import ichunked
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
@@ -275,72 +275,6 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
 
 def is_invalid_pk(value: Any) -> bool:
     return value in (None, "") or not isinstance(value, str)
-
-
-def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
-    """Prepare loaded Redis data for validation.
-
-    Removes invalid embedded-model ``pk`` values and restores missing top-level
-    ``pk`` values from the Redis key that was used to load the document.
-
-    Args:
-        model: The Redis model class whose field metadata should be used.
-        values: The raw Redis payload being prepared for validation.
-        pk: The primary-key value used to fetch the top-level document, if known.
-
-    Returns:
-        A normalized payload safe to pass to Pydantic validation.
-    """
-    if not isinstance(values, dict) or not has_model_field_mapping(model):
-        return values
-
-    cleaned = dict(values)
-    for field_name, field in get_model_fields(model).items():
-        if field_name not in cleaned:
-            continue
-
-        field_type = outer_type_or_annotation(field)
-        value = cleaned[field_name]
-
-        if is_supported_container_type(field_type):
-            type_args = get_args(field_type)
-            inner_type = type_args[0] if type_args else None
-            if (
-                isinstance(value, list)
-                and isinstance(inner_type, type)
-                and has_model_field_mapping(inner_type)
-            ):
-                cleaned[field_name] = [
-                    (
-                        normalize_loaded_model_data(inner_type, item)
-                        if isinstance(item, dict)
-                        else item
-                    )
-                    for item in value
-                ]
-        elif (
-            isinstance(field_type, type)
-            and has_model_field_mapping(field_type)
-            and isinstance(value, dict)
-        ):
-            cleaned[field_name] = normalize_loaded_model_data(field_type, value)
-
-    if getattr(model._meta, "embedded", False):
-        embedded_pk = cleaned.get("pk")
-        if is_invalid_pk(embedded_pk):
-            cleaned.pop("pk", None)
-        return cleaned
-
-    if pk is not None:
-        primary_key = getattr(model._meta, "primary_key", None)
-        if primary_key and cleaned.get(primary_key.name) in (None, ""):
-            cleaned[primary_key.name] = pk
-
-        model_pk = cleaned.get("pk")
-        if is_invalid_pk(model_pk):
-            cleaned["pk"] = str(pk)
-
-    return cleaned
 
 
 def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
@@ -2128,6 +2062,22 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__()
 
+    @field_validator("pk", mode="before")
+    @classmethod
+    def coerce_pk(cls, v: Any) -> Any:
+        """Coerce invalid pk values to None before Pydantic validation.
+
+        Stored data may occasionally contain a malformed ``pk`` field with a
+        non-string value (e.g. ``[]`` from a bug or external write), or an
+        empty string.  Returning ``None`` here lets Pydantic accept the
+        document as ``Optional[str]`` without raising a ``ValidationError``.
+        The correct pk is re-applied by ``model_post_init`` (top-level models)
+        or simply left as ``None`` (embedded models).
+        """
+        if isinstance(v, str) and v:
+            return v
+        return None
+
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
         super().__init__(**data)
@@ -2452,7 +2402,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 json_fields = convert_timestamp_to_datetime(json_fields, model_fields)
                 json_fields = convert_base64_to_bytes(json_fields, model_fields)
-                json_fields = normalize_loaded_model_data(cls, json_fields, pk=redis_pk)
+                if redis_pk is not None and is_invalid_pk(json_fields.get("pk")):
+                    json_fields["pk"] = str(redis_pk)
                 doc = cls(**json_fields)
                 for k, v in fields.items():
                     if k.startswith("__") and k.endswith("_score"):
@@ -2463,7 +2414,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 fields = convert_empty_strings_to_none(fields, model_fields)
                 fields = convert_base64_to_bytes(fields, model_fields)
-                fields = normalize_loaded_model_data(cls, fields, pk=redis_pk)
+                if redis_pk is not None and is_invalid_pk(fields.get("pk")):
+                    fields["pk"] = str(redis_pk)
                 doc = cls(**fields)
 
             docs.append(doc)
@@ -2662,7 +2614,8 @@ class HashModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
-        document = normalize_loaded_model_data(cls, document, pk=pk)
+        if is_invalid_pk(document.get("pk")):
+            document["pk"] = str(pk)
         try:
             result = cls.model_validate(document)
         except TypeError as e:
@@ -2675,7 +2628,8 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
-            document = normalize_loaded_model_data(cls, document, pk=pk)
+            if is_invalid_pk(document.get("pk")):
+                document["pk"] = str(pk)
             result = cls.model_validate(document)
         return result
 
@@ -2704,14 +2658,16 @@ class HashModel(RedisModel, abc.ABC):
                 continue
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
-            document = normalize_loaded_model_data(cls, document, pk=pk_value)
+            if is_invalid_pk(document.get("pk")):
+                document["pk"] = str(pk_value)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
-                document = normalize_loaded_model_data(cls, document, pk=pk_value)
+                if is_invalid_pk(document.get("pk")):
+                    document["pk"] = str(pk_value)
                 models.append(cls.model_validate(document))
         return models
 
@@ -2955,7 +2911,8 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
-        document_data = normalize_loaded_model_data(cls, document_data, pk=pk)
+        if is_invalid_pk(document_data.get("pk")):
+            document_data["pk"] = str(pk)
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -2983,7 +2940,8 @@ class JsonModel(RedisModel, abc.ABC):
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
-            document_data = normalize_loaded_model_data(cls, document_data, pk=pk_value)
+            if is_invalid_pk(document_data.get("pk")):
+                document_data["pk"] = str(pk_value)
             models.append(validate_model_data(cls, document_data))
         return models
 
