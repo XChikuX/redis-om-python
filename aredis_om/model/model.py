@@ -34,7 +34,7 @@ from typing import (
 )
 
 from more_itertools import ichunked
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, model_validator
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
@@ -2062,29 +2062,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__()
 
-    @field_validator("pk", mode="before")
-    @classmethod
-    def coerce_pk(cls, v: Any) -> Any:
-        """Coerce invalid pk values to None before Pydantic validation.
-
-        Stored data may occasionally contain a malformed ``pk`` field with a
-        non-string value (e.g. ``[]`` from a bug or external write), or an
-        empty string.  Returning ``None`` here lets Pydantic accept the
-        document as ``Optional[str]`` without raising a ``ValidationError``.
-        The correct pk is re-applied by ``model_post_init`` (top-level models)
-        or simply left as ``None`` (embedded models).
-        """
-        if isinstance(v, str) and v:
-            return v
-        if v is not None and not (isinstance(v, str) and not v):
-            log.debug(
-                "Unexpected pk value %r (type %s) coerced to None during "
-                "model validation; stored data may be malformed.",
-                v,
-                type(v).__name__,
-            )
-        return None
-
     def __init__(__pydantic_self__, **data: Any) -> None:
         __pydantic_self__.validate_primary_key()
         super().__init__(**data)
@@ -3204,3 +3181,17 @@ class JsonModel(RedisModel, abc.ABC):
 class EmbeddedJsonModel(JsonModel, abc.ABC):
     class Meta:
         embedded = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_pk(cls, data: Any) -> Any:
+        """Drop any stray ``pk`` key from the input before Pydantic validation.
+
+        Embedded models never have a primary key.  Old data or direct Redis
+        writes may include a ``pk`` entry (possibly with a non-string value
+        such as ``[]``).  Removing it here prevents ``ValidationError`` and
+        ensures the inherited ``pk`` field always stays ``None``.
+        """
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k != "pk"}
+        return data

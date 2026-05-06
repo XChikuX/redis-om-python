@@ -814,15 +814,30 @@ async def test_save_and_retrieve_nested_personality(nested_models, users):
     assert alice.personality.openness == 0.8
 
 
-@pytest.mark.parametrize("invalid_pk", [[], "", None])
 @py_test_mark_asyncio
-async def test_get_ignores_invalid_embedded_pk(nested_models, users, invalid_pk):
-    """Invalid embedded pk values should not break model reconstruction."""
+async def test_embedded_model_pk_never_written(nested_models, users):
+    """Embedded models must never have a pk key written to Redis."""
     RedisUser = nested_models["RedisUser"]
     alice = users["alice"]
 
     raw = await RedisUser.db().json().get(alice.key())
-    raw["personality"]["pk"] = invalid_pk
+
+    # Top-level model has pk; embedded models must not.
+    assert "pk" in raw, "top-level RedisUser should have pk in Redis"
+    assert "pk" not in raw["personality"], "embedded personality must not have pk"
+    assert "pk" not in raw["location"], "embedded location must not have pk"
+    assert "pk" not in raw["gender"], "embedded gender must not have pk"
+
+
+@pytest.mark.parametrize("stray_pk", [[], "stale-id", ""])
+@py_test_mark_asyncio
+async def test_embedded_model_stray_pk_ignored_on_get(nested_models, users, stray_pk):
+    """Stray pk values injected into embedded model data are silently dropped."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+    raw["personality"]["pk"] = stray_pk
     await RedisUser.db().json().set(alice.key(), ".", raw)
 
     reloaded = await RedisUser.get(alice.pk)
@@ -831,15 +846,17 @@ async def test_get_ignores_invalid_embedded_pk(nested_models, users, invalid_pk)
     assert reloaded.personality.mbti == alice.personality.mbti
 
 
-@pytest.mark.parametrize("invalid_pk", [[], "", None])
+@pytest.mark.parametrize("stray_pk", [[], "stale-id", ""])
 @py_test_mark_asyncio
-async def test_query_ignores_invalid_embedded_pk(nested_models, users, invalid_pk):
-    """Query results should tolerate invalid embedded pk payloads."""
+async def test_embedded_model_stray_pk_ignored_on_query(
+    nested_models, users, stray_pk
+):
+    """Query results silently drop stray pk from embedded model data."""
     RedisUser = nested_models["RedisUser"]
     alice = users["alice"]
 
     raw = await RedisUser.db().json().get(alice.key())
-    raw["personality"]["pk"] = invalid_pk
+    raw["personality"]["pk"] = stray_pk
     await RedisUser.db().json().set(alice.key(), ".", raw)
 
     results = await RedisUser.find(RedisUser.name == "Alice").all()
