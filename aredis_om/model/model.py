@@ -230,6 +230,15 @@ def validate_model_data(model: Any, values: Any) -> Any:
     return model.model_validate(values)
 
 
+def _is_embedded_json_model(cls: Any) -> bool:
+    """Check if a class is an EmbeddedJsonModel subclass."""
+    # Avoid circular import — check by name / MRO.
+    for base in getattr(cls, "__mro__", []):
+        if base.__name__ == "EmbeddedJsonModel":
+            return True
+    return False
+
+
 def strip_null_embedded_pks(model: Any, values: Any) -> Any:
     """Recursively remove primary keys from embedded-model dump output."""
     if not isinstance(values, dict) or not has_model_field_mapping(model):
@@ -265,15 +274,22 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
             and isinstance(value, dict)
         ):
             cleaned[field_name] = strip_null_embedded_pks(field_type, value)
-            # Embedded models should never expose a pk, even if a validator
-            # or manual assignment set one internally.
+            # EmbeddedJsonModel always strips pk.  Other embedded models
+            # (e.g. embedded HashModel) only strip null/placeholder pk so
+            # that user-set values (like composite keys) are preserved.
             if getattr(field_type, "_meta", None) and getattr(
                 field_type._meta, "embedded", False
             ):
-                cleaned[field_name].pop("pk", None)
+                if _is_embedded_json_model(field_type):
+                    cleaned[field_name].pop("pk", None)
+                elif cleaned[field_name].get("pk") is None:
+                    cleaned[field_name].pop("pk", None)
 
-    if getattr(model._meta, "embedded", False) and cleaned.get("pk") is None:
-        cleaned.pop("pk", None)
+    if getattr(model._meta, "embedded", False):
+        if _is_embedded_json_model(model):
+            cleaned.pop("pk", None)
+        elif cleaned.get("pk") is None:
+            cleaned.pop("pk", None)
     return cleaned
 
 
@@ -2072,6 +2088,26 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         extra="allow",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_expression_proxy_pk(cls, data: Any) -> Any:
+        """Strip ExpressionProxy values from pk before Pydantic validates.
+
+        Framework integrations (e.g. strawberry-graphql) may pass the
+        class-level ``Model.pk`` attribute — which is an ExpressionProxy
+        used for query building — as the ``pk`` value in input data.
+        Because strawberry defers Pydantic validation until ``to_pydantic()``
+        is called, the ExpressionProxy reaches ``model_validate()`` and causes
+        a ``ValidationError``.
+
+        We strip it here so that ``model_validate()`` treats it as if pk
+        was omitted, allowing ``model_post_init`` to generate a proper pk.
+        """
+        if isinstance(data, dict) and "pk" in data:
+            if isinstance(data["pk"], ExpressionProxy):
+                data = {k: v for k, v in data.items() if k != "pk"}
+        return data
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__()
 
@@ -2091,7 +2127,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def _model_dump_exclude(self, exclude: Any) -> Any:
         is_embedded = getattr(type(self)._meta, "embedded", False)
-        if is_embedded:
+        if is_embedded and (
+            self.pk is None or isinstance(self.pk, ExpressionProxy)
+        ):
             if exclude is None:
                 exclude = {"pk"}
             elif isinstance(exclude, AbstractSet):
@@ -3198,6 +3236,18 @@ class JsonModel(RedisModel, abc.ABC):
 class EmbeddedJsonModel(JsonModel, abc.ABC):
     class Meta:
         embedded = True
+
+    def _model_dump_exclude(self, exclude: Any) -> Any:
+        """EmbeddedJsonModel always excludes pk, regardless of its value."""
+        if exclude is None:
+            exclude = {"pk"}
+        elif isinstance(exclude, AbstractSet):
+            exclude = set(exclude)
+            exclude.add("pk")
+        elif isinstance(exclude, dict):
+            exclude = dict(exclude)
+            exclude["pk"] = True
+        return exclude
 
     @model_validator(mode="before")
     @classmethod

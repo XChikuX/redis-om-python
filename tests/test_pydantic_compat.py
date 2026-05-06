@@ -9,7 +9,8 @@ import pytest
 from pydantic import field_validator, model_validator
 
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
-from aredis_om.model.model import convert_timestamp_to_datetime, validate_model_data
+from tests._compat import ValidationError
+from aredis_om.model.model import ExpressionProxy, convert_timestamp_to_datetime, validate_model_data
 from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
@@ -126,6 +127,68 @@ def test_hash_model_validate_json_missing_pk():
     assert user.name == "Ada"
     assert user.pk is not None
     assert isinstance(user.pk, str)
+
+
+def test_json_model_validate_with_explicit_pk():
+    """model_validate must handle an explicit pk value correctly."""
+
+    class User(JsonModel):
+        name: str
+
+    user = User.model_validate({"name": "Ada", "pk": "my-custom-pk"})
+    assert user.name == "Ada"
+    assert user.pk == "my-custom-pk"
+
+
+def test_hash_model_validate_with_explicit_pk():
+    """model_validate must handle an explicit pk value correctly."""
+
+    class User(HashModel):
+        name: str
+
+    user = User.model_validate({"name": "Ada", "pk": "my-custom-pk"})
+    assert user.name == "Ada"
+    assert user.pk == "my-custom-pk"
+
+
+def test_json_model_validate_strips_expression_proxy_pk():
+    """model_validate must strip an ExpressionProxy passed as pk.
+
+    This can happen when a GraphQL input library (e.g. strawberry-graphql)
+    copies class-level attributes onto input dicts.  The ExpressionProxy
+    should be silently stripped so that model_post_init can generate a
+    proper primary key.
+    """
+
+    class User(JsonModel):
+        name: str
+
+    user = User.model_validate({"name": "Ada", "pk": User.pk})
+    assert user.name == "Ada"
+    assert user.pk is not None
+    assert isinstance(user.pk, str)
+    # The pk must be an auto-generated value, not the ExpressionProxy.
+    assert not isinstance(user.pk, ExpressionProxy)
+
+
+def test_hash_model_validate_strips_expression_proxy_pk():
+    """model_validate must strip an ExpressionProxy passed as pk.
+
+    This can happen when a GraphQL input library (e.g. strawberry-graphql)
+    copies class-level attributes onto input dicts.  The ExpressionProxy
+    should be silently stripped so that model_post_init can generate a
+    proper primary key.
+    """
+
+    class User(HashModel):
+        name: str
+
+    user = User.model_validate({"name": "Ada", "pk": User.pk})
+    assert user.name == "Ada"
+    assert user.pk is not None
+    assert isinstance(user.pk, str)
+    # The pk must be an auto-generated value, not the ExpressionProxy.
+    assert not isinstance(user.pk, ExpressionProxy)
 
 
 def test_field_validator_on_hashmodel():

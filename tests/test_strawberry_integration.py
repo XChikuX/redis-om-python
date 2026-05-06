@@ -291,3 +291,146 @@ async def test_strawberry_convertible_redis_dict():
     assert user_dict["fname"] == "Frank"
     assert user_dict["email"] == "frank@test.com"
     assert "pk" in user_dict
+
+
+@pytest.mark.asyncio
+async def test_strawberry_input_to_model_validate(key_prefix, redis):
+    """Validate that a strawberry pydantic input can be converted to a redis-om model.
+
+    This reproduces the scenario where a GraphQL resolver receives a
+    strawberry Input type (backed by a redis-om model) and needs to
+    convert it to the underlying model via model_validate.
+    """
+    await Migrator().run()
+
+    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
+    for pk in old_pks:
+        await StrawberryUser.delete(pk)
+
+    # Simulate what a GraphQL resolver receives: a strawberry Input instance.
+    # strawberry-graphql's pydantic integration lets you use the input type
+    # as a resolver argument, and the resolver receives the already-
+    # constructed pydantic model instance.
+    phone_input = PhoneInput(
+        country_code="1",
+        country="United States",
+        number=5551234567,
+        device_id="test-device-001",
+        phone_type="ios",
+    )
+    user_input = UserInput(
+        fname="Ada",
+        email="ada@test.com",
+        phone=phone_input,
+        ethnicity="asian",
+        interests=["python", "redis"],
+        bio="GraphQL + Redis enthusiast",
+    )
+
+    # strawberry's pydantic input uses to_pydantic() to convert to the underlying
+    # pydantic model; .dict() on that gives the exact data for model_validate.
+    input_dict = user_input.to_pydantic().dict()
+
+    # This should NOT raise a ValidationError about ExpressionProxy in pk.
+    user = StrawberryUser.model_validate(input_dict)
+    assert user.fname == "Ada"
+    assert user.email == "ada@test.com"
+    assert user.phone.number == 5551234567
+    assert user.pk is not None
+    assert isinstance(user.pk, str)
+
+
+@pytest.mark.asyncio
+async def test_strawberry_input_with_explicit_pk_to_model_validate(key_prefix, redis):
+    """model_validate should accept an explicit pk even when the input comes from strawberry.
+
+    This tests the path where a resolver passes an existing pk (e.g. for updates).
+    """
+    await Migrator().run()
+
+    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
+    for pk in old_pks:
+        await StrawberryUser.delete(pk)
+
+    # Simulate a resolver that already has the pk (update scenario)
+    phone_input = PhoneInput(
+        country_code="1",
+        number=5559999999,
+        device_id="device-update",
+    )
+    # Even with pk=None from the input, model_validate must work
+    user = StrawberryUser.model_validate({
+        "fname": "Bob",
+        "email": "bob@test.com",
+        "phone": phone_input.to_pydantic().dict(),
+        "ethnicity": "caucasian",
+        "interests": ["go"],
+        "bio": "update test",
+        "pk": None,
+    })
+    assert user.pk is not None
+
+
+@pytest.mark.asyncio
+async def test_strawberry_input_pk_not_in_dict(key_prefix, redis):
+    """Verify that pk is not present in the strawberry input dict.
+
+    This confirms the input type does not carry the class-level ExpressionProxy.
+    """
+    phone_input = PhoneInput(
+        country_code="1",
+        number=5550000001,
+        device_id="device-pk-test",
+    )
+    input_dict = phone_input.to_pydantic().dict()
+    assert "pk" not in input_dict
+
+
+@pytest.mark.asyncio
+async def test_strawberry_input_with_expression_proxy_pk_stripped(key_prefix, redis):
+    """If a strawberry input receives pk=User.pk (the ExpressionProxy), it must
+    be gracefully stripped so that to_pydantic() succeeds.
+
+    The __init__ accepts the ExpressionProxy (strawberry defers pydantic validation
+    to to_pydantic()).  Our model_validator strips it before Pydantic validates,
+    so to_pydantic() produces a valid model with an auto-generated pk.
+    """
+    inp = UserInput(
+        pk=StrawberryUser.pk,
+        fname="StrippedInput",
+        email="stripped@test.com",
+        phone=PhoneInput(country_code="1", number=5550000000, device_id="bad"),
+        ethnicity="test",
+        interests=["test"],
+        bio="bad",
+    )
+    # to_pydantic() should succeed now — ExpressionProxy pk is stripped
+    pydantic_model = inp.to_pydantic()
+    assert pydantic_model.fname == "StrippedInput"
+    assert pydantic_model.pk is not None
+    assert isinstance(pydantic_model.pk, str)
+
+
+@pytest.mark.asyncio
+async def test_strawberry_input_with_expression_proxy_to_pydantic_succeeds(key_prefix, redis):
+    """to_pydantic() with an ExpressionProxy pk should succeed and auto-generate pk.
+
+    The model_validator on RedisModel strips the ExpressionProxy before
+    Pydantic validates the fields, so the model gets a proper auto-generated pk.
+    """
+    inp = UserInput(
+        pk=StrawberryUser.pk,
+        fname="AutoPK",
+        email="autopk@test.com",
+        phone=PhoneInput(country_code="1", number=5550000000, device_id="auto"),
+        ethnicity="test",
+        interests=["test"],
+        bio="auto pk test",
+    )
+    pydantic_model = inp.to_pydantic()
+    assert pydantic_model.fname == "AutoPK"
+    assert pydantic_model.pk is not None
+    assert isinstance(pydantic_model.pk, str)
+    # Round-trip through model_validate also works
+    user = StrawberryUser.model_validate(pydantic_model.dict())
+    assert user.pk is not None

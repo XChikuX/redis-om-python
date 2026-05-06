@@ -1,6 +1,8 @@
 # Redis OM Python
 
 Object mapping library for Redis built on Pydantic, using RediSearch and RedisJSON modules.
+**When you need to search docs, use `context7` tools.**
+**When you need to search the web, use `brave-web-search` tools, make only 1 call at a time so as to not trigger rate limits**
 
 ## Repository Structure
 
