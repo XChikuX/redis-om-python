@@ -3187,6 +3187,6 @@ class EmbeddedJsonModel(JsonModel, abc.ABC):
         models never have a meaningful pk, so we drop the key unconditionally
         before Pydantic validates the fields.
         """
-        if isinstance(data, dict) and "pk" in data:
-            data = {k: v for k, v in data.items() if k != "pk"}
+        if isinstance(data, dict):
+            data.pop("pk", None)
         return data
