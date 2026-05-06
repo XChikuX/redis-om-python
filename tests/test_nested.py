@@ -848,9 +848,7 @@ async def test_embedded_model_stray_pk_ignored_on_get(nested_models, users, stra
 
 @pytest.mark.parametrize("stray_pk", [[], "stale-id", ""])
 @py_test_mark_asyncio
-async def test_embedded_model_stray_pk_ignored_on_query(
-    nested_models, users, stray_pk
-):
+async def test_embedded_model_stray_pk_ignored_on_query(nested_models, users, stray_pk):
     """Query results silently drop stray pk from embedded model data."""
     RedisUser = nested_models["RedisUser"]
     alice = users["alice"]

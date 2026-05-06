@@ -29,9 +29,7 @@ from typing import (
     Union,
 )
 from typing import get_args as typing_get_args
-from typing import (
-    no_type_check,
-)
+from typing import no_type_check
 
 from more_itertools import ichunked
 from pydantic import ConfigDict, model_validator
@@ -1941,8 +1939,7 @@ class ModelMeta(ModelMetaclass):
             # attribute lookup never falls through to the parent class's
             # ExpressionProxy (which Pydantic v2 would try to validate).
             is_embedded_pk = (
-                getattr(new_class._meta, "embedded", False)
-                and field_name == "pk"
+                getattr(new_class._meta, "embedded", False) and field_name == "pk"
             )
             if is_embedded_pk:
                 setattr(new_class, field_name, None)

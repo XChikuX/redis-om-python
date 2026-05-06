@@ -241,7 +241,18 @@ async def test_cluster_create_index_targets_one_random_node(monkeypatch):
 
     assert calls == [
         (
-            ("ft.create", "test-index", "ON", "HASH", "PREFIX", "1", "test:", "SCHEMA", "name", "TAG"),
+            (
+                "ft.create",
+                "test-index",
+                "ON",
+                "HASH",
+                "PREFIX",
+                "1",
+                "test:",
+                "SCHEMA",
+                "name",
+                "TAG",
+            ),
             {"target_nodes": migrator_module.redis.RedisCluster.RANDOM},
         )
     ]

@@ -75,14 +75,18 @@ class TestGetRedisConnection:
             calls["kwargs"] = kwargs
             return sentinel
 
-        monkeypatch.setattr(connections_module.redis.RedisCluster, "from_url", fake_from_url)
+        monkeypatch.setattr(
+            connections_module.redis.RedisCluster, "from_url", fake_from_url
+        )
 
         conn = get_redis_connection(
             url="redis://localhost:7001/0?decode_responses=True&Cluster=True&protocol=3"
         )
 
         assert conn is sentinel
-        assert calls["url"] == "redis://localhost:7001/0?decode_responses=True&protocol=3"
+        assert (
+            calls["url"] == "redis://localhost:7001/0?decode_responses=True&protocol=3"
+        )
         assert calls["kwargs"]["decode_responses"] is True
 
     def test_no_url_no_env_uses_defaults(self, monkeypatch):
