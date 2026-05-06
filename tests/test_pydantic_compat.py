@@ -50,7 +50,7 @@ def test_model_validator_on_embedded_hashmodel():
         user_id: str
         liked_user_id: str
 
-        @model_validator(mode="before")
+        @model_validator(mode="after")
         @classmethod
         def assign_pk(cls, values):
             if values.get("pk") is not None:
