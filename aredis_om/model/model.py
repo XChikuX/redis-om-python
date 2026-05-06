@@ -34,7 +34,7 @@ from typing import (
 )
 
 from more_itertools import ichunked
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
@@ -2058,7 +2058,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def model_post_init(self, __context: Any) -> None:
         if getattr(type(self)._meta, "embedded", False):
-            if isinstance(self.pk, ExpressionProxy):
+            # Always clear pk for embedded models — they don't have their own pk.
+            if self.pk is not None:
                 object.__setattr__(self, "pk", None)
         elif not self.pk or isinstance(self.pk, ExpressionProxy):
             object.__setattr__(
@@ -3175,3 +3176,17 @@ class JsonModel(RedisModel, abc.ABC):
 class EmbeddedJsonModel(JsonModel, abc.ABC):
     class Meta:
         embedded = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_stale_pk(cls, data: Any) -> Any:
+        """Strip any stale or invalid pk from embedded model input.
+
+        Old Redis records (or hand-crafted test data) may carry a ``pk`` key
+        with an invalid type (e.g. ``[]``) or a stale string value.  Embedded
+        models never have a meaningful pk, so we drop the key unconditionally
+        before Pydantic validates the fields.
+        """
+        if isinstance(data, dict):
+            data.pop("pk", None)
+        return data
