@@ -34,7 +34,7 @@ from typing import (
 )
 
 from more_itertools import ichunked
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
 from typing_extensions import Annotated, Protocol, get_args, get_origin
@@ -271,31 +271,6 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
     if getattr(model._meta, "embedded", False) and cleaned.get("pk") is None:
         cleaned.pop("pk", None)
     return cleaned
-
-
-def is_invalid_pk(value: Any) -> bool:
-    return value is None or value == "" or not isinstance(value, str)
-
-
-def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
-    """Strip the model key prefix and return only the raw primary-key value.
-
-    Args:
-        model: The Redis model class whose key prefix should be removed.
-        redis_key: The full Redis key, bytes key, or ``None``.
-
-    Returns:
-        The raw primary-key value when the prefix matches, ``None`` when no key
-        was provided, or the original key when it does not match the model prefix.
-    """
-    if redis_key is None:
-        return None
-    if isinstance(redis_key, bytes):
-        redis_key = redis_key.decode(model.Meta.encoding)
-    key_prefix = model.make_key(model._meta.primary_key_pattern.format(pk=""))
-    if isinstance(redis_key, str) and redis_key.startswith(key_prefix):
-        return remove_prefix(redis_key, key_prefix)
-    return redis_key
 
 
 def decode_redis_value(
@@ -1950,7 +1925,6 @@ class ModelMeta(ModelMetaclass):
 
         # Create proxies for each model field so that we can use the field
         # in queries, like Model.get(Model.field_name == 1)
-        is_embedded_model = getattr(new_class._meta, "embedded", False)
         for field_name, field in new_class.model_fields.items():
             inherited_field = None
             for base_candidate in bases:
@@ -1960,19 +1934,6 @@ class ModelMeta(ModelMetaclass):
                 if inherited_field is not None:
                     break
             _apply_redis_om_field_metadata(field, inherited_field or field)
-
-            # Embedded models have no primary key.  Wrapping the inherited ``pk``
-            # field with an ExpressionProxy sets the class-level attribute to a
-            # non-string object.  Pydantic v2 may then use that object as the
-            # field's default when validating embedded sub-documents, causing a
-            # ValidationError because ExpressionProxy is not Optional[str].
-            # Explicitly shadow any ExpressionProxy inherited from a parent class
-            # (e.g. JsonModel) by setting pk to None on this class, then skip
-            # the rest of the ExpressionProxy / annotation / PrimaryKey setup.
-            if is_embedded_model and getattr(field, "primary_key", False):
-                setattr(new_class, field_name, None)
-                continue
-
             model_field = ModelField(field_info=field, name=field_name)
             setattr(new_class, field_name, ExpressionProxy(model_field, []))
             annotation = new_class.get_annotations().get(field_name)
@@ -1992,7 +1953,7 @@ class ModelMeta(ModelMetaclass):
                 new_class.__annotations__[score_attr] = Union[float, None]
 
         # If this is an embedded model, we don't want to allow primary keys at all,
-        if is_embedded_model:
+        if getattr(new_class._meta, "embedded", False):
             new_class._meta.primary_key = None
 
         if not getattr(new_class._meta, "global_key_prefix", None):
@@ -2387,7 +2348,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         for i in range(1, len(res), step):
             if res[i + offset] is None:
                 continue
-            redis_pk = pk_from_redis_key(cls, res[i])
             fields: Dict[str, str] = dict(
                 zip(
                     map(to_string, res[i + offset][::2]),
@@ -2400,8 +2360,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 json_fields = convert_timestamp_to_datetime(json_fields, model_fields)
                 json_fields = convert_base64_to_bytes(json_fields, model_fields)
-                if redis_pk is not None and is_invalid_pk(json_fields.get("pk")):
-                    json_fields["pk"] = str(redis_pk)
                 doc = cls(**json_fields)
                 for k, v in fields.items():
                     if k.startswith("__") and k.endswith("_score"):
@@ -2412,8 +2370,6 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 model_fields = get_model_fields(cls)
                 fields = convert_empty_strings_to_none(fields, model_fields)
                 fields = convert_base64_to_bytes(fields, model_fields)
-                if redis_pk is not None and is_invalid_pk(fields.get("pk")):
-                    fields["pk"] = str(redis_pk)
                 doc = cls(**fields)
 
             docs.append(doc)
@@ -2612,8 +2568,6 @@ class HashModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
-        if is_invalid_pk(document.get("pk")):
-            document["pk"] = str(pk)
         try:
             result = cls.model_validate(document)
         except TypeError as e:
@@ -2626,8 +2580,6 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
-            if is_invalid_pk(document.get("pk")):
-                document["pk"] = str(pk)
             result = cls.model_validate(document)
         return result
 
@@ -2651,21 +2603,17 @@ class HashModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for pk_value, document in zip(pks, results):
+        for document in results:
             if not document:
                 continue
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
-            if is_invalid_pk(document.get("pk")):
-                document["pk"] = str(pk_value)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
-                if is_invalid_pk(document.get("pk")):
-                    document["pk"] = str(pk_value)
                 models.append(cls.model_validate(document))
         return models
 
@@ -2909,8 +2857,6 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
-        if is_invalid_pk(document_data.get("pk")):
-            document_data["pk"] = str(pk)
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -2933,13 +2879,11 @@ class JsonModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for pk_value, document_data in zip(pks, results):
+        for document_data in results:
             if document_data is None:
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
-            if is_invalid_pk(document_data.get("pk")):
-                document_data["pk"] = str(pk_value)
             models.append(validate_model_data(cls, document_data))
         return models
 
@@ -3195,18 +3139,3 @@ class JsonModel(RedisModel, abc.ABC):
 class EmbeddedJsonModel(JsonModel, abc.ABC):
     class Meta:
         embedded = True
-
-    @model_validator(mode="before")
-    @classmethod
-    def _strip_pk(cls, data: Any) -> Any:
-        """Drop any stray ``pk`` key from the input before Pydantic validation.
-
-        Embedded models never have a primary key.  Old data or direct Redis
-        writes may include a ``pk`` entry (possibly with a non-string value
-        such as ``[]``).  Removing it here ensures the ``pk`` key is not
-        present in the input dict, allowing the inherited ``pk`` field to
-        remain ``None`` (its default value from ``RedisModel``).
-        """
-        if isinstance(data, dict):
-            data = {k: v for k, v in data.items() if k != "pk"}
-        return data
