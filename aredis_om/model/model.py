@@ -231,7 +231,7 @@ def validate_model_data(model: Any, values: Any) -> Any:
 
 
 def strip_null_embedded_pks(model: Any, values: Any) -> Any:
-    """Recursively remove null primary keys from embedded-model dump output."""
+    """Recursively remove primary keys from embedded-model dump output."""
     if not isinstance(values, dict) or not has_model_field_mapping(model):
         return values
 
@@ -265,6 +265,12 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
             and isinstance(value, dict)
         ):
             cleaned[field_name] = strip_null_embedded_pks(field_type, value)
+            # Embedded models should never expose a pk, even if a validator
+            # or manual assignment set one internally.
+            if getattr(field_type, "_meta", None) and getattr(
+                field_type._meta, "embedded", False
+            ):
+                cleaned[field_name].pop("pk", None)
 
     if getattr(model._meta, "embedded", False) and cleaned.get("pk") is None:
         cleaned.pop("pk", None)
@@ -1945,6 +1951,10 @@ class ModelMeta(ModelMetaclass):
                 setattr(new_class, field_name, None)
                 if field_name in new_class.__annotations__:
                     new_class.__annotations__[field_name] = field.annotation
+                # Pydantic v2 bakes the class attribute into the core schema as
+                # the field default.  We need to clear it from the FieldInfo and
+                # rebuild so that validation doesn't receive the ExpressionProxy.
+                field.default = None
                 continue
 
             setattr(new_class, field_name, ExpressionProxy(model_field, []))
@@ -1963,6 +1973,9 @@ class ModelMeta(ModelMetaclass):
                 score_attr = f"_{field_name}_score"
                 setattr(new_class, score_attr, None)
                 new_class.__annotations__[score_attr] = Union[float, None]
+
+        if getattr(new_class._meta, "embedded", False):
+            new_class.model_rebuild(force=True)
 
         # If this is an embedded model, we don't want to allow primary keys at all,
         if getattr(new_class._meta, "embedded", False):

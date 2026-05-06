@@ -1581,3 +1581,89 @@ async def test_bytes_field_in_embedded_model(key_prefix, redis):
     assert retrieved.content.content_type == "application/pdf"
     assert retrieved.content.data == pdf_header
     assert retrieved.content.metadata == metadata
+
+
+def test_embedded_model_pk_not_in_model_dump():
+    """EmbeddedJsonModel pk must never appear in model_dump, even if set."""
+
+    class Inner(EmbeddedJsonModel):
+        name: str
+
+    class Outer(JsonModel):
+        inner: Inner
+
+    inner = Inner(name="test")
+    # pk should be None for embedded models
+    assert inner.pk is None
+    dumped = inner.model_dump()
+    assert "pk" not in dumped
+
+    # Even if a validator sets pk internally, it must still be excluded
+    class InnerWithPk(EmbeddedJsonModel):
+        name: str
+
+        def model_post_init(self, __context):
+            super().model_post_init(__context)
+            object.__setattr__(self, "pk", "forced_pk")
+
+    inner2 = InnerWithPk(name="test")
+    assert inner2.pk == "forced_pk"
+    dumped2 = inner2.model_dump()
+    assert "pk" not in dumped2
+
+    outer = Outer(inner=inner2)
+    outer_dumped = outer.model_dump()
+    assert "pk" not in outer_dumped["inner"]
+
+
+def test_json_model_pk_generated_but_embedded_pk_none():
+    """JsonModel gets an auto-generated pk; EmbeddedJsonModel pk stays None."""
+
+    class Inner(EmbeddedJsonModel):
+        value: int
+
+    class Outer(JsonModel):
+        inner: Inner
+
+    outer = Outer(inner=Inner(value=1))
+    assert outer.pk is not None
+    assert isinstance(outer.pk, str)
+    assert outer.inner.pk is None
+
+    dumped = outer.model_dump()
+    assert "pk" in dumped
+    assert dumped["pk"] == outer.pk
+    assert "pk" not in dumped["inner"]
+
+
+def test_nested_embedded_model_pk_exclusion():
+    """Deeply nested embedded models must also exclude pk from dumps."""
+
+    class Level2(EmbeddedJsonModel):
+        data: str
+
+    class Level1(EmbeddedJsonModel):
+        level2: Level2
+
+    class Root(JsonModel):
+        level1: Level1
+
+    root = Root(level1=Level1(level2=Level2(data="deep")))
+    dumped = root.model_dump()
+    assert "pk" not in dumped["level1"]
+    assert "pk" not in dumped["level1"]["level2"]
+
+
+def test_embedded_list_pk_exclusion():
+    """List items that are embedded models must exclude pk from dumps."""
+
+    class Item(EmbeddedJsonModel):
+        name: str
+
+    class Container(JsonModel):
+        items: List[Item] = []
+
+    container = Container(items=[Item(name="a"), Item(name="b")])
+    dumped = container.model_dump()
+    for item in dumped["items"]:
+        assert "pk" not in item
