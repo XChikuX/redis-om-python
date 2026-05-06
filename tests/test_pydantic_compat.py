@@ -2,7 +2,7 @@
 
 import abc
 import datetime
-from typing import List
+from typing import List, Self
 from unittest import mock
 
 import pytest
@@ -51,14 +51,11 @@ def test_model_validator_on_embedded_hashmodel():
         liked_user_id: str
 
         @model_validator(mode="after")
-        @classmethod
-        def assign_pk(cls, values):
-            if values.get("pk") is not None:
-                return values
-            values["pk"] = ":".join(
-                sorted([values["user_id"], values["liked_user_id"]])
-            )
-            return values
+        def assign_pk(self) -> Self:
+            # 'self' is the already-validated instance
+            if self.pk is None:
+                self.pk = ":".join(sorted([self.user_id, self.liked_user_id]))
+            return self
 
         class Meta:
             embedded = True
