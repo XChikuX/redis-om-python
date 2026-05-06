@@ -274,7 +274,7 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
 
 
 def is_invalid_pk(value: Any) -> bool:
-    return value in (None, "") or not isinstance(value, str)
+    return value is None or value == "" or not isinstance(value, str)
 
 
 def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
@@ -3189,8 +3189,9 @@ class EmbeddedJsonModel(JsonModel, abc.ABC):
 
         Embedded models never have a primary key.  Old data or direct Redis
         writes may include a ``pk`` entry (possibly with a non-string value
-        such as ``[]``).  Removing it here prevents ``ValidationError`` and
-        ensures the inherited ``pk`` field always stays ``None``.
+        such as ``[]``).  Removing it here ensures the ``pk`` key is not
+        present in the input dict, allowing the inherited ``pk`` field to
+        remain ``None`` (its default value from ``RedisModel``).
         """
         if isinstance(data, dict):
             data = {k: v for k, v in data.items() if k != "pk"}
