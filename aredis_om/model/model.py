@@ -2958,9 +2958,7 @@ class JsonModel(RedisModel, abc.ABC):
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
-            document_data = normalize_loaded_model_data(
-                cls, document_data, pk=pk_value
-            )
+            document_data = normalize_loaded_model_data(cls, document_data, pk=pk_value)
             models.append(validate_model_data(cls, document_data))
         return models
 
