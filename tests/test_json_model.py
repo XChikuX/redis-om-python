@@ -1010,13 +1010,9 @@ async def test_schema(m, key_prefix):
         "$.age AS age NUMERIC "
         "$.bio AS bio TAG SEPARATOR | "
         "$.bio AS bio_fts TEXT "
-        "$.address.pk AS address_pk TAG SEPARATOR | "
         "$.address.city AS address_city TAG SEPARATOR | "
         "$.address.postal_code AS address_postal_code TAG SEPARATOR | "
-        "$.address.note.pk AS address_note_pk TAG SEPARATOR | "
         "$.address.note.description AS address_note_description TAG SEPARATOR | "
-        "$.orders[*].pk AS orders_pk TAG SEPARATOR | "
-        "$.orders[*].items[*].pk AS orders_items_pk TAG SEPARATOR | "
         "$.orders[*].items[*].name AS orders_items_name TAG SEPARATOR |"
     )
 

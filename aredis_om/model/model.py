@@ -1935,6 +1935,21 @@ class ModelMeta(ModelMetaclass):
                     break
             _apply_redis_om_field_metadata(field, inherited_field or field)
             model_field = ModelField(field_info=field, name=field_name)
+            # Embedded models should never get an ExpressionProxy for the
+            # inherited pk field — it is not a real field on embedded models.
+            # We must also explicitly shadow the parent pk with None so that
+            # attribute lookup never falls through to the parent class's
+            # ExpressionProxy (which Pydantic v2 would try to validate).
+            is_embedded_pk = (
+                getattr(new_class._meta, "embedded", False)
+                and field_name == "pk"
+            )
+            if is_embedded_pk:
+                setattr(new_class, field_name, None)
+                if field_name in new_class.__annotations__:
+                    new_class.__annotations__[field_name] = field.annotation
+                continue
+
             setattr(new_class, field_name, ExpressionProxy(model_field, []))
             annotation = new_class.get_annotations().get(field_name)
             if annotation:
@@ -2126,6 +2141,8 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     @classmethod
     def validate_primary_key(cls):
         """Check for a primary key. We need one (and only one)."""
+        if getattr(cls._meta, "embedded", False):
+            return
         primary_keys = 0
         for name, field_info in cls.model_fields.items():
             if getattr(field_info, "primary_key", None):
@@ -2738,6 +2755,12 @@ class HashModel(RedisModel, abc.ABC):
                 )
             sub_fields = []
             for embedded_name, field in typ.model_fields.items():
+                # Skip the inherited pk field on embedded models — it is
+                # not a real indexed field.
+                if embedded_name == "pk" and getattr(
+                    getattr(typ, "_meta", None), "embedded", False
+                ):
+                    continue
                 sub_fields.append(
                     cls.schema_for_type(
                         f"{name}_{embedded_name}",
@@ -3001,6 +3024,13 @@ class JsonModel(RedisModel, abc.ABC):
             name_prefix = f"{name_prefix}_{name}" if name_prefix else name
             sub_fields = []
             for embedded_name, field in typ.model_fields.items():
+                # Skip the inherited pk field on embedded models — it is
+                # not a real indexed field and should not appear in the
+                # RediSearch schema.
+                if embedded_name == "pk" and getattr(
+                    getattr(typ, "_meta", None), "embedded", False
+                ):
+                    continue
                 field_info = field
                 if parent_is_container_type:
                     # We'll store this value either as a JavaScript array, so
