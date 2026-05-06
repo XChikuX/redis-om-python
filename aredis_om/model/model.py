@@ -273,8 +273,16 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
     return cleaned
 
 
+def is_invalid_pk(value: Any) -> bool:
+    return value in (None, "") or not isinstance(value, str)
+
+
 def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
-    """Normalize loaded Redis data before model validation."""
+    """Prepare loaded Redis data for validation.
+
+    Removes invalid embedded-model ``pk`` values and restores missing top-level
+    ``pk`` values from the Redis key that was used to load the document.
+    """
     if not isinstance(values, dict) or not has_model_field_mapping(model):
         return values
 
@@ -311,7 +319,7 @@ def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
 
     if getattr(model._meta, "embedded", False):
         embedded_pk = cleaned.get("pk")
-        if embedded_pk in (None, "") or not isinstance(embedded_pk, str):
+        if is_invalid_pk(embedded_pk):
             cleaned.pop("pk", None)
         return cleaned
 
@@ -321,14 +329,14 @@ def normalize_loaded_model_data(model: Any, values: Any, pk: Any = None) -> Any:
             cleaned[primary_key.name] = pk
 
         model_pk = cleaned.get("pk")
-        if model_pk in (None, "") or not isinstance(model_pk, str):
+        if is_invalid_pk(model_pk):
             cleaned["pk"] = str(pk)
 
     return cleaned
 
 
 def pk_from_redis_key(model: Type["RedisModel"], redis_key: Any) -> Any:
-    """Extract the raw primary-key value from a Redis key."""
+    """Strip the model key prefix and return only the raw primary-key value."""
     if redis_key is None:
         return None
     if isinstance(redis_key, bytes):

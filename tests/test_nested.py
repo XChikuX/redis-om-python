@@ -814,14 +814,15 @@ async def test_save_and_retrieve_nested_personality(nested_models, users):
     assert alice.personality.openness == 0.8
 
 
+@pytest.mark.parametrize("invalid_pk", [[], "", None])
 @py_test_mark_asyncio
-async def test_get_ignores_invalid_embedded_pk(nested_models, users):
+async def test_get_ignores_invalid_embedded_pk(nested_models, users, invalid_pk):
     """Invalid embedded pk values should not break model reconstruction."""
     RedisUser = nested_models["RedisUser"]
     alice = users["alice"]
 
     raw = await RedisUser.db().json().get(alice.key())
-    raw["personality"]["pk"] = []
+    raw["personality"]["pk"] = invalid_pk
     await RedisUser.db().json().set(alice.key(), ".", raw)
 
     reloaded = await RedisUser.get(alice.pk)
@@ -830,14 +831,15 @@ async def test_get_ignores_invalid_embedded_pk(nested_models, users):
     assert reloaded.personality.mbti == alice.personality.mbti
 
 
+@pytest.mark.parametrize("invalid_pk", [[], "", None])
 @py_test_mark_asyncio
-async def test_query_ignores_invalid_embedded_pk(nested_models, users):
+async def test_query_ignores_invalid_embedded_pk(nested_models, users, invalid_pk):
     """Query results should tolerate invalid embedded pk payloads."""
     RedisUser = nested_models["RedisUser"]
     alice = users["alice"]
 
     raw = await RedisUser.db().json().get(alice.key())
-    raw["personality"]["pk"] = []
+    raw["personality"]["pk"] = invalid_pk
     await RedisUser.db().json().set(alice.key(), ".", raw)
 
     results = await RedisUser.find(RedisUser.name == "Alice").all()
