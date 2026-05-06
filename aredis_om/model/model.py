@@ -2065,8 +2065,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def _model_dump_exclude(self, exclude: Any) -> Any:
         is_embedded = getattr(type(self)._meta, "embedded", False)
-        pk_value = getattr(self, "pk", None)
-        if is_embedded and pk_value is None:
+        if is_embedded:
             if exclude is None:
                 exclude = {"pk"}
             elif isinstance(exclude, AbstractSet):
