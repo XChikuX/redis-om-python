@@ -815,6 +815,58 @@ async def test_save_and_retrieve_nested_personality(nested_models, users):
 
 
 @py_test_mark_asyncio
+async def test_embedded_model_pk_never_written(nested_models, users):
+    """Embedded models must never have a pk key written to Redis."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+
+    # Top-level model has pk; embedded models must not.
+    assert "pk" in raw, "top-level RedisUser should have pk in Redis"
+    assert "pk" not in raw["personality"], "embedded personality must not have pk"
+    assert "pk" not in raw["location"], "embedded location must not have pk"
+    assert "pk" not in raw["gender"], "embedded gender must not have pk"
+
+
+@pytest.mark.parametrize("stray_pk", [[], "stale-id", ""])
+@py_test_mark_asyncio
+async def test_embedded_model_stray_pk_ignored_on_get(nested_models, users, stray_pk):
+    """Stray pk values injected into embedded model data are silently dropped."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+    raw["personality"]["pk"] = stray_pk
+    await RedisUser.db().json().set(alice.key(), ".", raw)
+
+    reloaded = await RedisUser.get(alice.pk)
+
+    assert reloaded.personality.pk is None
+    assert reloaded.personality.mbti == alice.personality.mbti
+
+
+@pytest.mark.parametrize("stray_pk", [[], "stale-id", ""])
+@py_test_mark_asyncio
+async def test_embedded_model_stray_pk_ignored_on_query(
+    nested_models, users, stray_pk
+):
+    """Query results silently drop stray pk from embedded model data."""
+    RedisUser = nested_models["RedisUser"]
+    alice = users["alice"]
+
+    raw = await RedisUser.db().json().get(alice.key())
+    raw["personality"]["pk"] = stray_pk
+    await RedisUser.db().json().set(alice.key(), ".", raw)
+
+    results = await RedisUser.find(RedisUser.name == "Alice").all()
+
+    assert len(results) == 1
+    assert results[0].personality.pk is None
+    assert results[0].personality.mbti == alice.personality.mbti
+
+
+@py_test_mark_asyncio
 async def test_save_and_retrieve_nested_location(nested_models, users):
     """Verify nested location data round-trips correctly."""
     RedisUser = nested_models["RedisUser"]
