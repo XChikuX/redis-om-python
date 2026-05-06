@@ -1974,8 +1974,21 @@ class ModelMeta(ModelMetaclass):
                 setattr(new_class, score_attr, None)
                 new_class.__annotations__[score_attr] = Union[float, None]
 
-        if getattr(new_class._meta, "embedded", False):
-            new_class.model_rebuild(force=True)
+        # Pydantic v2 copies the class-level attribute into the core schema as
+        # the field default.  Because ``setattr(new_class, field_name, ExpressionProxy)``
+        # runs *after* ``super().__new__()``, the core schema already contains the
+        # parent class's ExpressionProxy as the default for ``pk`` (and any other
+        # inherited field).  We must rebuild the schema so that Pydantic reads the
+        # newly-set class attribute instead of the stale inherited one.
+        #
+        # Additionally, for ``pk`` specifically, we need to clear the
+        # ``ExpressionProxy`` from the ``FieldInfo`` default so that
+        # ``model_validate`` and ``model_validate_json`` don't try to validate
+        # it as a string.
+        pk_field = new_class.model_fields.get("pk")
+        if pk_field is not None and getattr(pk_field, "default", None) is not None:
+            pk_field.default = None
+        new_class.model_rebuild(force=True)
 
         # If this is an embedded model, we don't want to allow primary keys at all,
         if getattr(new_class._meta, "embedded", False):

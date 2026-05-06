@@ -80,6 +80,30 @@ def test_model_validator_on_embedded_hashmodel():
     assert user_dict["operations"]["likes"][0]["pk"] == "alice:bob"
 
 
+def test_json_model_validate_missing_pk():
+    """model_validate on JsonModel must not crash when pk is omitted."""
+
+    class User(JsonModel):
+        name: str
+
+    user = User.model_validate({"name": "Ada"})
+    assert user.name == "Ada"
+    assert user.pk is not None
+    assert isinstance(user.pk, str)
+
+
+def test_json_model_validate_json_missing_pk():
+    """model_validate_json on JsonModel must not crash when pk is omitted."""
+
+    class User(JsonModel):
+        name: str
+
+    user = User.model_validate_json('{"name": "Ada"}')
+    assert user.name == "Ada"
+    assert user.pk is not None
+    assert isinstance(user.pk, str)
+
+
 def test_field_validator_on_hashmodel():
     class TaggedItem(HashModel):
         name: str
