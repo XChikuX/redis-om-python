@@ -24,6 +24,8 @@ No critical security flaw was identified in this documentation review. The highe
 
 ## Evidence map
 
+Line references reflect repository state on the review date and may shift as files evolve.
+
 - `pyproject.toml:28-36` defines broad production dependency ranges; `pyproject.toml:47-65` defines development tooling.
 - `.gitignore:33-34` ignores `uv.lock`; no lockfile is present in the current clone.
 - `Makefile:53-64` shows `make sync` and `make lint` implementation; `Makefile:71-81` shows test targets.
