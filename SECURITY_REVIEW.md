@@ -24,24 +24,18 @@ No critical security flaw was identified in this documentation review. The highe
 
 ## Evidence map
 
-Line references reflect repository state on the review date and may shift as files evolve.
-
-- `pyproject.toml:28-36` defines broad production dependency ranges; `pyproject.toml:47-65` defines development tooling.
-- `.gitignore:33-34` ignores `uv.lock`; no lockfile is present in the current clone.
-- `Makefile:53-64` shows `make sync` and `make lint` implementation; `Makefile:71-81` shows test targets.
-- `tox.ini:6-10` still uses Poetry commands.
-- `make_sync.py:48-70` defines unasync generation for `aredis_om/` → `redis_om/` and `tests/` → `tests_sync/`.
-- `aredis_om/model/model.py:55` defines the global `model_registry`.
-- `aredis_om/model/model.py:64-80` detects Redis Cluster pipelines.
-- `aredis_om/model/model.py:866-880` implements `FindQuery.dict()` and `FindQuery.copy()`.
-- `aredis_om/model/model.py:1366-1438` executes RediSearch queries and transparently exhausts paginated results.
-- `aredis_om/model/model.py:2411-2454`, `aredis_om/model/model.py:2873-2892`, and `aredis_om/model/model.py:2935-2978` show conversion-heavy load/save paths.
-- `aredis_om/model/migrations/migrator.py:43-89` builds and executes `FT.CREATE` migration commands.
-- `aredis_om/model/token_escaper.py:10-25` defines RediSearch token escaping.
-- `aredis_om/checks.py:7-24` defines the weak-key command capability cache.
-- `docker-compose.cluster.yml:5-18` and repeated node blocks use host networking and `--protected-mode no` for local cluster testing.
-- `.github/workflows/ci.yml:23-68` runs linting; `.github/workflows/ci.yml:69-143` runs matrix tests.
-- `.github/workflows/codeql.yml:1-37` configures CodeQL analysis.
+- `pyproject.toml` defines broad production dependency ranges in `project.dependencies` and development tooling in `project.optional-dependencies.dev`.
+- The repository `.gitignore` ignores `uv.lock`, and no lockfile is present in the current clone.
+- `Makefile` defines `make sync`, `make lint`, `make test`, `make test_oss`, and `make test_cluster`.
+- `tox.ini` still uses Poetry commands.
+- `make_sync.py` defines unasync generation for `aredis_om/` → `redis_om/` and `tests/` → `tests_sync/`.
+- `aredis_om/model/model.py` defines the global `model_registry`, Redis Cluster pipeline detection, `FindQuery.copy()`, transparent result exhaustion, and conversion-heavy load/save paths.
+- `aredis_om/model/migrations/migrator.py` builds and executes `FT.CREATE` migration commands.
+- `aredis_om/model/token_escaper.py` defines RediSearch token escaping.
+- `aredis_om/checks.py` defines the weak-key command capability cache.
+- `docker-compose.cluster.yml` uses host networking and `--protected-mode no` for local cluster testing.
+- `.github/workflows/ci.yml` runs linting and matrix tests.
+- `.github/workflows/codeql.yml` configures CodeQL analysis.
 
 ## Performance strengths
 
