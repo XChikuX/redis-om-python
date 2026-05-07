@@ -857,6 +857,21 @@ async def test_copy_preserves_resolved_embedded_sort_fields(key_prefix):
     overridden = query.copy(sort_fields=["-metrics.score"])
     assert overridden.sort_fields == ["-metrics_score"]
 
+    # End-to-end: exercise the FindQuery.execute() exhaust loop by forcing
+    # a small page size so execute() actually calls copy(offset=...) for
+    # subsequent pages. Before the fix this raised QueryNotSupportedError.
+    low = Book(title="Low", metrics=Metrics(score=1))
+    mid = Book(title="Mid", metrics=Metrics(score=3))
+    high = Book(title="High", metrics=Metrics(score=5))
+    await low.save()
+    await mid.save()
+    await high.save()
+
+    paginated_query = Book.find().sort_by("metrics.score")
+    paginated_query.page_size = 1  # force the exhaust loop to span pages
+    results = await paginated_query.execute()
+    assert [b.title for b in results] == ["Low", "Mid", "High"]
+
 
 @py_test_mark_asyncio
 async def test_default_ttl_is_applied_to_json_models_on_save(key_prefix):
