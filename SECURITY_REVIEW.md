@@ -1,6 +1,6 @@
 # Security and Performance Review
 
-Review date: 2026-05-07  
+Review date: 2026-05-07
 Scope: `/home/runner/work/redis-om-python/redis-om-python` fresh clone, with emphasis on `aredis_om/` as the source of truth, generated-sync workflow, tests, Docker Compose, and GitHub Actions. No production code was changed as part of this review.
 
 ## Executive summary
