@@ -81,7 +81,7 @@ No critical security flaw was identified in this documentation review. The highe
 
 **Risk:** For large paginated result sets this adds avoidable per-page allocation and revalidation overhead. Re-running `validate_sort_fields()` on already-resolved embedded sort field aliases (e.g. `metrics_score`) also raises `QueryNotSupportedError` when the exhaust loop spans more than one page.
 
-**Mitigation in this fork:** `FindQuery.copy()` now skips re-validation when `sort_fields` is not explicitly overridden. The pre-resolved sort fields are reattached on the new query directly. Explicit `copy(sort_fields=...)` calls still validate. Covered by `tests/test_json_model.py::test_copy_preserves_resolved_embedded_sort_fields`.
+**Mitigation in this fork:** `FindQuery.copy()` now skips re-validation when `sort_fields` is not explicitly overridden. The pre-resolved sort fields are reattached on the new query directly, so the pagination exhaust loop no longer raises `QueryNotSupportedError` for embedded sort paths (e.g. `sort_by("metrics.score")` on a result set spanning more than one page). Explicit `copy(sort_fields=...)` calls still validate. Covered by `tests/test_json_model.py::test_copy_preserves_resolved_embedded_sort_fields`.
 
 **Recommendation:** Profile this path further and consider a lower-allocation copy strategy that preserves already-validated state across more attributes.
 

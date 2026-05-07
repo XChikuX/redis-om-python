@@ -887,9 +887,10 @@ We'd love your contributions!
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
 Current local coverage baseline: **88% overall** across `aredis_om/` and the
-generated `redis_om/` mirror, with **966 passing async + sync tests** plus the
-cluster test suite and the dedicated single-instance benchmark suite in
-`tests/test_performance_benchmark.py`.
+generated `redis_om/` mirror, with **966 passing async + sync tests** (excluding
+the cluster and benchmark suites, which require their own Redis topologies and
+are exercised separately by `make test_cluster` and
+`tests/test_performance_benchmark.py`).
 
 ## 📝 License
 
