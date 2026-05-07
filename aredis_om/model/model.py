@@ -883,13 +883,16 @@ class FindQuery:
         # (e.g. embedded paths like "metrics.score" have been flattened to
         # "metrics_score"). Re-running validate_sort_fields() on the resolved
         # form would fail for embedded paths because the flattened name does
-        # not exist in model_fields. Bypass __init__ validation in that case.
-        if "sort_fields" in kwargs:
-            return FindQuery(**original)
-        validated_sort_fields = original.pop("sort_fields", None)
+        # not exist in model_fields. Bypass __init__ validation in that case
+        # by removing sort_fields from the kwargs and reattaching the already-
+        # validated list on the new instance.
+        sort_fields_overridden = "sort_fields" in kwargs
+        preserved_sort_fields = (
+            None if sort_fields_overridden else original.pop("sort_fields", None)
+        )
         new_query = FindQuery(**original)
-        if validated_sort_fields is not None:
-            new_query.sort_fields = list(validated_sort_fields)
+        if preserved_sort_fields is not None:
+            new_query.sort_fields = list(preserved_sort_fields)
         return new_query
 
     @property
