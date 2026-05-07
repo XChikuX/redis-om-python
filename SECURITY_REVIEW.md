@@ -218,7 +218,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 1. Add bounded-query guidance or API support for `FindQuery.execute(exhaust_results=True)`.
 2. Profile and optimize `FindQuery.copy()` in pagination-heavy workloads.
 3. Resolve dependency reproducibility policy: commit a lockfile for CI or document why the library intentionally does not.
-4. Update or deprecate the Poetry-based `tox.ini`.
+4. Update or deprecate the Poetry-based tox.ini.
 
 ### P2 — Improve resilience and maintainability
 
