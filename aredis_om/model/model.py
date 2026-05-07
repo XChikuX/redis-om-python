@@ -877,7 +877,23 @@ class FindQuery:
     def copy(self, **kwargs):
         original = self.dict()
         original.update(**kwargs)
-        return FindQuery(**original)
+        # When sort_fields is not explicitly overridden by the caller (e.g. the
+        # transparent pagination loop in execute() or sort_by chaining without
+        # changing fields), the existing sort_fields are already resolved
+        # (e.g. embedded paths like "metrics.score" have been flattened to
+        # "metrics_score"). Re-running validate_sort_fields() on the resolved
+        # form would fail for embedded paths because the flattened name does
+        # not exist in model_fields. Bypass __init__ validation in that case
+        # by removing sort_fields from the kwargs and reattaching the already-
+        # validated list on the new instance.
+        sort_fields_overridden = "sort_fields" in kwargs
+        preserved_sort_fields = (
+            None if sort_fields_overridden else original.pop("sort_fields", None)
+        )
+        new_query = FindQuery(**original)
+        if preserved_sort_fields is not None:
+            new_query.sort_fields = list(preserved_sort_fields)
+        return new_query
 
     @property
     def pagination(self):

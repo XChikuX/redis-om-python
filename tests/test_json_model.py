@@ -821,6 +821,59 @@ async def test_sorting_by_embedded_sortable_field(key_prefix):
 
 
 @py_test_mark_asyncio
+async def test_copy_preserves_resolved_embedded_sort_fields(key_prefix):
+    """Regression: FindQuery.copy() must not re-validate already-resolved
+    embedded sort field names. The sort_by("metrics.score") path resolves
+    to the flattened "metrics_score" alias used by RediSearch SORTBY. The
+    transparent pagination loop in FindQuery.execute() calls copy() on
+    every page, which previously fed the flattened name back through
+    validate_sort_fields() and raised QueryNotSupportedError because the
+    flattened name does not exist on the model.
+    """
+
+    class Metrics(EmbeddedJsonModel):
+        score: int = Field(index=True, sortable=True)
+
+    class Book(JsonModel):
+        class Meta:
+            global_key_prefix = key_prefix
+
+        title: str = Field(index=True)
+        metrics: Metrics
+
+    await Migrator().run()
+
+    query = Book.find().sort_by("metrics.score")
+    # The original query stores the resolved (flattened) name.
+    assert query.sort_fields == ["metrics_score"]
+
+    # Copying without overriding sort_fields must preserve the resolved
+    # form without re-validating it. This mirrors the pagination loop.
+    paginated = query.copy(offset=1000)
+    assert paginated.sort_fields == ["metrics_score"]
+
+    # Copying with an explicit sort_fields override must still validate
+    # and resolve the new value (so users can pass dotted paths to copy).
+    overridden = query.copy(sort_fields=["-metrics.score"])
+    assert overridden.sort_fields == ["-metrics_score"]
+
+    # End-to-end: exercise the FindQuery.execute() exhaust loop by forcing
+    # a small page size so execute() actually calls copy(offset=...) for
+    # subsequent pages. Before the fix this raised QueryNotSupportedError.
+    low = Book(title="Low", metrics=Metrics(score=1))
+    mid = Book(title="Mid", metrics=Metrics(score=3))
+    high = Book(title="High", metrics=Metrics(score=5))
+    await low.save()
+    await mid.save()
+    await high.save()
+
+    paginated_query = Book.find().sort_by("metrics.score")
+    paginated_query.page_size = 1  # force the exhaust loop to span pages
+    results = await paginated_query.execute()
+    assert [b.title for b in results] == ["Low", "Mid", "High"]
+
+
+@py_test_mark_asyncio
 async def test_default_ttl_is_applied_to_json_models_on_save(key_prefix):
     class BaseJsonModel(JsonModel, abc.ABC):
         class Meta:
