@@ -98,6 +98,15 @@ Additional upstream fixes already present here include:
 - KNN + OR query syntax fixes
 - custom TAG field separators
 - `all_pks(count=...)` scan tuning and corresponding benchmarks
+- `FindQuery.copy()` no longer re-validates already-resolved embedded sort
+  field aliases, fixing a latent `QueryNotSupportedError` that surfaced
+  when pagination on a `sort_by("embedded.field")` query spanned more than
+  one page
+
+For a deeper security and performance critique of this fork, see
+[`SECURITY_REVIEW.md`](SECURITY_REVIEW.md). The
+[`CLAUDE.md`](CLAUDE.md) guide documents the contributor workflow,
+including async-source-of-truth and `make sync` regeneration.
 
 ## 💻 Installation
 
@@ -878,8 +887,9 @@ We'd love your contributions!
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
 Current local coverage baseline: **88% overall** across `aredis_om/` and the
-generated `redis_om/` mirror, with **1168 passing tests** plus the cluster test
-suite.
+generated `redis_om/` mirror, with **966 passing async + sync tests** plus the
+cluster test suite and the dedicated single-instance benchmark suite in
+`tests/test_performance_benchmark.py`.
 
 ## 📝 License
 

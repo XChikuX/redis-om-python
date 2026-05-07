@@ -79,9 +79,11 @@ No critical security flaw was identified in this documentation review. The highe
 
 `FindQuery.copy()` builds a dict, shallow-copies expressions and sort fields, merges overrides, and constructs a new `FindQuery`. It is used in the pagination loop when exhausting results.
 
-**Risk:** For large paginated result sets this adds avoidable per-page allocation and revalidation overhead.
+**Risk:** For large paginated result sets this adds avoidable per-page allocation and revalidation overhead. Re-running `validate_sort_fields()` on already-resolved embedded sort field aliases (e.g. `metrics_score`) also raises `QueryNotSupportedError` when the exhaust loop spans more than one page.
 
-**Recommendation:** Profile this path and consider a lower-allocation copy strategy that preserves already-validated state where safe.
+**Mitigation in this fork:** `FindQuery.copy()` now skips re-validation when `sort_fields` is not explicitly overridden. The pre-resolved sort fields are reattached on the new query directly. Explicit `copy(sort_fields=...)` calls still validate. Covered by `tests/test_json_model.py::test_copy_preserves_resolved_embedded_sort_fields`.
+
+**Recommendation:** Profile this path further and consider a lower-allocation copy strategy that preserves already-validated state across more attributes.
 
 ### P2 — Recursive conversion passes run on every save/load
 
@@ -154,7 +156,9 @@ The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `po
 
 **Risk:** Contributors or automation using tox may get failures or test a dependency environment different from CI.
 
-**Recommendation:** Update tox to use uv or clearly mark tox as deprecated.
+**Mitigation in this fork:** `tox.ini` now invokes `uv sync --extra dev` and `uv run pytest`, matching the rest of the workflow.
+
+**Recommendation:** Keep `tox.ini` aligned with the uv workflow when CI tooling changes.
 
 ### P2 — Schema/index command construction should remain internal-only
 
@@ -216,9 +220,9 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 ### P1 — Address first
 
 1. Add bounded-query guidance or API support for `FindQuery.execute(exhaust_results=True)`.
-2. Profile and optimize `FindQuery.copy()` in pagination-heavy workloads.
+2. Profile and further optimize `FindQuery.copy()` in pagination-heavy workloads (sort-field re-validation already addressed in this fork).
 3. Resolve dependency reproducibility policy: commit a lockfile for CI or document why the library intentionally does not.
-4. Update or deprecate the Poetry-based tox.ini.
+4. ~~Update or deprecate the Poetry-based tox.ini.~~ Done — `tox.ini` now uses uv.
 
 ### P2 — Improve resilience and maintainability
 
