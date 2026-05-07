@@ -889,7 +889,7 @@ You can also **contribute documentation** -- or just let us know if something ne
 Current local coverage baseline: **88% overall** across `aredis_om/` and the
 generated `redis_om/` mirror, with **966 passing async + sync tests** (excluding
 the cluster and benchmark suites, which require their own Redis topologies and
-are exercised separately by `make test_cluster` and
+are run separately by `make test_cluster` and
 `tests/test_performance_benchmark.py`).
 
 ## 📝 License
