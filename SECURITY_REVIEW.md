@@ -150,7 +150,7 @@ The benchmark suite records elapsed time and operations per second, but the main
 
 **Risk:** Builds can resolve different transitive dependency versions over time, which increases supply-chain and reproducibility risk.
 
-**Recommendation:** Decide whether this library intentionally avoids lockfiles. If reproducible CI is desired, commit a lockfile or add a scheduled dependency update workflow with advisory checks. If lockfiles are intentionally excluded for a library, document that policy and keep minimum bounds actively tested.
+**Current state:** The repository currently operates without a committed lockfile. **Recommendation:** Make that policy explicit. For stronger CI reproducibility, commit `uv.lock`; if the project intentionally avoids lockfiles because it is a library, document the no-lock policy and keep minimum dependency bounds actively tested with advisory checks.
 
 ### P1 — Tooling drift: `tox.ini` still uses Poetry
 
