@@ -1142,12 +1142,10 @@ class FindQuery:
 
     @staticmethod
     def _embedded_query_fields(value: Any) -> Dict[str, Any]:
-        if isinstance(value, RedisModel):
-            # RediSearch does not index JSON null values, so None-valued
-            # criteria cannot produce a matching field query.
-            return value.model_dump(exclude_unset=True, exclude_none=True)
         # RediSearch does not index JSON null values, so None-valued criteria
         # cannot produce a matching field query.
+        if isinstance(value, RedisModel):
+            return value.model_dump(exclude_unset=True, exclude_none=True)
         return {key: val for key, val in value.items() if val is not None}
 
     @classmethod
@@ -1158,8 +1156,15 @@ class FindQuery:
         parents: List[Tuple[str, "RedisModel"]],
     ) -> Optional[str]:
         embedded_cls = cls._embedded_model_cls_for_container_field(field)
+        if embedded_cls is None:
+            return None
+        if isinstance(value, (list, tuple)) and not value:
+            raise QuerySyntaxError(
+                f"Cannot query embedded model list field {field.alias!r} with an "
+                "empty list."
+            )
         values = cls._embedded_query_values(value)
-        if embedded_cls is None or values is None:
+        if values is None:
             return None
 
         parent_type = outer_type_or_annotation(field)
@@ -1169,6 +1174,7 @@ class FindQuery:
             new_parents.append(new_parent)
 
         queries = []
+        is_embedded = getattr(getattr(embedded_cls, "_meta", None), "embedded", False)
         for query_value in values:
             field_values = cls._embedded_query_fields(query_value)
             parts = []
@@ -1189,9 +1195,7 @@ class FindQuery:
                             f"{embedded_cls.__name__}."
                         )
                     name, field_info = aliased_field
-                if name == "pk" and getattr(
-                    getattr(embedded_cls, "_meta", None), "embedded", False
-                ):
+                if name == "pk" and is_embedded:
                     continue
                 if not getattr(field_info, "index", False):
                     raise QueryNotSupportedError(
@@ -1801,8 +1805,9 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.separator = separator
         # Pydantic v2 merges Annotated metadata from its internal
         # _attributes_set, so mark Redis OM metadata as explicit when that
-        # attribute exists. If it changes, json_schema_extra still remains set
-        # on this FieldInfo for normal (non-Annotated) fields.
+        # private attribute exists. If Pydantic changes or removes
+        # _attributes_set, json_schema_extra still remains set on this
+        # FieldInfo for normal (non-Annotated) fields.
         if hasattr(self, "_attributes_set"):
             self._attributes_set["json_schema_extra"] = self.json_schema_extra
 

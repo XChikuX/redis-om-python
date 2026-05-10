@@ -23,6 +23,7 @@ from aredis_om import (
     Migrator,
     NotFoundError,
     QueryNotSupportedError,
+    QuerySyntaxError,
     RedisModelError,
 )
 from aredis_om.model.model import SINGLE_VALUE_TAG_FIELD_SEPARATOR
@@ -1795,6 +1796,7 @@ async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, red
     class Item(EmbeddedJsonModel):
         name: str = Field(index=True)
         sku: str = Field(index=True)
+        description: str = ""
 
     class Order(BaseJsonModel, index=True):
         customer: str = Field(index=True)
@@ -1834,6 +1836,12 @@ async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, red
         Order.items << [{"name": "banana"}, {"sku": "P1"}]
     ).all()
     assert {order.pk for order in contained_by_any} == {o1.pk, o2.pk}
+
+    with pytest.raises(QueryNotSupportedError):
+        await Order.find(Order.items << {"description": "not indexed"}).all()
+
+    with pytest.raises(QuerySyntaxError):
+        await Order.find(Order.items << []).all()
 
 
 @py_test_mark_asyncio
