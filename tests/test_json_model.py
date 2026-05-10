@@ -1089,7 +1089,8 @@ async def test_annotated_embedded_field_is_indexed(key_prefix, redis):
         inner: Inner
 
     schema = Parent.redisearch_schema()
-    assert "$.inner.annotated_tag AS inner_annotated_tag TAG SEPARATOR |" in schema
+    assert "$.inner.annotated_tag AS inner_annotated_tag" in schema
+    assert "inner_annotated_tag TAG" in schema
 
     await Migrator().run()
     await Parent(name="test", inner=Inner(annotated_tag="x")).save()

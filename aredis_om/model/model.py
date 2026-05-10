@@ -115,9 +115,7 @@ def _unwrap_type_annotation(annotation: Any) -> Any:
         if args:
             return _unwrap_type_annotation(args[0])
     if _is_union_type(annotation):
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)  # noqa: E721
-        ]
+        args = [arg for arg in get_args(annotation) if arg is not types.NoneType]
         if args:
             return _unwrap_type_annotation(args[0])
     return annotation
@@ -1671,6 +1669,8 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
+        # Pydantic v2 merges Annotated metadata from _attributes_set, so mark
+        # Redis OM metadata as explicit to preserve index options.
         if hasattr(self, "_attributes_set"):
             self._attributes_set["json_schema_extra"] = self.json_schema_extra
 
