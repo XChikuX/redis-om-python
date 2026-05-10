@@ -1780,10 +1780,11 @@ async def test_pep604_optional_bytes_field(key_prefix, redis):
 
 @py_test_mark_asyncio
 async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, redis):
-    """Regression for issue #244: JsonModel with List[EmbeddedJsonModel].
+    """Regression for issues #244/#480: JsonModel with List[EmbeddedJsonModel].
 
     String fields inside the embedded model marked ``index=True`` must appear
-    in the RediSearch schema and be queryable through the parent.
+    in the RediSearch schema and be queryable through the parent, including
+    by the issue #480 containment-style query form.
     """
 
     class BaseJsonModel(JsonModel, abc.ABC):
@@ -1797,7 +1798,7 @@ async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, red
 
     class Order(BaseJsonModel, index=True):
         customer: str = Field(index=True)
-        items: List[Item]
+        items: List[Item] = Field(index=True)
 
     schema = Order.redisearch_schema()
     assert "$.items[*].name AS items_name TAG" in schema
@@ -1820,6 +1821,19 @@ async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, red
         (Order.customer == "alice") & (Order.items.sku == "P1")
     ).all()
     assert len(combined) == 1 and combined[0].pk == o1.pk
+
+    contained_by_dict = await Order.find(Order.items << {"name": "apple"}).all()
+    assert len(contained_by_dict) == 1 and contained_by_dict[0].pk == o1.pk
+
+    contained_by_model = await Order.find(
+        Order.items << Item(name="pear", sku="P1")
+    ).all()
+    assert len(contained_by_model) == 1 and contained_by_model[0].pk == o1.pk
+
+    contained_by_any = await Order.find(
+        Order.items << [{"name": "banana"}, {"sku": "P1"}]
+    ).all()
+    assert {order.pk for order in contained_by_any} == {o1.pk, o2.pk}
 
 
 @py_test_mark_asyncio

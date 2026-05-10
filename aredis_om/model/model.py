@@ -1110,6 +1110,115 @@ class FindQuery:
             )
         return escaper.escape(str(value))
 
+    @staticmethod
+    def _embedded_model_cls_for_container_field(field: ModelField) -> Optional[type]:
+        field_type = outer_type_or_annotation(field)
+        if not is_supported_container_type(field_type):
+            return None
+
+        args = get_args(field_type)
+        if not args:
+            return None
+
+        embedded_cls = _unwrap_type_annotation(args[0])
+        try:
+            if issubclass(embedded_cls, RedisModel):
+                return embedded_cls
+        except TypeError:
+            return None
+        return None
+
+    @staticmethod
+    def _embedded_query_values(value: Any) -> Optional[List[Any]]:
+        if isinstance(value, (dict, RedisModel)):
+            return [value]
+        if isinstance(value, (list, tuple)) and value and all(
+            isinstance(item, (dict, RedisModel)) for item in value
+        ):
+            return list(value)
+        return None
+
+    @staticmethod
+    def _embedded_query_fields(value: Any) -> Dict[str, Any]:
+        if isinstance(value, RedisModel):
+            return value.model_dump(exclude_unset=True, exclude_none=True)
+        return {key: val for key, val in value.items() if val is not None}
+
+    @classmethod
+    def resolve_embedded_model_container_query(
+        cls,
+        field: ModelField,
+        value: Any,
+        parents: List[Tuple[str, "RedisModel"]],
+    ) -> Optional[str]:
+        embedded_cls = cls._embedded_model_cls_for_container_field(field)
+        values = cls._embedded_query_values(value)
+        if embedded_cls is None or values is None:
+            return None
+
+        parent_type = outer_type_or_annotation(field)
+        new_parents = parents.copy()
+        new_parent = (field.alias, parent_type)
+        if new_parent not in new_parents:
+            new_parents.append(new_parent)
+
+        queries = []
+        for query_value in values:
+            field_values = cls._embedded_query_fields(query_value)
+            parts = []
+            for name, field_value in field_values.items():
+                field_info = embedded_cls.model_fields.get(name)
+                if field_info is None:
+                    aliased_field = next(
+                        (
+                            (field_name, field)
+                            for field_name, field in embedded_cls.model_fields.items()
+                            if field.alias == name
+                        ),
+                        None,
+                    )
+                    if aliased_field is None:
+                        raise QuerySyntaxError(
+                            f"Field {name!r} is not defined on embedded model "
+                            f"{embedded_cls.__name__}."
+                        )
+                    name, field_info = aliased_field
+                if name == "pk" and getattr(
+                    getattr(embedded_cls, "_meta", None), "embedded", False
+                ):
+                    continue
+                if not getattr(field_info, "index", None):
+                    raise QueryNotSupportedError(
+                        f"You tried to query by a field ({field.alias}_{name}) "
+                        f"that isn't indexed. Docs: {ERRORS_URL}#E6"
+                    )
+                op = (
+                    Operators.IN
+                    if isinstance(field_value, (list, tuple, set))
+                    else Operators.EQ
+                )
+                field_type = cls.resolve_field_type(field_info, op)
+                parts.append(
+                    cls.resolve_value(
+                        name,
+                        field_type,
+                        field_info,
+                        op,
+                        field_value,
+                        new_parents,
+                    )
+                )
+            if not parts:
+                raise QuerySyntaxError(
+                    f"No indexed fields were provided for embedded model "
+                    f"{embedded_cls.__name__}."
+                )
+            queries.append(" ".join(parts))
+
+        if len(queries) == 1:
+            return queries[0]
+        return "| ".join(f"({query})" for query in queries)
+
     @classmethod
     def resolve_value(
         cls,
@@ -1385,7 +1494,17 @@ class FindQuery:
                     "Comparing fields is not supported. See docs: TODO"
                 )
             else:
-                result += cls.resolve_value(
+                embedded_query = None
+                if (
+                    is_model_field_instance(expression.left)
+                    and expression.op in (Operators.EQ, Operators.IN)
+                ):
+                    embedded_query = cls.resolve_embedded_model_container_query(
+                        expression.left,
+                        right,
+                        expression.parents,
+                    )
+                result += embedded_query or cls.resolve_value(
                     field_name,
                     field_type,
                     field_info,
