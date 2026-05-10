@@ -1111,7 +1111,9 @@ class FindQuery:
         return escaper.escape(str(value))
 
     @staticmethod
-    def _embedded_model_cls_for_container_field(field: ModelField) -> Optional[type]:
+    def _embedded_model_cls_for_container_field(
+        field: ModelField,
+    ) -> Optional[Type["RedisModel"]]:
         field_type = outer_type_or_annotation(field)
         if not is_supported_container_type(field_type):
             return None
@@ -1132,8 +1134,10 @@ class FindQuery:
     def _embedded_query_values(value: Any) -> Optional[List[Any]]:
         if isinstance(value, (dict, RedisModel)):
             return [value]
-        if isinstance(value, (list, tuple)) and value and all(
-            isinstance(item, (dict, RedisModel)) for item in value
+        if (
+            isinstance(value, (list, tuple))
+            and value
+            and all(isinstance(item, (dict, RedisModel)) for item in value)
         ):
             return list(value)
         return None
@@ -1495,9 +1499,9 @@ class FindQuery:
                 )
             else:
                 embedded_query = None
-                if (
-                    is_model_field_instance(expression.left)
-                    and expression.op in (Operators.EQ, Operators.IN)
+                if is_model_field_instance(expression.left) and expression.op in (
+                    Operators.EQ,
+                    Operators.IN,
                 ):
                     embedded_query = cls.resolve_embedded_model_container_query(
                         expression.left,
