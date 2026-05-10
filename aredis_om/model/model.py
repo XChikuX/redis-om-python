@@ -30,7 +30,9 @@ from typing import (
     Union,
 )
 from typing import get_args as typing_get_args
-from typing import no_type_check
+from typing import (
+    no_type_check,
+)
 
 from more_itertools import ichunked
 from pydantic import ConfigDict, model_validator
@@ -52,6 +54,7 @@ from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
+
 
 model_registry = {}
 _T = TypeVar("_T")
@@ -1047,6 +1050,8 @@ class FindQuery:
         if field_type is Coordinates:
             return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
+        if container_type is Literal:
+            return RediSearchFieldTypes.TAG
 
         if is_supported_container_type(field_type):
             # NOTE: A list of strings, like:
@@ -1666,6 +1671,8 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
+        if hasattr(self, "_attributes_set"):
+            self._attributes_set["json_schema_extra"] = self.json_schema_extra
 
 
 REDIS_OM_FIELD_DEFAULTS = {
@@ -2149,9 +2156,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def _model_dump_exclude(self, exclude: Any) -> Any:
         is_embedded = getattr(type(self)._meta, "embedded", False)
-        if is_embedded and (
-            self.pk is None or isinstance(self.pk, ExpressionProxy)
-        ):
+        if is_embedded and (self.pk is None or isinstance(self.pk, ExpressionProxy)):
             if exclude is None:
                 exclude = {"pk"}
             elif isinstance(exclude, AbstractSet):

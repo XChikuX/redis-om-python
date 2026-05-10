@@ -31,6 +31,7 @@ from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
 
+
 if not has_redis_json():
     pytestmark = pytest.mark.skip
 
@@ -1079,9 +1080,9 @@ async def test_annotated_embedded_field_is_indexed(key_prefix, redis):
             database = redis
 
     class Inner(EmbeddedJsonModel):
-        annotated_tag: Annotated[
-            str, StringConstraints(pattern=r"^(x|y|z)$")
-        ] = Field(index=True)
+        annotated_tag: Annotated[str, StringConstraints(pattern=r"^(x|y|z)$")] = Field(
+            index=True
+        )
 
     class Parent(BaseJsonModel, index=True):
         name: str = Field(index=True)
