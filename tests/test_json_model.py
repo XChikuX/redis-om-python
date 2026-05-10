@@ -7,11 +7,12 @@ import datetime
 import decimal
 import uuid
 from collections import namedtuple
-from typing import Dict, List, Optional, Set, Union
+from typing import Annotated, Dict, List, Optional, Set, Union
 from unittest import mock
 
 import pytest
 import pytest_asyncio
+from pydantic import StringConstraints
 
 from aredis_om import (
     Coordinates,
@@ -1068,6 +1069,54 @@ async def test_schema(m, key_prefix):
         "$.address.note.description AS address_note_description TAG SEPARATOR | "
         "$.orders[*].items[*].name AS orders_items_name TAG SEPARATOR |"
     )
+
+
+@py_test_mark_asyncio
+async def test_annotated_embedded_field_is_indexed(key_prefix, redis):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Inner(EmbeddedJsonModel):
+        annotated_tag: Annotated[
+            str, StringConstraints(pattern=r"^(x|y|z)$")
+        ] = Field(index=True)
+
+    class Parent(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        inner: Inner
+
+    schema = Parent.redisearch_schema()
+    assert "$.inner.annotated_tag AS inner_annotated_tag TAG SEPARATOR |" in schema
+
+    await Migrator().run()
+    await Parent(name="test", inner=Inner(annotated_tag="x")).save()
+
+    results = await Parent.find(Parent.inner.annotated_tag == "x").all()
+    assert len(results) == 1
+
+
+@py_test_mark_asyncio
+async def test_pep604_optional_embedded_field_is_queryable(key_prefix, redis):
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Inner(EmbeddedJsonModel):
+        optional_tag: str | None = Field(None, index=True)
+
+    class Parent(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        inner: Inner
+
+    await Migrator().run()
+    await Parent(name="test", inner=Inner(optional_tag="hello")).save()
+
+    results = await Parent.find(Parent.inner.optional_tag == "hello").all()
+    assert len(results) == 1
+    assert results[0].inner.optional_tag == "hello"
 
 
 @py_test_mark_asyncio

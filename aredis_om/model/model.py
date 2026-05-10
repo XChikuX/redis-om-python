@@ -8,6 +8,7 @@ import decimal
 import json
 import logging
 import operator
+import types
 from copy import copy
 from enum import Enum
 from functools import reduce
@@ -99,19 +100,33 @@ DEFAULT_REDISEARCH_FIELD_SEPARATOR = ","
 ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.md"
 
 
+def _is_union_type(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    return origin is Union or origin is types.UnionType
+
+
+def _unwrap_type_annotation(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        args = get_args(annotation)
+        if args:
+            return _unwrap_type_annotation(args[0])
+    if _is_union_type(annotation):
+        args = [
+            arg for arg in get_args(annotation) if arg is not type(None)  # noqa: E721
+        ]
+        if args:
+            return _unwrap_type_annotation(args[0])
+    return annotation
+
+
 def get_outer_type(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    annotation = field.annotation
+    annotation = _unwrap_type_annotation(field.annotation)
     origin = get_origin(annotation)
     if origin == Literal:
         return annotation
-    if origin is Union:
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)
-        ]  # noqa: E721
-        if args:
-            return args[0]
     if isinstance(annotation, type) or is_supported_container_type(annotation):
         return annotation
     if not hasattr(annotation, "__args__"):
@@ -1029,14 +1044,11 @@ class FindQuery:
 
         field_type = outer_type_or_annotation(field)
 
-        if not isinstance(field_type, type):
-            field_type = field_type.__origin__
-
         if field_type is Coordinates:
             return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
 
-        if is_supported_container_type(container_type):
+        if is_supported_container_type(field_type):
             # NOTE: A list of strings, like:
             #
             #     tarot_cards: List[str] = field(index=True)
@@ -2076,16 +2088,10 @@ class ModelMeta(ModelMetaclass):
 def outer_type_or_annotation(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    annotation = field.annotation
+    annotation = _unwrap_type_annotation(field.annotation)
     origin = get_origin(annotation)
     if origin == Literal:
         return annotation
-    if origin is Union:
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)
-        ]  # noqa: E721
-        if args:
-            return args[0]
     if isinstance(annotation, type) or origin is not None:
         return annotation
     if hasattr(annotation, "__args__") and annotation.__args__:
@@ -2782,6 +2788,7 @@ class HashModel(RedisModel, abc.ABC):
         #  a List[int] gets indexed as TAG instead of NUMERICAL.
         # TODO: Abstract string-building logic for each type (TAG, etc.) into
         #  classes that take a field name.
+        typ = _unwrap_type_annotation(typ)
         sortable = getattr(field_info, "sortable", False)
         case_sensitive = getattr(field_info, "case_sensitive", False)
 
@@ -3032,6 +3039,7 @@ class JsonModel(RedisModel, abc.ABC):
         field_info: PydanticFieldInfo,
         parent_type: Optional[Any] = None,
     ) -> str:
+        typ = _unwrap_type_annotation(typ)
         should_index = getattr(field_info, "index", False)
         is_container_type = is_supported_container_type(typ)
         parent_is_container_type = is_supported_container_type(parent_type)
