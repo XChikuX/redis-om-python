@@ -27,6 +27,7 @@ from tests._sync_redis import has_redisearch
 
 from .conftest import py_test_mark_asyncio
 
+
 if not has_redisearch():
     pytestmark = pytest.mark.skip
 
@@ -484,6 +485,82 @@ async def test_saves_model_and_creates_pk(m):
 
     member2 = await m.Member.get(pk=member.id)
     assert member2 == member
+
+
+@py_test_mark_asyncio
+async def test_get_restores_missing_pk_from_requested_key(m):
+    member = m.Member(
+        id=10,
+        first_name="Andrew",
+        last_name="Brookins",
+        email="a@example.com",
+        join_date=today,
+        age=38,
+        bio="This is the bio field for this user.",
+    )
+    await member.save()
+    await m.Member.db().hdel(member.key(), "pk")
+
+    reloaded = await m.Member.get(member.id)
+
+    assert reloaded.id == member.id
+    assert reloaded.pk == str(member.id)
+
+
+@py_test_mark_asyncio
+async def test_get_many_restores_missing_pks_from_requested_keys(m):
+    members = [
+        m.Member(
+            id=20,
+            first_name="Andrew",
+            last_name="Brookins",
+            email="a@example.com",
+            join_date=today,
+            age=38,
+            bio="This is the bio field for this user.",
+        ),
+        m.Member(
+            id=21,
+            first_name="Kim",
+            last_name="Brookins",
+            email="k@example.com",
+            join_date=today,
+            age=34,
+            bio="This is another bio field for this user.",
+        ),
+    ]
+    for member in members:
+        await member.save()
+        await m.Member.db().hdel(member.key(), "pk")
+
+    reloaded = await m.Member.get_many([member.id for member in members])
+
+    assert [member.id for member in reloaded] == [20, 21]
+    assert [member.pk for member in reloaded] == ["20", "21"]
+
+
+@py_test_mark_asyncio
+async def test_get_restores_missing_pk_for_custom_primary_key_hash_model(
+    key_prefix, redis
+):
+    class Customer(HashModel):
+        id: str = Field(primary_key=True, index=True)
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    await Migrator().run()
+
+    customer = Customer(id="customer-1", name="Ada")
+    await customer.save()
+    await Customer.db().hdel(customer.key(), "pk")
+
+    reloaded = await Customer.get(customer.id)
+
+    assert reloaded.id == customer.id
+    assert reloaded.pk == customer.id
 
 
 @py_test_mark_asyncio

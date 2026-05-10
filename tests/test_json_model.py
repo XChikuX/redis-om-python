@@ -249,6 +249,39 @@ async def test_get_restores_missing_pk_from_requested_key(address, m):
 
 
 @py_test_mark_asyncio
+async def test_get_many_restores_missing_pks_from_requested_keys(address, m):
+    members = [
+        m.Member(
+            first_name="Andrew",
+            last_name="Brookins",
+            email="a@example.com",
+            join_date=today,
+            age=38,
+            address=address,
+        ),
+        m.Member(
+            first_name="Kim",
+            last_name="Brookins",
+            email="k@example.com",
+            join_date=today,
+            age=34,
+            address=address,
+        ),
+    ]
+
+    for member in members:
+        await member.save()
+        raw = await m.Member.db().json().get(member.key())
+        raw.pop("pk", None)
+        await m.Member.db().json().set(member.key(), ".", raw)
+
+    reloaded = await m.Member.get_many([member.pk for member in members])
+
+    assert [member.pk for member in reloaded] == [member.pk for member in members]
+    assert [member.address for member in reloaded] == [address, address]
+
+
+@py_test_mark_asyncio
 async def test_all_pks(address, m, redis):
     member = m.Member(
         first_name="Andrew",

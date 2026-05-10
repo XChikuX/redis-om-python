@@ -247,6 +247,20 @@ def validate_model_data(model: Any, values: Any) -> Any:
     return model.model_validate(values)
 
 
+def restore_missing_pk(model: Any, values: Any, requested_pk: Any) -> Any:
+    """Backfill a missing top-level pk from the Redis key used for loading."""
+    if (
+        not isinstance(values, dict)
+        or requested_pk is None
+        or getattr(getattr(model, "_meta", None), "embedded", False)
+        or values.get("pk")
+    ):
+        return values
+    values = dict(values)
+    values["pk"] = str(requested_pk)
+    return values
+
+
 def _is_embedded_json_model(cls: Any) -> bool:
     """Check if a class is an EmbeddedJsonModel subclass."""
     # Avoid circular import — check by name / MRO.
@@ -2819,6 +2833,7 @@ class HashModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
+        document = restore_missing_pk(cls, document, pk)
         try:
             result = cls.model_validate(document)
         except TypeError as e:
@@ -2831,6 +2846,7 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = restore_missing_pk(cls, document, pk)
             result = cls.model_validate(document)
         return result
 
@@ -2854,17 +2870,19 @@ class HashModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for document in results:
+        for requested_pk, document in zip(pks, results):
             if not document:
                 continue
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = restore_missing_pk(cls, document, requested_pk)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
+                document = restore_missing_pk(cls, document, requested_pk)
                 models.append(cls.model_validate(document))
         return models
 
@@ -3115,9 +3133,7 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
-        if isinstance(document_data, dict) and not document_data.get("pk"):
-            document_data = dict(document_data)
-            document_data["pk"] = pk
+        document_data = restore_missing_pk(cls, document_data, pk)
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -3145,9 +3161,7 @@ class JsonModel(RedisModel, abc.ABC):
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
-            if isinstance(document_data, dict) and not document_data.get("pk"):
-                document_data = dict(document_data)
-                document_data["pk"] = requested_pk
+            document_data = restore_missing_pk(cls, document_data, requested_pk)
             models.append(validate_model_data(cls, document_data))
         return models
 
