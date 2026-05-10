@@ -257,6 +257,8 @@ def restore_missing_pk(model: Any, values: Any, requested_pk: Any) -> Any:
     ):
         return values
     values = dict(values)
+    # RedisModel.pk is declared as Optional[str], so reload-time backfills
+    # should normalize the requested key to the string form used by the model.
     values["pk"] = str(requested_pk)
     return values
 
