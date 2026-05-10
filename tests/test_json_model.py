@@ -1108,17 +1108,24 @@ async def test_pep604_optional_embedded_field_is_queryable(key_prefix, redis):
 
     class Inner(EmbeddedJsonModel):
         optional_tag: str | None = Field(None, index=True)
+        mixed_tag: str | int | None = Field(None, index=True)
 
     class Parent(BaseJsonModel, index=True):
         name: str = Field(index=True)
         inner: Inner
 
     await Migrator().run()
-    await Parent(name="test", inner=Inner(optional_tag="hello")).save()
+    await Parent(
+        name="test", inner=Inner(optional_tag="hello", mixed_tag="mixed")
+    ).save()
 
     results = await Parent.find(Parent.inner.optional_tag == "hello").all()
     assert len(results) == 1
     assert results[0].inner.optional_tag == "hello"
+
+    mixed_results = await Parent.find(Parent.inner.mixed_tag == "mixed").all()
+    assert len(mixed_results) == 1
+    assert mixed_results[0].inner.mixed_tag == "mixed"
 
 
 @py_test_mark_asyncio
