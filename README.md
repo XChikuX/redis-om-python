@@ -72,6 +72,10 @@ The current release includes:
 - Redis Cluster connections via `cluster=True` or `cluster=true` in the URL
 - Cluster-safe bulk writes and pipeline-backed model operations
 - Nested embedded JSON sorting and index health warnings
+- Embedded list containment queries (e.g. `Workspace.users << User(name="John")`)
+- JsonModel `Annotated[...]` and `X | Y` (PEP 604) union type annotation support
+- ExpressionProxy isolation for EmbeddedJsonModel (Pydantic v2 compatibility)
+- Comprehensive token escaping for TAG and TEXT fields
 - A comprehensive async benchmark suite in `tests/test_performance_benchmark.py`
 
 ## ✅ Solved Upstream Issues in This Fork
@@ -90,6 +94,11 @@ that are already implemented here, even if the upstream issue is still open.
 | [#519](https://github.com/redis/redis-om-python/issues/519) | Set `RedisModel.Meta.database` at runtime, not import time | Fixed | `Meta.database` is lazily resolved, accepts callables, and supports runtime reassignment |
 | [#523](https://github.com/redis/redis-om-python/issues/523) | [Enhancement] Retrieve multiple records at once with pipeline | Fixed | `get_many()` supports batch retrieval and explicit pipeline composition; covered by pipeline tests |
 | [#529](https://github.com/redis/redis-om-python/issues/529) | [Feature Request] Allow default expiry time for a model | Fixed | `Meta.default_ttl` applies TTL automatically on `save()` and `add()` |
+| [#244](https://github.com/redis/redis-om-python/issues/244) | Missing support for List of EmbeddedJsonModel | Fixed | Embedded `List[EmbeddedJsonModel]` fields are indexed and queryable |
+| [#195](https://github.com/redis/redis-om-python/issues/195) | Consider escaping search terms automatically | Fixed | `token_escaper.py` handles TAG/TEXT escaping; 100% coverage |
+| [#441](https://github.com/redis/redis-om-python/issues/441) | Cannot search for string prefix because `*` gets escaped | Fixed | `token_escaper.py` exposes `token_escaper()` for intentional wildcard use |
+| [#480](https://github.com/redis/redis-om-python/issues/480) | Can't search on nested/embedded list of JsonModels | Fixed | Embedded list containment queries via `<<`; covered by `tests/test_json_model.py` |
+| [#776](https://github.com/redis/redis-om-python/issues/776) | Increase test coverage to 100% | Partially fixed | Overall coverage raised from 54% to ~88%; core modules at 86-100% |
 
 Additional upstream fixes already present here include:
 
@@ -102,6 +111,16 @@ Additional upstream fixes already present here include:
   field aliases, fixing a latent `QueryNotSupportedError` that surfaced
   when pagination on a `sort_by("embedded.field")` query spanned more than
   one page
+- Embedded list containment queries — e.g.
+  `Workspace.find(Workspace.users << User(name="John", type="registered"))`
+  resolves to `@users:(@name:John @type:registered)` (upstream [#480](https://github.com/redis/redis-om-python/issues/480))
+- JsonModel `Annotated[...]` field metadata preservation and PEP 604 union
+  type (`X | Y`) annotation support in query resolution
+- ExpressionProxy isolation for EmbeddedJsonModel pk fields, fixing
+  `ValidationError` when `model_validate()` receives an ExpressionProxy
+  instead of `Optional[str]` (upstream Pydantic v2 compat)
+- Missing pk backfill on HashModel reload — when a stored model's pk is
+  absent from Redis, the model identity is preserved via backfill
 
 For a deeper security and performance critique of this fork, see
 [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md). The
@@ -887,7 +906,7 @@ We'd love your contributions!
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
 Current local coverage baseline: **88% overall** across `aredis_om/` and the
-generated `redis_om/` mirror, with **966 passing async + sync tests** (excluding
+generated `redis_om/` mirror, with **982 passing async + sync tests** (excluding
 the cluster and benchmark suites, which require their own Redis topologies and
 are run separately by `make test_cluster` and
 `tests/test_performance_benchmark.py`).
