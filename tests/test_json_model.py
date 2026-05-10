@@ -1132,6 +1132,94 @@ async def test_pep604_optional_embedded_field_is_queryable(key_prefix, redis):
 
 
 @py_test_mark_asyncio
+async def test_list_annotated_without_none_is_queryable(key_prefix, redis):
+    """List[Annotated[str, StringConstraints(...)]] without `| None` must
+    remain queryable (regression for the existing supported pattern)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Inner(EmbeddedJsonModel):
+        tags: List[Annotated[str, StringConstraints(max_length=20)]] = Field(
+            [], index=True, full_text_search=True
+        )
+
+    class Parent(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        inner: Inner
+
+    await Migrator().run()
+    await Parent(name="test", inner=Inner(tags=["hello", "world"])).save()
+
+    results = await Parent.find(Parent.inner.tags % "hello").all()
+    assert len(results) == 1
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_pep604_optional_on_embedded_is_queryable(
+    key_prefix, redis
+):
+    """Regression for `List[Annotated[...]] | None` on an EmbeddedJsonModel field."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Inner(EmbeddedJsonModel):
+        optional_tags: List[Annotated[str, StringConstraints(max_length=20)]] | None = (
+            Field(None, index=True)
+        )
+
+    class Parent(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        inner: Inner
+
+    await Migrator().run()
+    await Parent(name="test", inner=Inner(optional_tags=["target"])).save()
+
+    results = await Parent.find(Parent.inner.optional_tags << ["target"]).all()
+    assert len(results) == 1
+    assert results[0].inner.optional_tags == ["target"]
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_pep604_optional_on_parent_is_queryable(key_prefix, redis):
+    """Regression for `List[Annotated[...]] | None` on the parent JsonModel."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Parent(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        favorites: List[Annotated[str, StringConstraints(min_length=1)]] | None = Field(
+            None, index=True
+        )
+
+    await Migrator().run()
+    await Parent(name="test", favorites=["item1"]).save()
+
+    results = await Parent.find(Parent.favorites << ["item1"]).all()
+    assert len(results) == 1
+    assert results[0].favorites == ["item1"]
+
+    # Optional[List[...]] equivalent should also work.
+    class Parent2(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        favorites: Optional[List[Annotated[str, StringConstraints(min_length=1)]]] = (
+            Field(None, index=True)
+        )
+
+    await Migrator().run()
+    await Parent2(name="test", favorites=["abc"]).save()
+    assert len(await Parent2.find(Parent2.favorites << ["abc"]).all()) == 1
+
+
+@py_test_mark_asyncio
 async def test_count(members, m):
     # member1, member2, member3 = members
     actual_count = await m.Member.find(
@@ -1656,6 +1744,82 @@ async def test_optional_bytes_field(key_prefix, redis):
     retrieved2 = await OptionalBinaryModel.get(doc2.pk)
     assert retrieved2.name == "binary_value"
     assert retrieved2.data == binary_content
+
+
+@py_test_mark_asyncio
+async def test_pep604_optional_bytes_field(key_prefix, redis):
+    """PEP 604 `bytes | None` must round-trip like Optional[bytes] (#783 regression)."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Doc(BaseJsonModel, index=True):
+        name: str = Field(index=True)
+        data: bytes | None = None
+        when: datetime.datetime | None = None
+
+    await Migrator().run()
+
+    binary_content = b"\x89PNG\r\n\x1a\n"
+    now = datetime.datetime(2025, 1, 2, 3, 4, 5)
+    saved = Doc(name="binary", data=binary_content, when=now)
+    await saved.save()
+
+    retrieved = await Doc.get(saved.pk)
+    assert retrieved.data == binary_content
+    assert retrieved.when == now
+
+    none_doc = Doc(name="none", data=None, when=None)
+    await none_doc.save()
+    none_retrieved = await Doc.get(none_doc.pk)
+    assert none_retrieved.data is None
+    assert none_retrieved.when is None
+
+
+@py_test_mark_asyncio
+async def test_list_of_embedded_json_model_indexed_string_fields(key_prefix, redis):
+    """Regression for issue #244: JsonModel with List[EmbeddedJsonModel].
+
+    String fields inside the embedded model marked ``index=True`` must appear
+    in the RediSearch schema and be queryable through the parent.
+    """
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Item(EmbeddedJsonModel):
+        name: str = Field(index=True)
+        sku: str = Field(index=True)
+
+    class Order(BaseJsonModel, index=True):
+        customer: str = Field(index=True)
+        items: List[Item]
+
+    schema = Order.redisearch_schema()
+    assert "$.items[*].name AS items_name TAG" in schema
+    assert "$.items[*].sku AS items_sku TAG" in schema
+
+    await Migrator().run()
+
+    o1 = Order(
+        customer="alice",
+        items=[Item(name="apple", sku="A1"), Item(name="pear", sku="P1")],
+    )
+    o2 = Order(customer="bob", items=[Item(name="banana", sku="B1")])
+    await o1.save()
+    await o2.save()
+
+    by_name = await Order.find(Order.items.name == "apple").all()
+    assert len(by_name) == 1 and by_name[0].pk == o1.pk
+
+    combined = await Order.find(
+        (Order.customer == "alice") & (Order.items.sku == "P1")
+    ).all()
+    assert len(combined) == 1 and combined[0].pk == o1.pk
 
 
 @py_test_mark_asyncio

@@ -55,7 +55,6 @@ from .render_tree import render_tree
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
 
-
 model_registry = {}
 _T = TypeVar("_T")
 Model = TypeVar("Model", bound="RedisModel")
@@ -203,9 +202,9 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
             for sub_field in field_name.split("__"):
                 if not isinstance(obj, ModelMeta) and hasattr(obj, "field"):
                     annotation = getattr(obj, "field").annotation
-                    # Unwrap Optional[X] (i.e. Union[X, None]) so that we can
-                    # traverse into the inner model's fields.
-                    if get_origin(annotation) is Union:
+                    # Unwrap Optional[X] (typing.Union[X, None] or PEP 604
+                    # X | None) so that we can traverse into the inner model.
+                    if _is_union_type(annotation):
                         annotation = next(
                             (
                                 a
@@ -608,9 +607,10 @@ def convert_timestamp_to_datetime(obj, model_fields):
                 )
 
                 # Handle Optional types - extract the inner type
-                if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                    # For Optional[T] which is Union[T, None], get the non-None type
-                    args = getattr(field_type, "__args__", ())
+                if _is_union_type(field_type):
+                    # For Optional[T] (typing.Union[T, None] or PEP 604
+                    # T | None), get the non-None type
+                    args = get_args(field_type)
                     non_none_types = [
                         arg for arg in args if arg is not type(None)  # noqa: E721
                     ]
@@ -706,10 +706,10 @@ def convert_empty_strings_to_none(obj, model_fields):
             field_type = (
                 field_info.annotation if hasattr(field_info, "annotation") else None
             )
-            # Check if the field is Optional (Union[T, None])
+            # Check if the field is Optional (typing.Union[T, None] or PEP 604 T | None)
             is_optional = False
-            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                args = getattr(field_type, "__args__", ())
+            if _is_union_type(field_type):
+                args = get_args(field_type)
                 if type(None) in args:
                     is_optional = True
 
@@ -792,8 +792,8 @@ def convert_base64_to_bytes(obj, model_fields):
             )
 
             # Handle Optional types - extract the inner type
-            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                args = getattr(field_type, "__args__", ())
+            if _is_union_type(field_type):
+                args = get_args(field_type)
                 non_none_types = [
                     arg for arg in args if arg is not type(None)  # noqa: E721
                 ]
