@@ -2,7 +2,12 @@
 
 import abc
 import datetime
-from typing import List, Self
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
+from typing import List
 from unittest import mock
 
 import pytest
