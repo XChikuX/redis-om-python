@@ -116,9 +116,7 @@ def _unwrap_type_annotation(annotation: Any) -> Any:
         if args:
             return _unwrap_type_annotation(args[0])
     if _is_union_type(annotation):
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)  # noqa: E721
-        ]
+        args = [arg for arg in get_args(annotation) if arg is not types.NoneType]
         if args:
             return _unwrap_type_annotation(args[0])
     return annotation
@@ -1145,7 +1143,11 @@ class FindQuery:
     @staticmethod
     def _embedded_query_fields(value: Any) -> Dict[str, Any]:
         if isinstance(value, RedisModel):
+            # RediSearch does not index JSON null values, so None-valued
+            # criteria cannot produce a matching field query.
             return value.model_dump(exclude_unset=True, exclude_none=True)
+        # RediSearch does not index JSON null values, so None-valued criteria
+        # cannot produce a matching field query.
         return {key: val for key, val in value.items() if val is not None}
 
     @classmethod
@@ -1191,7 +1193,7 @@ class FindQuery:
                     getattr(embedded_cls, "_meta", None), "embedded", False
                 ):
                     continue
-                if not getattr(field_info, "index", None):
+                if not getattr(field_info, "index", False):
                     raise QueryNotSupportedError(
                         f"You tried to query by a field ({field.alias}_{name}) "
                         f"that isn't indexed. Docs: {ERRORS_URL}#E6"
