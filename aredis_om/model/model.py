@@ -1803,6 +1803,8 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
+        # TODO: Track Pydantic changes around Annotated metadata merging and
+        # replace this private-attribute hook if a public API becomes available.
         # Pydantic v2 merges Annotated metadata from its internal
         # _attributes_set, so mark Redis OM metadata as explicit when that
         # private attribute exists. If Pydantic changes or removes
