@@ -104,7 +104,7 @@ ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.m
 
 
 def _is_union_type(annotation: Any) -> bool:
-    """Return whether an annotation is typing.Union or PEP 604 union syntax."""
+    """Return whether an annotation is typing.Union or PEP 604 syntax (e.g. str | None)."""
     origin = get_origin(annotation)
     return origin is Union or origin is types.UnionType
 
@@ -1052,6 +1052,7 @@ class FindQuery:
         if field_type is Coordinates:
             return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
+        # Literal annotations have an origin but are indexed as scalar TAG fields.
         if container_type is Literal:
             return RediSearchFieldTypes.TAG
 

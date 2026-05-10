@@ -1088,6 +1088,9 @@ async def test_annotated_embedded_field_is_indexed(key_prefix, redis):
         name: str = Field(index=True)
         inner: Inner
 
+    with pytest.raises(ValidationError):
+        Inner(annotated_tag="invalid")
+
     schema = Parent.redisearch_schema()
     assert "$.inner.annotated_tag AS inner_annotated_tag" in schema
     assert "inner_annotated_tag TAG" in schema
