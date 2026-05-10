@@ -104,18 +104,22 @@ ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.m
 
 
 def _is_union_type(annotation: Any) -> bool:
+    """Return whether an annotation is typing.Union or PEP 604 union syntax."""
     origin = get_origin(annotation)
     return origin is Union or origin is types.UnionType
 
 
 def _unwrap_type_annotation(annotation: Any) -> Any:
+    """Unwrap Annotated and union annotations to the type used for schemas."""
     origin = get_origin(annotation)
     if origin is Annotated:
         args = get_args(annotation)
         if args:
             return _unwrap_type_annotation(args[0])
     if _is_union_type(annotation):
-        args = [arg for arg in get_args(annotation) if arg is not types.NoneType]
+        args = [
+            arg for arg in get_args(annotation) if arg is not type(None)  # noqa: E721
+        ]
         if args:
             return _unwrap_type_annotation(args[0])
     return annotation
@@ -1669,8 +1673,10 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
-        # Pydantic v2 merges Annotated metadata from _attributes_set, so mark
-        # Redis OM metadata as explicit to preserve index options.
+        # Pydantic v2 merges Annotated metadata from its internal
+        # _attributes_set, so mark Redis OM metadata as explicit when that
+        # attribute exists. If it changes, json_schema_extra still remains set
+        # on this FieldInfo for normal (non-Annotated) fields.
         if hasattr(self, "_attributes_set"):
             self._attributes_set["json_schema_extra"] = self.json_schema_extra
 
