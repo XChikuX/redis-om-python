@@ -8,6 +8,7 @@ import decimal
 import json
 import logging
 import operator
+import types
 from copy import copy
 from enum import Enum
 from functools import reduce
@@ -29,7 +30,9 @@ from typing import (
     Union,
 )
 from typing import get_args as typing_get_args
-from typing import no_type_check
+from typing import (
+    no_type_check,
+)
 
 from more_itertools import ichunked
 from pydantic import ConfigDict, model_validator
@@ -99,19 +102,33 @@ DEFAULT_REDISEARCH_FIELD_SEPARATOR = ","
 ERRORS_URL = "https://github.com/XChikuX/redis-om-python/blob/main/docs/errors.md"
 
 
+def _is_union_type(annotation: Any) -> bool:
+    """Return whether an annotation is typing.Union or PEP 604 syntax (e.g. str | None)."""
+    origin = get_origin(annotation)
+    return origin is Union or origin is types.UnionType
+
+
+def _unwrap_type_annotation(annotation: Any) -> Any:
+    """Unwrap Annotated and union annotations to the type used for schemas."""
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        args = get_args(annotation)
+        if args:
+            return _unwrap_type_annotation(args[0])
+    if _is_union_type(annotation):
+        args = [arg for arg in get_args(annotation) if arg is not types.NoneType]
+        if args:
+            return _unwrap_type_annotation(args[0])
+    return annotation
+
+
 def get_outer_type(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    annotation = field.annotation
+    annotation = _unwrap_type_annotation(field.annotation)
     origin = get_origin(annotation)
     if origin == Literal:
         return annotation
-    if origin is Union:
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)
-        ]  # noqa: E721
-        if args:
-            return args[0]
     if isinstance(annotation, type) or is_supported_container_type(annotation):
         return annotation
     if not hasattr(annotation, "__args__"):
@@ -183,9 +200,9 @@ def validate_model_fields(model: Type["RedisModel"], field_values: Dict[str, Any
             for sub_field in field_name.split("__"):
                 if not isinstance(obj, ModelMeta) and hasattr(obj, "field"):
                     annotation = getattr(obj, "field").annotation
-                    # Unwrap Optional[X] (i.e. Union[X, None]) so that we can
-                    # traverse into the inner model's fields.
-                    if get_origin(annotation) is Union:
+                    # Unwrap Optional[X] (typing.Union[X, None] or PEP 604
+                    # X | None) so that we can traverse into the inner model.
+                    if _is_union_type(annotation):
                         annotation = next(
                             (
                                 a
@@ -228,6 +245,22 @@ def is_model_field_instance(value: Any) -> bool:
 def validate_model_data(model: Any, values: Any) -> Any:
     """Validate model data with Pydantic v2."""
     return model.model_validate(values)
+
+
+def restore_missing_pk(model: Any, values: Any, requested_pk: Any) -> Any:
+    """Backfill a missing top-level pk from the Redis key used for loading."""
+    if (
+        not isinstance(values, dict)
+        or requested_pk is None
+        or getattr(getattr(model, "_meta", None), "embedded", False)
+        or values.get("pk")
+    ):
+        return values
+    values = dict(values)
+    # RedisModel.pk is declared as Optional[str], so reload-time backfills
+    # should normalize the requested key to the string form used by the model.
+    values["pk"] = str(requested_pk)
+    return values
 
 
 def _is_embedded_json_model(cls: Any) -> bool:
@@ -588,9 +621,10 @@ def convert_timestamp_to_datetime(obj, model_fields):
                 )
 
                 # Handle Optional types - extract the inner type
-                if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                    # For Optional[T] which is Union[T, None], get the non-None type
-                    args = getattr(field_type, "__args__", ())
+                if _is_union_type(field_type):
+                    # For Optional[T] (typing.Union[T, None] or PEP 604
+                    # T | None), get the non-None type
+                    args = get_args(field_type)
                     non_none_types = [
                         arg for arg in args if arg is not type(None)  # noqa: E721
                     ]
@@ -686,10 +720,10 @@ def convert_empty_strings_to_none(obj, model_fields):
             field_type = (
                 field_info.annotation if hasattr(field_info, "annotation") else None
             )
-            # Check if the field is Optional (Union[T, None])
+            # Check if the field is Optional (typing.Union[T, None] or PEP 604 T | None)
             is_optional = False
-            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                args = getattr(field_type, "__args__", ())
+            if _is_union_type(field_type):
+                args = get_args(field_type)
                 if type(None) in args:
                     is_optional = True
 
@@ -772,8 +806,8 @@ def convert_base64_to_bytes(obj, model_fields):
             )
 
             # Handle Optional types - extract the inner type
-            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                args = getattr(field_type, "__args__", ())
+            if _is_union_type(field_type):
+                args = get_args(field_type)
                 non_none_types = [
                     arg for arg in args if arg is not type(None)  # noqa: E721
                 ]
@@ -1029,14 +1063,14 @@ class FindQuery:
 
         field_type = outer_type_or_annotation(field)
 
-        if not isinstance(field_type, type):
-            field_type = field_type.__origin__
-
         if field_type is Coordinates:
             return RediSearchFieldTypes.GEO
         container_type = get_origin(field_type)
+        # Literal annotations have an origin but are indexed as scalar TAG fields.
+        if container_type is Literal:
+            return RediSearchFieldTypes.TAG
 
-        if is_supported_container_type(container_type):
+        if is_supported_container_type(field_type):
             # NOTE: A list of strings, like:
             #
             #     tarot_cards: List[str] = field(index=True)
@@ -1089,6 +1123,134 @@ class FindQuery:
                 value,
             )
         return escaper.escape(str(value))
+
+    @staticmethod
+    def _get_embedded_model_class(
+        field: ModelField,
+    ) -> Optional[Type["RedisModel"]]:
+        field_type = outer_type_or_annotation(field)
+        if not is_supported_container_type(field_type):
+            return None
+
+        args = get_args(field_type)
+        if not args:
+            return None
+
+        embedded_cls = _unwrap_type_annotation(args[0])
+        try:
+            if issubclass(embedded_cls, RedisModel):
+                return embedded_cls
+        except TypeError:
+            return None
+        return None
+
+    @staticmethod
+    def _normalize_embedded_query_values(value: Any) -> Optional[List[Any]]:
+        if isinstance(value, (dict, RedisModel)):
+            return [value]
+        if (
+            isinstance(value, (list, tuple))
+            and value
+            and all(isinstance(item, (dict, RedisModel)) for item in value)
+        ):
+            return list(value)
+        return None
+
+    @staticmethod
+    def _get_non_none_query_fields(value: Any) -> Dict[str, Any]:
+        # RediSearch does not index JSON null values, so None-valued criteria
+        # cannot produce a matching field query.
+        if isinstance(value, RedisModel):
+            return value.model_dump(exclude_unset=True, exclude_none=True)
+        return {key: val for key, val in value.items() if val is not None}
+
+    @classmethod
+    def resolve_embedded_model_container_query(
+        cls,
+        field: ModelField,
+        value: Any,
+        parents: List[Tuple[str, "RedisModel"]],
+    ) -> Optional[str]:
+        embedded_cls = cls._get_embedded_model_class(field)
+        if embedded_cls is None:
+            return None
+        if isinstance(value, (list, tuple)) and not value:
+            raise QuerySyntaxError(
+                f"Cannot query embedded model list field {field.alias!r} with an "
+                "empty list. Provide at least one query criterion."
+            )
+        values = cls._normalize_embedded_query_values(value)
+        if values is None:
+            return None
+
+        parent_type = outer_type_or_annotation(field)
+        new_parents = parents.copy()
+        new_parent = (field.alias, parent_type)
+        if new_parent not in new_parents:
+            new_parents.append(new_parent)
+
+        queries = []
+        is_embedded = getattr(getattr(embedded_cls, "_meta", None), "embedded", False)
+        for query_value in values:
+            field_values = cls._get_non_none_query_fields(query_value)
+            parts = []
+            for name, field_value in field_values.items():
+                field_info = embedded_cls.model_fields.get(name)
+                if field_info is None:
+                    aliased_field = next(
+                        (
+                            (field_name, field)
+                            for field_name, field in embedded_cls.model_fields.items()
+                            if field.alias == name
+                        ),
+                        None,
+                    )
+                    if aliased_field is None:
+                        raise QuerySyntaxError(
+                            f"Field {name!r} is not defined on embedded model "
+                            f"{embedded_cls.__name__}. Available fields: "
+                            f"{list(embedded_cls.model_fields.keys())}."
+                        )
+                    name, field_info = aliased_field
+                if name == "pk" and is_embedded:
+                    continue
+                if not getattr(field_info, "index", False):
+                    raise QueryNotSupportedError(
+                        f"You tried to query by a field ({field.alias}_{name}) "
+                        f"that isn't indexed. Docs: {ERRORS_URL}#E6"
+                    )
+                op = (
+                    Operators.IN
+                    if isinstance(field_value, (list, tuple, set))
+                    else Operators.EQ
+                )
+                field_type = cls.resolve_field_type(field_info, op)
+                parts.append(
+                    cls.resolve_value(
+                        name,
+                        field_type,
+                        field_info,
+                        op,
+                        field_value,
+                        new_parents,
+                    )
+                )
+            if not parts:
+                indexed_fields = [
+                    name
+                    for name, field in embedded_cls.model_fields.items()
+                    if getattr(field, "index", False)
+                ]
+                raise QuerySyntaxError(
+                    f"No indexed fields were provided for embedded model "
+                    f"{embedded_cls.__name__}. Available indexed fields: "
+                    f"{indexed_fields}."
+                )
+            queries.append(" ".join(parts))
+
+        if len(queries) == 1:
+            return queries[0]
+        return "| ".join(f"({query})" for query in queries)
 
     @classmethod
     def resolve_value(
@@ -1365,7 +1527,17 @@ class FindQuery:
                     "Comparing fields is not supported. See docs: TODO"
                 )
             else:
-                result += cls.resolve_value(
+                embedded_query = None
+                if is_model_field_instance(expression.left) and expression.op in (
+                    Operators.EQ,
+                    Operators.IN,
+                ):
+                    embedded_query = cls.resolve_embedded_model_container_query(
+                        expression.left,
+                        right,
+                        expression.parents,
+                    )
+                result += embedded_query or cls.resolve_value(
                     field_name,
                     field_type,
                     field_info,
@@ -1654,6 +1826,15 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
+        # TODO: Track Pydantic changes around Annotated metadata merging and
+        # replace this private-attribute hook if a public API becomes available.
+        # Pydantic v2 merges Annotated metadata from its internal
+        # _attributes_set, so mark Redis OM metadata as explicit when that
+        # private attribute exists. If Pydantic changes or removes
+        # _attributes_set, json_schema_extra still remains set on this
+        # FieldInfo for normal (non-Annotated) fields.
+        if hasattr(self, "_attributes_set"):
+            self._attributes_set["json_schema_extra"] = self.json_schema_extra
 
 
 REDIS_OM_FIELD_DEFAULTS = {
@@ -2076,16 +2257,10 @@ class ModelMeta(ModelMetaclass):
 def outer_type_or_annotation(field):
     if hasattr(field, "outer_type_"):
         return field.outer_type_
-    annotation = field.annotation
+    annotation = _unwrap_type_annotation(field.annotation)
     origin = get_origin(annotation)
     if origin == Literal:
         return annotation
-    if origin is Union:
-        args = [
-            arg for arg in get_args(annotation) if arg is not type(None)
-        ]  # noqa: E721
-        if args:
-            return args[0]
     if isinstance(annotation, type) or origin is not None:
         return annotation
     if hasattr(annotation, "__args__") and annotation.__args__:
@@ -2143,9 +2318,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
 
     def _model_dump_exclude(self, exclude: Any) -> Any:
         is_embedded = getattr(type(self)._meta, "embedded", False)
-        if is_embedded and (
-            self.pk is None or isinstance(self.pk, ExpressionProxy)
-        ):
+        if is_embedded and (self.pk is None or isinstance(self.pk, ExpressionProxy)):
             if exclude is None:
                 exclude = {"pk"}
             elif isinstance(exclude, AbstractSet):
@@ -2662,6 +2835,7 @@ class HashModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document = convert_empty_strings_to_none(document, model_fields)
         document = convert_base64_to_bytes(document, model_fields)
+        document = restore_missing_pk(cls, document, pk)
         try:
             result = cls.model_validate(document)
         except TypeError as e:
@@ -2674,6 +2848,7 @@ class HashModel(RedisModel, abc.ABC):
             document = decode_redis_value(document, cls.Meta.encoding)
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = restore_missing_pk(cls, document, pk)
             result = cls.model_validate(document)
         return result
 
@@ -2697,17 +2872,19 @@ class HashModel(RedisModel, abc.ABC):
         results = await db.execute()
         model_fields = get_model_fields(cls)
         models = []
-        for document in results:
+        for requested_pk, document in zip(pks, results):
             if not document:
                 continue
             document = convert_empty_strings_to_none(document, model_fields)
             document = convert_base64_to_bytes(document, model_fields)
+            document = restore_missing_pk(cls, document, requested_pk)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
                 document = decode_redis_value(document, cls.Meta.encoding)
                 document = convert_empty_strings_to_none(document, model_fields)
                 document = convert_base64_to_bytes(document, model_fields)
+                document = restore_missing_pk(cls, document, requested_pk)
                 models.append(cls.model_validate(document))
         return models
 
@@ -2782,6 +2959,7 @@ class HashModel(RedisModel, abc.ABC):
         #  a List[int] gets indexed as TAG instead of NUMERICAL.
         # TODO: Abstract string-building logic for each type (TAG, etc.) into
         #  classes that take a field name.
+        typ = _unwrap_type_annotation(typ)
         sortable = getattr(field_info, "sortable", False)
         case_sensitive = getattr(field_info, "case_sensitive", False)
 
@@ -2957,9 +3135,7 @@ class JsonModel(RedisModel, abc.ABC):
         model_fields = get_model_fields(cls)
         document_data = convert_timestamp_to_datetime(document_data, model_fields)
         document_data = convert_base64_to_bytes(document_data, model_fields)
-        if isinstance(document_data, dict) and not document_data.get("pk"):
-            document_data = dict(document_data)
-            document_data["pk"] = pk
+        document_data = restore_missing_pk(cls, document_data, pk)
         return validate_model_data(cls, document_data)
 
     @classmethod
@@ -2987,9 +3163,7 @@ class JsonModel(RedisModel, abc.ABC):
                 continue
             document_data = convert_timestamp_to_datetime(document_data, model_fields)
             document_data = convert_base64_to_bytes(document_data, model_fields)
-            if isinstance(document_data, dict) and not document_data.get("pk"):
-                document_data = dict(document_data)
-                document_data["pk"] = requested_pk
+            document_data = restore_missing_pk(cls, document_data, requested_pk)
             models.append(validate_model_data(cls, document_data))
         return models
 
@@ -3032,6 +3206,7 @@ class JsonModel(RedisModel, abc.ABC):
         field_info: PydanticFieldInfo,
         parent_type: Optional[Any] = None,
     ) -> str:
+        typ = _unwrap_type_annotation(typ)
         should_index = getattr(field_info, "index", False)
         is_container_type = is_supported_container_type(typ)
         parent_is_container_type = is_supported_container_type(parent_type)
