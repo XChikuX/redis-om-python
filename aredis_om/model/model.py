@@ -1109,7 +1109,7 @@ class FindQuery:
         return escaper.escape(str(value))
 
     @staticmethod
-    def _embedded_model_cls_for_container_field(
+    def _get_embedded_model_class(
         field: ModelField,
     ) -> Optional[Type["RedisModel"]]:
         field_type = outer_type_or_annotation(field)
@@ -1129,7 +1129,7 @@ class FindQuery:
         return None
 
     @staticmethod
-    def _embedded_query_values(value: Any) -> Optional[List[Any]]:
+    def _normalize_embedded_query_values(value: Any) -> Optional[List[Any]]:
         if isinstance(value, (dict, RedisModel)):
             return [value]
         if (
@@ -1141,7 +1141,7 @@ class FindQuery:
         return None
 
     @staticmethod
-    def _embedded_query_fields(value: Any) -> Dict[str, Any]:
+    def _get_non_none_query_fields(value: Any) -> Dict[str, Any]:
         # RediSearch does not index JSON null values, so None-valued criteria
         # cannot produce a matching field query.
         if isinstance(value, RedisModel):
@@ -1155,15 +1155,15 @@ class FindQuery:
         value: Any,
         parents: List[Tuple[str, "RedisModel"]],
     ) -> Optional[str]:
-        embedded_cls = cls._embedded_model_cls_for_container_field(field)
+        embedded_cls = cls._get_embedded_model_class(field)
         if embedded_cls is None:
             return None
         if isinstance(value, (list, tuple)) and not value:
             raise QuerySyntaxError(
                 f"Cannot query embedded model list field {field.alias!r} with an "
-                "empty list."
+                "empty list. Provide at least one query criterion."
             )
-        values = cls._embedded_query_values(value)
+        values = cls._normalize_embedded_query_values(value)
         if values is None:
             return None
 
@@ -1176,7 +1176,7 @@ class FindQuery:
         queries = []
         is_embedded = getattr(getattr(embedded_cls, "_meta", None), "embedded", False)
         for query_value in values:
-            field_values = cls._embedded_query_fields(query_value)
+            field_values = cls._get_non_none_query_fields(query_value)
             parts = []
             for name, field_value in field_values.items():
                 field_info = embedded_cls.model_fields.get(name)
@@ -1192,7 +1192,8 @@ class FindQuery:
                     if aliased_field is None:
                         raise QuerySyntaxError(
                             f"Field {name!r} is not defined on embedded model "
-                            f"{embedded_cls.__name__}."
+                            f"{embedded_cls.__name__}. Available fields: "
+                            f"{list(embedded_cls.model_fields.keys())}."
                         )
                     name, field_info = aliased_field
                 if name == "pk" and is_embedded:
@@ -1219,9 +1220,15 @@ class FindQuery:
                     )
                 )
             if not parts:
+                indexed_fields = [
+                    name
+                    for name, field in embedded_cls.model_fields.items()
+                    if getattr(field, "index", False)
+                ]
                 raise QuerySyntaxError(
                     f"No indexed fields were provided for embedded model "
-                    f"{embedded_cls.__name__}."
+                    f"{embedded_cls.__name__}. Available indexed fields: "
+                    f"{indexed_fields}."
                 )
             queries.append(" ".join(parts))
 
