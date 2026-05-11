@@ -834,6 +834,12 @@ async def test_iter_cursor_pages_hash_results(members, m):
 
 
 @py_test_mark_asyncio
+async def test_iter_cursor_rejects_non_positive_count(members, m):
+    with pytest.raises(ValueError, match="greater than zero"):
+        await m.Member.find().iter_cursor(count=0)
+
+
+@py_test_mark_asyncio
 async def test_iter_cursor_token_round_trip(members, m):
     cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
 

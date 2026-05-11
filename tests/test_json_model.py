@@ -510,6 +510,19 @@ async def test_iter_cursor_iterates_json_results(members, m):
 
 
 @py_test_mark_asyncio
+async def test_iter_cursor_pages_json_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=2)
+
+    assert cursor.total == 3
+    assert await cursor.read() == [member2, member1]
+    assert await cursor.read() == [member3]
+    await cursor.close()
+    assert cursor.exhausted
+
+
+@py_test_mark_asyncio
 async def test_access_result_by_index_cached(members, m):
     member1, member2, member3 = members
     query = m.Member.find().sort_by("age")
