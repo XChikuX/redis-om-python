@@ -2,9 +2,12 @@
 
 import abc
 import asyncio
+import base64
 import dataclasses
 import datetime
 import decimal
+import hashlib
+import hmac
 import json
 import logging
 import operator
@@ -62,6 +65,21 @@ log = logging.getLogger(__name__)
 escaper = TokenEscaper()
 DatabaseConnection = Union[redis.Redis, redis.RedisCluster]
 DatabaseProvider = Callable[[], DatabaseConnection]
+
+
+def _decode_token_value(value: Union[str, bytes]) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "ignore")
+    return value
+
+
+def _urlsafe_b64decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def _is_cluster_pipeline(db) -> bool:
@@ -865,6 +883,185 @@ def convert_base64_to_bytes(obj, model_fields):
     return result
 
 
+class FindQueryCursor:
+    def __init__(
+        self,
+        model: Type["RedisModel"],
+        index_name: str,
+        cursor_id: int,
+        count: int,
+        results: Optional[Sequence["RedisModel"]] = None,
+        total: Optional[int] = None,
+    ):
+        self.model = model
+        self.index_name = index_name
+        self.cursor_id = cursor_id
+        self.count = count
+        self.total = total
+        self._buffer: List["RedisModel"] = list(results or [])
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._buffer:
+            self._buffer = list(await self.read())
+        if not self._buffer:
+            raise StopAsyncIteration
+        return self._buffer.pop(0)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.cursor_id == 0 and not self._buffer
+
+    def token(self, secret: Optional[Union[str, bytes]] = None) -> str:
+        """Serialize cursor state into a URL-safe token.
+
+        Pass a secret in web applications so the token is signed and cannot be
+        tampered with by clients. Unsigned tokens are intended for trusted
+        server-side handoff only because the cursor id is a Redis server-side
+        resource identifier.
+        """
+        payload = {
+            "index_name": self.index_name,
+            "cursor_id": self.cursor_id,
+            "count": self.count,
+        }
+        body = _urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
+        if secret is None:
+            return body
+        secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+        signature = hmac.new(secret_bytes, body.encode("ascii"), hashlib.sha256)
+        return f"{body}.{_urlsafe_b64encode(signature.digest())}"
+
+    @classmethod
+    def from_token(
+        cls,
+        model: Type["RedisModel"],
+        token: str,
+        secret: Optional[Union[str, bytes]] = None,
+    ) -> "FindQueryCursor":
+        parts = token.split(".")
+        if secret is None:
+            if len(parts) != 1:
+                raise ValueError(
+                    "Token appears to be signed but no secret was provided."
+                )
+            body = parts[0]
+        else:
+            if len(parts) != 2:
+                raise ValueError(
+                    "Invalid cursor token format: expected unsigned or signed token."
+                )
+            body, signature = parts
+            secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+            expected = hmac.new(
+                secret_bytes, body.encode("ascii"), hashlib.sha256
+            ).digest()
+            actual = _urlsafe_b64decode(signature)
+            if not hmac.compare_digest(actual, expected):
+                raise ValueError("Cursor token signature is invalid.")
+
+        payload = json.loads(_urlsafe_b64decode(body).decode("utf-8"))
+        if payload["index_name"] != model.Meta.index_name:
+            raise ValueError(
+                "Cursor token index mismatch: expected "
+                f"{model.Meta.index_name}, got {payload['index_name']}."
+            )
+        return cls(
+            model=model,
+            index_name=payload["index_name"],
+            cursor_id=int(payload["cursor_id"]),
+            count=int(payload["count"]),
+        )
+
+    async def read(self) -> Sequence["RedisModel"]:
+        if self._buffer:
+            results = self._buffer
+            self._buffer = []
+            return results
+        if self.cursor_id == 0:
+            return []
+        raw_result = await self.model.db().execute_command(
+            "FT.CURSOR",
+            "READ",
+            self.index_name,
+            self.cursor_id,
+            "COUNT",
+            self.count,
+        )
+        aggregate_result, self.cursor_id = self._split_cursor_result(raw_result)
+        return await self._models_from_aggregate_result(self.model, aggregate_result)
+
+    async def all(self) -> Sequence["RedisModel"]:
+        """Read every remaining cursor page into memory.
+
+        Prefer page-by-page ``read()`` or async iteration for unbounded result
+        sets.
+        """
+        results: List["RedisModel"] = []
+        while True:
+            page = await self.read()
+            if not page:
+                break
+            results.extend(page)
+        return results
+
+    async def close(self) -> None:
+        if self.cursor_id == 0:
+            return
+        try:
+            await self.model.db().execute_command(
+                "FT.CURSOR", "DEL", self.index_name, self.cursor_id
+            )
+        finally:
+            self.cursor_id = 0
+
+    @staticmethod
+    def _split_cursor_result(raw_result: Any) -> Tuple[Any, int]:
+        if (
+            isinstance(raw_result, (list, tuple))
+            and len(raw_result) == 2
+            and isinstance(raw_result[1], (int, str, bytes))
+        ):
+            return raw_result[0], int(raw_result[1])
+        return raw_result, 0
+
+    @staticmethod
+    def _aggregate_total(aggregate_result: Any) -> int:
+        try:
+            return int(aggregate_result[0])
+        except (IndexError, TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _extract_key(row: Sequence[Any]) -> Optional[str]:
+        for index in range(0, len(row), 2):
+            name = _decode_token_value(row[index])
+            if name == "__key":
+                return _decode_token_value(row[index + 1])
+        return None
+
+    @classmethod
+    def _pk_from_redis_key(cls, model: Type["RedisModel"], key: str) -> str:
+        key_prefix = model.make_key(model._meta.primary_key_pattern.format(pk=""))
+        return remove_prefix(key, key_prefix)
+
+    @classmethod
+    async def _models_from_aggregate_result(
+        cls, model: Type["RedisModel"], aggregate_result: Any
+    ) -> Sequence["RedisModel"]:
+        rows = aggregate_result[1:] if aggregate_result else []
+        pks = []
+        for row in rows:
+            key = cls._extract_key(row)
+            if key is not None:
+                pks.append(cls._pk_from_redis_key(model, key))
+        return await model.get_many(pks)
+
+
 class FindQuery:
     def __init__(
         self,
@@ -1419,6 +1616,17 @@ class FindQuery:
         if self.sort_fields:
             return ["SORTBY", *fields]
 
+    def resolve_redisearch_aggregate_sort_fields(self):
+        """Resolve FT.AGGREGATE sort options for a query."""
+        if not self.sort_fields:
+            return
+        fields = []
+        for f in self.sort_fields:
+            direction = "DESC" if f.startswith("-") else "ASC"
+            field_name = f.lstrip("-")
+            fields.extend([f"@{field_name}", direction])
+        return ["SORTBY", str(len(fields)), *fields]
+
     @classmethod
     def resolve_redisearch_query(cls, expression: ExpressionOrNegated) -> str:
         """
@@ -1673,6 +1881,60 @@ class FindQuery:
             )
         except IndexError:
             return 0
+
+    async def iter_cursor(
+        self, count: int = DEFAULT_PAGE_SIZE, max_idle: Optional[int] = None
+    ) -> FindQueryCursor:
+        """Create a RediSearch cursor for this query.
+
+        ``count`` controls the page size returned by each cursor read.
+        ``max_idle`` is passed to RediSearch as WITHCURSOR MAXIDLE and is
+        measured in milliseconds.
+        """
+        if count < 1:
+            raise ValueError("Cursor count must be greater than zero.")
+        if not await has_redisearch(self.model.db()):
+            raise RedisModelError(
+                "Your Redis instance does not have either the RediSearch module "
+                "or RedisJSON module installed. Querying requires that your Redis "
+                "instance has one of these modules installed."
+            )
+        if not getattr(self.model._meta, "index_health_checked", False):
+            await self.model.check_index_health()
+            self.model._meta.index_health_checked = True
+
+        index_name = str(self.model.Meta.index_name)
+        args: List[Union[str, bytes]] = [
+            "FT.AGGREGATE",
+            index_name,
+            self.query,
+            "LOAD",
+            "1",
+            "__key",
+        ]
+        if self.sort_fields:
+            args += self.resolve_redisearch_aggregate_sort_fields()
+        if self.query_params:
+            args += ["PARAMS", str(len(self.query_params))] + self.query_params
+        if self.knn:
+            args += ["DIALECT", "2"]
+        args += ["WITHCURSOR", "COUNT", str(count)]
+        if max_idle is not None:
+            args += ["MAXIDLE", str(max_idle)]
+
+        raw_result = await self.model.db().execute_command(*args)
+        aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(raw_result)
+        results = await FindQueryCursor._models_from_aggregate_result(
+            self.model, aggregate_result
+        )
+        return FindQueryCursor(
+            model=self.model,
+            index_name=index_name,
+            cursor_id=cursor_id,
+            count=count,
+            results=results,
+            total=FindQueryCursor._aggregate_total(aggregate_result),
+        )
 
     async def all(self, batch_size=DEFAULT_PAGE_SIZE):
         if batch_size != self.page_size:

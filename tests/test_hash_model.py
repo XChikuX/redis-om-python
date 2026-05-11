@@ -15,6 +15,7 @@ import pytest_asyncio
 from aredis_om import (
     Coordinates,
     Field,
+    FindQueryCursor,
     GeoFilter,
     HashModel,
     Migrator,
@@ -26,7 +27,6 @@ from tests._compat import ValidationError
 from tests._sync_redis import has_redisearch
 
 from .conftest import py_test_mark_asyncio
-
 
 if not has_redisearch():
     pytestmark = pytest.mark.skip
@@ -817,6 +817,42 @@ async def test_paginate_query(members, m):
     member1, member2, member3 = members
     actual = await m.Member.find().sort_by("age").all(batch_size=1)
     assert actual == [member2, member1, member3]
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_pages_hash_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+
+    assert cursor.total == 3
+    assert await cursor.read() == [member2]
+    assert await cursor.read() == [member1]
+    assert await cursor.read() == [member3]
+    assert await cursor.read() == []
+    assert cursor.exhausted
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_rejects_non_positive_count(members, m):
+    with pytest.raises(ValueError, match="greater than zero"):
+        await m.Member.find().iter_cursor(count=0)
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_token_round_trip(members, m):
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+
+    token = cursor.token(secret="test-secret")
+    resumed_cursor = FindQueryCursor.from_token(m.Member, token, secret="test-secret")
+
+    assert resumed_cursor.index_name == cursor.index_name
+    assert resumed_cursor.cursor_id == cursor.cursor_id
+    assert resumed_cursor.count == cursor.count
+    with pytest.raises(ValueError, match="signature is invalid"):
+        FindQueryCursor.from_token(m.Member, token, secret="wrong-secret")
+
+    await cursor.close()
 
 
 @py_test_mark_asyncio

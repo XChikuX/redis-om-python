@@ -32,7 +32,6 @@ from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
 
-
 if not has_redis_json():
     pytestmark = pytest.mark.skip
 
@@ -493,6 +492,34 @@ async def test_paginate_query(members, m):
     member1, member2, member3 = members
     actual = await m.Member.find().sort_by("age").all(batch_size=1)
     assert actual == [member2, member1, member3]
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_iterates_json_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+    actual = []
+
+    async for member in cursor:
+        actual.append(member)
+
+    assert cursor.total == 3
+    assert actual == [member2, member1, member3]
+    assert cursor.exhausted
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_pages_json_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=2)
+
+    assert cursor.total == 3
+    assert await cursor.read() == [member2, member1]
+    assert await cursor.read() == [member3]
+    await cursor.close()
+    assert cursor.exhausted
 
 
 @py_test_mark_asyncio

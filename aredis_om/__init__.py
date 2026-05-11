@@ -6,6 +6,7 @@ from .model.model import (
     EmbeddedJsonModel,
     Field,
     FindQuery,
+    FindQueryCursor,
     HashModel,
     JsonModel,
     KNNExpression,

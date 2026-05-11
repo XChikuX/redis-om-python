@@ -90,6 +90,7 @@ that are already implemented here, even if the upstream issue is still open.
 | [#204](https://github.com/redis/redis-om-python/issues/204) | Find a way to make users aware of indexing issues. | Fixed | `check_index_health()` inspects `FT.INFO` and warns on indexing failures |
 | [#254](https://github.com/redis/redis-om-python/issues/254) | Allows writing but not reading, on model with optional field. | Fixed | HashModel now converts empty strings back to `None` for optional fields; covered by `tests/test_bug_fixes.py` |
 | [#431](https://github.com/redis/redis-om-python/issues/431) | EmbeddedJson fields are not able to be sorted on, even with the `sortable=True` flag | Fixed | `FindQuery.sort_by()` resolves embedded JSON field paths like `metrics.score` and `metrics__score` |
+| [#448](https://github.com/redis/redis-om-python/issues/448) | Cursors for search results | Fixed | `FindQuery.iter_cursor()` uses `FT.AGGREGATE WITHCURSOR` for cursor-based pagination |
 | [#499](https://github.com/redis/redis-om-python/issues/499) | FindQuery.resolve_value can't resolve for Operations.IN and RedisSearchFieldTypes.NUMERIC | Fixed | `IN` / `NOT_IN` now work for numeric fields; covered by `tests/test_bug_fixes.py` |
 | [#519](https://github.com/redis/redis-om-python/issues/519) | Set `RedisModel.Meta.database` at runtime, not import time | Fixed | `Meta.database` is lazily resolved, accepts callables, and supports runtime reassignment |
 | [#523](https://github.com/redis/redis-om-python/issues/523) | [Enhancement] Retrieve multiple records at once with pipeline | Fixed | `get_many()` supports batch retrieval and explicit pipeline composition; covered by pipeline tests |
@@ -869,6 +870,12 @@ customer_count = await Customer.find(Customer.age >= 25).count()
 # Paginate through results (offset=10, limit=5)
 page_results = await Customer.find(Customer.age >= 25).page(offset=10, limit=5)
 
+# Cursor-based pagination for large result sets
+cursor = await Customer.find(Customer.age >= 25).sort_by("-age").iter_cursor(count=100)
+first_cursor_page = await cursor.read()
+next_cursor_page = await cursor.read()
+await cursor.close()
+
 # Get a specific result by index
 specific_customer = await Customer.find(Customer.age >= 25).get_item(5)
 
@@ -884,6 +891,7 @@ Notes:
 - Omit conditions by not appending them; the resulting `find(*conditions)` only includes what you provided.
 - Conditions passed separately to `find()` are ANDed together. Use `|` (OR) or `~(...)` (NOT) to build grouped expressions when needed, then append that single expression.
 - You can paginate with `.page(offset, limit)` or fetch the first match with `.first()`.
+- Use `.iter_cursor(count=...)` when large result sets need RediSearch cursor pagination instead of offset/limit pagination. It returns a cursor object with `.read()`, `.all()`, `.close()`, async iteration, and URL-safe `.token(secret=...)` / `FindQueryCursor.from_token(...)` support for web request handoff.
 - The `.count()` method provides a fast count of matching records without fetching the actual data.
 - The `.aggregate_ct()` method should be used for accurate counting in complex query scenarios with nested conditions, though it may be slower than `.count()` and has a bug when multiple find commands point to the same record (They are counted twice).
 
