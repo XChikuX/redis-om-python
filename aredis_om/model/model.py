@@ -915,6 +915,13 @@ class FindQueryCursor:
         return self.cursor_id == 0 and not self._buffer
 
     def token(self, secret: Optional[Union[str, bytes]] = None) -> str:
+        """Serialize cursor state into a URL-safe token.
+
+        Pass a secret in web applications so the token is signed and cannot be
+        tampered with by clients. Unsigned tokens are intended for trusted
+        server-side handoff only because the cursor id is a Redis server-side
+        resource identifier.
+        """
         payload = {
             "index_name": self.index_name,
             "cursor_id": self.cursor_id,
@@ -986,9 +993,14 @@ class FindQueryCursor:
             self.count,
         )
         aggregate_result, self.cursor_id = self._split_cursor_result(raw_result)
-        return await self._models_from_aggregate_result(aggregate_result)
+        return await self._models_from_aggregate_result(self.model, aggregate_result)
 
     async def all(self) -> Sequence["RedisModel"]:
+        """Read every remaining cursor page into memory.
+
+        Prefer page-by-page ``read()`` or async iteration for unbounded result
+        sets.
+        """
         results: List["RedisModel"] = []
         while True:
             page = await self.read()
@@ -1037,16 +1049,17 @@ class FindQueryCursor:
         key_prefix = model.make_key(model._meta.primary_key_pattern.format(pk=""))
         return remove_prefix(key, key_prefix)
 
+    @classmethod
     async def _models_from_aggregate_result(
-        self, aggregate_result: Any
+        cls, model: Type["RedisModel"], aggregate_result: Any
     ) -> Sequence["RedisModel"]:
         rows = aggregate_result[1:] if aggregate_result else []
         pks = []
         for row in rows:
-            key = self._extract_key(row)
+            key = cls._extract_key(row)
             if key is not None:
-                pks.append(self._pk_from_redis_key(self.model, key))
-        return await self.model.get_many(pks)
+                pks.append(cls._pk_from_redis_key(model, key))
+        return await model.get_many(pks)
 
 
 class FindQuery:
@@ -1872,6 +1885,12 @@ class FindQuery:
     async def iter_cursor(
         self, count: int = DEFAULT_PAGE_SIZE, max_idle: Optional[int] = None
     ) -> FindQueryCursor:
+        """Create a RediSearch cursor for this query.
+
+        ``count`` controls the page size returned by each cursor read.
+        ``max_idle`` is passed to RediSearch as WITHCURSOR MAXIDLE and is
+        measured in milliseconds.
+        """
         if count < 1:
             raise ValueError("Cursor count must be greater than zero.")
         if not await has_redisearch(self.model.db()):
@@ -1905,12 +1924,9 @@ class FindQuery:
 
         raw_result = await self.model.db().execute_command(*args)
         aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(raw_result)
-        results = await FindQueryCursor(
-            model=self.model,
-            index_name=index_name,
-            cursor_id=cursor_id,
-            count=count,
-        )._models_from_aggregate_result(aggregate_result)
+        results = await FindQueryCursor._models_from_aggregate_result(
+            self.model, aggregate_result
+        )
         return FindQueryCursor(
             model=self.model,
             index_name=index_name,
