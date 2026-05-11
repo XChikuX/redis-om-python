@@ -5,7 +5,7 @@ Object mapping library for Redis built on Pydantic v2, using Redis Search and Re
 ## External research conventions
 
 - When project documentation lookup is needed, use Context7 if available.
-- When web search is needed, use one search call at a time to avoid rate limits.
+- When web search is needed, use one search call at a time to avoid rate limits. (`brave-web-search`)
 
 ## Current repository facts
 
