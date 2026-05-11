@@ -112,6 +112,8 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - `FindQuery.query`, `FindQuery.expression`, and `FindQuery.pagination` cache rendered query fragments on the instance.
 - RediSearch values are escaped through `TokenEscaper` before interpolation into query strings.
 - KNN query parameters use RediSearch `PARAMS`; non-wildcard filters are wrapped before appending KNN syntax.
+- `FindQuery.iter_cursor()` uses `FT.AGGREGATE WITHCURSOR`, loads `__key`, and fetches models by primary key so cursor pages reuse normal model hydration.
+- `FindQueryCursor.token(secret=...)` produces URL-safe cursor tokens; signed tokens should be preferred for web handoff and restored with `FindQueryCursor.from_token(...)`.
 
 ### Bulk fetch and pipeline support
 
@@ -135,6 +137,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - Custom TAG field separators.
 - Embedded model query prefix isolation.
 - KNN + OR query syntax wrapping.
+- RediSearch cursor pagination through `FindQuery.iter_cursor()` and `FindQueryCursor`.
 - Pydantic v2 / strawberry GraphQL `ExpressionProxy` primary-key stripping.
 
 ## Embedded model primary-key behavior

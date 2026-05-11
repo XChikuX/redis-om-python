@@ -820,6 +820,36 @@ async def test_paginate_query(members, m):
 
 
 @py_test_mark_asyncio
+async def test_iter_cursor_pages_hash_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+
+    assert cursor.total == 3
+    assert await cursor.read() == [member2]
+    assert await cursor.read() == [member1]
+    assert await cursor.read() == [member3]
+    assert await cursor.read() == []
+    assert cursor.exhausted
+
+
+@py_test_mark_asyncio
+async def test_iter_cursor_token_round_trip(members, m):
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+
+    token = cursor.token(secret="test-secret")
+    resumed_cursor = type(cursor).from_token(m.Member, token, secret="test-secret")
+
+    assert resumed_cursor.index_name == cursor.index_name
+    assert resumed_cursor.cursor_id == cursor.cursor_id
+    assert resumed_cursor.count == cursor.count
+    with pytest.raises(ValueError):
+        type(cursor).from_token(m.Member, token, secret="wrong-secret")
+
+    await cursor.close()
+
+
+@py_test_mark_asyncio
 async def test_access_result_by_index_cached(members, m):
     member1, member2, member3 = members
     query = m.Member.find().sort_by("age")

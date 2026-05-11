@@ -496,6 +496,21 @@ async def test_paginate_query(members, m):
 
 
 @py_test_mark_asyncio
+async def test_iter_cursor_iterates_json_results(members, m):
+    member1, member2, member3 = members
+
+    cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
+    actual = []
+
+    async for member in cursor:
+        actual.append(member)
+
+    assert cursor.total == 3
+    assert actual == [member2, member1, member3]
+    assert cursor.exhausted
+
+
+@py_test_mark_asyncio
 async def test_access_result_by_index_cached(members, m):
     member1, member2, member3 = members
     query = m.Member.find().sort_by("age")
