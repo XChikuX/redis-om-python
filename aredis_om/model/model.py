@@ -982,7 +982,7 @@ class FindQueryCursor:
         return await self._models_from_aggregate_result(aggregate_result)
 
     async def all(self) -> Sequence["RedisModel"]:
-        results = []
+        results: List["RedisModel"] = []
         while True:
             page = await self.read()
             if not page:
@@ -1877,9 +1877,10 @@ class FindQuery:
             await self.model.check_index_health()
             self.model._meta.index_health_checked = True
 
+        index_name = str(self.model.Meta.index_name)
         args: List[Union[str, bytes]] = [
             "FT.AGGREGATE",
-            self.model.Meta.index_name,
+            index_name,
             self.query,
             "LOAD",
             "1",
@@ -1904,13 +1905,13 @@ class FindQuery:
         aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(raw_result)
         results = await FindQueryCursor(
             model=self.model,
-            index_name=self.model.Meta.index_name,
+            index_name=index_name,
             cursor_id=cursor_id,
             count=count,
         )._models_from_aggregate_result(aggregate_result)
         return FindQueryCursor(
             model=self.model,
-            index_name=self.model.Meta.index_name,
+            index_name=index_name,
             cursor_id=cursor_id,
             count=count,
             results=results,
