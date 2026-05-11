@@ -15,6 +15,7 @@ import pytest_asyncio
 from aredis_om import (
     Coordinates,
     Field,
+    FindQueryCursor,
     GeoFilter,
     HashModel,
     Migrator,
@@ -837,13 +838,13 @@ async def test_iter_cursor_token_round_trip(members, m):
     cursor = await m.Member.find().sort_by("age").iter_cursor(count=1)
 
     token = cursor.token(secret="test-secret")
-    resumed_cursor = type(cursor).from_token(m.Member, token, secret="test-secret")
+    resumed_cursor = FindQueryCursor.from_token(m.Member, token, secret="test-secret")
 
     assert resumed_cursor.index_name == cursor.index_name
     assert resumed_cursor.cursor_id == cursor.cursor_id
     assert resumed_cursor.count == cursor.count
     with pytest.raises(ValueError):
-        type(cursor).from_token(m.Member, token, secret="wrong-secret")
+        FindQueryCursor.from_token(m.Member, token, secret="wrong-secret")
 
     await cursor.close()
 
