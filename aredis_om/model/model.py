@@ -895,7 +895,7 @@ class FindQueryCursor:
     ):
         self.model = model
         self.index_name = index_name
-        self.cursor_id = int(cursor_id)
+        self.cursor_id = cursor_id
         self.count = count
         self.total = total
         self._buffer: List["RedisModel"] = list(results or [])
@@ -939,11 +939,15 @@ class FindQueryCursor:
         parts = token.split(".")
         if secret is None:
             if len(parts) != 1:
-                raise ValueError("Signed cursor token requires a secret.")
+                raise ValueError(
+                    "Token appears to be signed but no secret was provided."
+                )
             body = parts[0]
         else:
             if len(parts) != 2:
-                raise ValueError("Cursor token is not signed.")
+                raise ValueError(
+                    "Invalid cursor token format: expected unsigned or signed token."
+                )
             body, signature = parts
             secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
             expected = hmac.new(
@@ -955,7 +959,10 @@ class FindQueryCursor:
 
         payload = json.loads(_urlsafe_b64decode(body).decode("utf-8"))
         if payload["index_name"] != model.Meta.index_name:
-            raise ValueError("Cursor token does not belong to this model index.")
+            raise ValueError(
+                "Cursor token index mismatch: expected "
+                f"{model.Meta.index_name}, got {payload['index_name']}."
+            )
         return cls(
             model=model,
             index_name=payload["index_name"],
@@ -1891,12 +1898,7 @@ class FindQuery:
         if self.query_params:
             args += ["PARAMS", str(len(self.query_params))] + self.query_params
         if self.knn:
-            if "DIALECT" not in args:
-                args += ["DIALECT", "2"]
-            else:
-                i_dialect = args.index("DIALECT") + 1
-                if int(args[i_dialect]) < 2:
-                    args[i_dialect] = "2"
+            args += ["DIALECT", "2"]
         args += ["WITHCURSOR", "COUNT", str(count)]
         if max_idle is not None:
             args += ["MAXIDLE", str(max_idle)]

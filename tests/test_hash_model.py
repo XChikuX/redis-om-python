@@ -843,7 +843,7 @@ async def test_iter_cursor_token_round_trip(members, m):
     assert resumed_cursor.index_name == cursor.index_name
     assert resumed_cursor.cursor_id == cursor.cursor_id
     assert resumed_cursor.count == cursor.count
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="signature is invalid"):
         FindQueryCursor.from_token(m.Member, token, secret="wrong-secret")
 
     await cursor.close()
