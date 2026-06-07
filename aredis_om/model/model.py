@@ -3453,7 +3453,7 @@ class JsonModel(RedisModel, abc.ABC):
 
         The field path uses the same ``__`` nested-field syntax as
         ``update()`` (e.g. ``"address__city"`` or ``"orders__items__name"``).
-        A raw JSONPath string (one starting with ``"$"`` or ``"."``) is also
+        A raw enhanced JSONPath string (one starting with ``"$"``) is also
         accepted and passed through unchanged; in that case no type
         information is resolved.
 
@@ -3463,13 +3463,13 @@ class JsonModel(RedisModel, abc.ABC):
         descends into one or more arrays (in which case multiple values may be
         returned).
         """
-        # Allow callers to pass a raw JSONPath directly (anything starting with
-        # "$" or "."). Model field names never start with those characters, so
-        # this prefix check unambiguously separates raw paths from "__" paths.
-        # For a raw path we can't infer the Python type, so values are returned
-        # as-is. We treat the path as multi-valued only when it contains a "[*]"
+        # Allow callers to pass a raw enhanced JSONPath directly (anything
+        # starting with "$"). Model field names never start with "$", so this
+        # prefix check unambiguously separates raw paths from "__" paths. For a
+        # raw path we can't infer the Python type, so values are returned as-is.
+        # We treat the path as multi-valued only when it contains a "[*]"
         # wildcard; callers needing other shapes can use ``raw=True``.
-        if field_path.startswith("$") or field_path.startswith("."):
+        if field_path.startswith("$"):
             return field_path, None, "[*]" in field_path
 
         parts = field_path.split("__")
@@ -3575,7 +3575,8 @@ class JsonModel(RedisModel, abc.ABC):
                 return None
             return converted[0]
 
-        # Legacy JSONPath (e.g. ".address.city") returns the value directly.
+        # Defensive fallback: enhanced ($) JSONPath always yields a list, but
+        # if a client/path returns a scalar directly we convert and return it.
         return cls._convert_sub_value(result, value_type)
 
     @classmethod
