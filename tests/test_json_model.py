@@ -2027,3 +2027,191 @@ def test_embedded_list_pk_exclusion():
     dumped = container.model_dump()
     for item in dumped["items"]:
         assert "pk" not in item
+
+
+@pytest_asyncio.fixture()
+async def member_with_orders(address, m):
+    """A saved Member that includes nested embedded models and lists, plus a
+    note with a datetime, used to exercise sub-value retrieval."""
+    note = m.Note(
+        description="A note", created_on=datetime.datetime(2021, 5, 1, 12, 0, 0)
+    )
+    address_with_note = m.Address(
+        address_line_1="1 Main St.",
+        city="Portland",
+        state="OR",
+        country="USA",
+        postal_code="11111",
+        note=note,
+    )
+    member = m.Member(
+        first_name="Andrew",
+        last_name="Brookins",
+        email="a@example.com",
+        age=38,
+        join_date=today,
+        address=address_with_note,
+        orders=[
+            m.Order(
+                items=[m.Item(price=decimal.Decimal("1.5"), name="item-a")],
+                created_on=datetime.datetime(2022, 1, 1, 0, 0, 0),
+            ),
+            m.Order(
+                items=[m.Item(price=decimal.Decimal("2.5"), name="item-b")],
+                created_on=datetime.datetime(2022, 2, 1, 0, 0, 0),
+            ),
+        ],
+    )
+    await member.save()
+    yield member
+
+
+# ---------------------------------------------------------------------------
+# JSON sub-value retrieval (JsonModel.get_value)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_field_path_builds_targeted_jsonpath(m):
+    # A simple scalar nested in an embedded model.
+    path, _, crosses = m.Member._resolve_field_path("address__city")
+    assert path == "$.address.city"
+    assert crosses is False
+
+    # A top-level scalar.
+    path, _, crosses = m.Member._resolve_field_path("first_name")
+    assert path == "$.first_name"
+    assert crosses is False
+
+    # A scalar reached by descending through one or more lists.
+    path, _, crosses = m.Member._resolve_field_path("orders__items__name")
+    assert path == "$.orders[*].items[*].name"
+    assert crosses is True
+
+    # A raw JSONPath is passed through unchanged.
+    path, value_type, crosses = m.Member._resolve_field_path("$.address.city")
+    assert path == "$.address.city"
+    assert value_type is None
+    assert crosses is False
+
+
+@py_test_mark_asyncio
+async def test_get_value_scalar(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "address__city")
+    assert value == "Portland"
+
+
+@py_test_mark_asyncio
+async def test_get_value_top_level_scalar(member_with_orders, m):
+    assert await m.Member.get_value(member_with_orders.pk, "first_name") == "Andrew"
+    assert await m.Member.get_value(member_with_orders.pk, "age") == 38
+
+
+@py_test_mark_asyncio
+async def test_get_value_converts_date(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "join_date")
+    assert value == today
+    assert isinstance(value, datetime.date)
+
+
+@py_test_mark_asyncio
+async def test_get_value_converts_nested_datetime(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "address__note__created_on")
+    assert value == datetime.datetime(2021, 5, 1, 12, 0, 0)
+    assert isinstance(value, datetime.datetime)
+
+
+@py_test_mark_asyncio
+async def test_get_value_embedded_model_returns_dict(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "address")
+    assert value["city"] == "Portland"
+    # Nested datetimes within the embedded model are converted too.
+    assert value["note"]["created_on"] == datetime.datetime(2021, 5, 1, 12, 0, 0)
+
+
+@py_test_mark_asyncio
+async def test_get_value_list_path_returns_list(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "orders__created_on")
+    assert value == [
+        datetime.datetime(2022, 1, 1, 0, 0, 0),
+        datetime.datetime(2022, 2, 1, 0, 0, 0),
+    ]
+
+
+@py_test_mark_asyncio
+async def test_get_value_nested_list_path_returns_flattened_list(member_with_orders, m):
+    value = await m.Member.get_value(member_with_orders.pk, "orders__items__name")
+    assert value == ["item-a", "item-b"]
+
+
+@py_test_mark_asyncio
+async def test_get_value_raw_jsonpath(member_with_orders, m):
+    assert (
+        await m.Member.get_value(member_with_orders.pk, "$.address.city") == "Portland"
+    )
+
+
+@py_test_mark_asyncio
+async def test_get_value_raw_flag_returns_unwrapped_list(member_with_orders, m):
+    # With raw=True we get back exactly what Redis returns: a list of matches
+    # for the enhanced JSONPath, with no conversion or unwrapping.
+    assert await m.Member.get_value(
+        member_with_orders.pk, "address__city", raw=True
+    ) == ["Portland"]
+
+
+@py_test_mark_asyncio
+async def test_get_value_missing_optional_scalar_returns_none(address, m):
+    member = m.Member(
+        first_name="Kim",
+        last_name="Brookins",
+        join_date=today,
+        address=address,
+    )
+    await member.save()
+    assert await m.Member.get_value(member.pk, "age") is None
+
+
+@py_test_mark_asyncio
+async def test_get_value_missing_list_returns_empty_list(address, m):
+    member = m.Member(
+        first_name="Kim",
+        last_name="Brookins",
+        join_date=today,
+        address=address,
+    )
+    await member.save()
+    assert await m.Member.get_value(member.pk, "orders__created_on") == []
+
+
+@py_test_mark_asyncio
+async def test_get_value_not_found_raises(m):
+    with pytest.raises(NotFoundError):
+        await m.Member.get_value("does-not-exist", "address__city")
+
+
+@py_test_mark_asyncio
+async def test_get_value_invalid_field_raises(member_with_orders, m):
+    with pytest.raises(QuerySyntaxError):
+        await m.Member.get_value(member_with_orders.pk, "address__nonexistent")
+
+
+@py_test_mark_asyncio
+async def test_get_value_descend_into_non_model_raises(member_with_orders, m):
+    with pytest.raises(QuerySyntaxError):
+        # first_name is a string, not an embedded model.
+        await m.Member.get_value(member_with_orders.pk, "first_name__foo")
+
+
+@py_test_mark_asyncio
+async def test_get_value_converts_bytes(key_prefix, redis):
+    class BaseModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class Blob(BaseModel):
+        payload: bytes
+
+    await Migrator().run()
+    blob = Blob(payload=b"\x00\x01\x02binary")
+    await blob.save()
+    assert await Blob.get_value(blob.pk, "payload") == b"\x00\x01\x02binary"

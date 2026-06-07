@@ -231,6 +231,71 @@ print(andrew.bio)  # <- So we got the default value.
 
 The model will then save this default value to Redis the next time you call `save()`.
 
+## Retrieving Sub-Values of a JsonModel
+
+`JsonModel` stores each model as a JSON document in Redis. When you only need a
+single field (or a nested field) you can retrieve just that sub-value with
+`get_value()`, instead of loading and deserializing the whole document. This
+maps directly to the Redis JSON [`JSON.GET key <path>`](https://redis.io/docs/latest/develop/data-types/json/)
+command and is more efficient for large documents.
+
+```python
+import datetime
+from typing import List, Optional
+
+from redis_om import EmbeddedJsonModel, JsonModel
+
+
+class Order(EmbeddedJsonModel):
+    name: str
+    created_on: datetime.datetime
+
+
+class Address(EmbeddedJsonModel):
+    city: str
+    postal_code: str
+
+
+class Customer(JsonModel):
+    first_name: str
+    join_date: datetime.date
+    address: Address
+    orders: Optional[List[Order]] = None
+
+
+customer = Customer(
+    first_name="Andrew",
+    join_date=datetime.date.today(),
+    address=Address(city="Portland", postal_code="11111"),
+    orders=[
+        Order(name="Coffee", created_on=datetime.datetime(2022, 1, 1)),
+        Order(name="Tea", created_on=datetime.datetime(2022, 2, 1)),
+    ],
+)
+await customer.save()
+
+# Retrieve a single nested field without loading the whole document.
+await Customer.get_value(customer.pk, "address__city")
+# > 'Portland'
+
+# Types are converted just like a full `get()` — here, back to a `date`.
+await Customer.get_value(customer.pk, "join_date")
+# > datetime.date(...)
+
+# Paths that descend into a list return a list of every match.
+await Customer.get_value(customer.pk, "orders__name")
+# > ['Coffee', 'Tea']
+```
+
+`get_value()` accepts either a nested field path using the `__` separator (the
+same syntax used by `update()`), or a raw JSONPath string starting with `$`. It
+raises `NotFoundError` if no document exists for the given primary key. Pass
+`raw=True` to receive the value(s) exactly as Redis returns them, skipping type
+conversion.
+
+> NOTE: `get_value()` is available on `JsonModel` only, because `HashModel`
+> stores flat Redis hashes rather than JSON documents.
+
 ## Marking a Field as Indexed
 
 If you're using the RediSearch module in your Redis instance, you can mark a field as "indexed." As soon as you mark any field in a model as indexed, Redis OM will automatically create and manage an secondary index for the model for you, allowing you to query on any indexed field.

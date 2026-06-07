@@ -122,6 +122,10 @@ Additional upstream fixes already present here include:
   instead of `Optional[str]` (upstream Pydantic v2 compat)
 - Missing pk backfill on HashModel reload — when a stored model's pk is
   absent from Redis, the model identity is preserved via backfill
+- JsonModel sub-value retrieval — `JsonModel.get_value(pk, "address__city")`
+  fetches a single (possibly nested) field via `JSON.GET key <jsonpath>`
+  without loading the whole document, with full type conversion; covered by
+  `tests/test_json_model.py`
 
 For a deeper security and performance critique of this fork, see
 [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md). The

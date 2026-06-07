@@ -255,6 +255,23 @@ def has_model_field_mapping(model: Any) -> bool:
     return hasattr(model, "model_fields")
 
 
+# Internal key used to reuse the document-level type converters
+# (``convert_timestamp_to_datetime`` / ``convert_base64_to_bytes``) when
+# deserializing a single sub-value retrieved via ``JsonModel.get_value()``.
+_SUB_VALUE_KEY = "__redis_om_sub_value__"
+
+
+class _SubValueField:
+    """Lightweight stand-in for a Pydantic field that only carries the
+    annotation, so the existing dict-based type converters can be reused to
+    deserialize an individual JSON sub-value."""
+
+    __slots__ = ("annotation",)
+
+    def __init__(self, annotation: Any) -> None:
+        self.annotation = annotation
+
+
 def is_model_field_instance(value: Any) -> bool:
     """Detect both legacy and compatibility ModelField-like objects."""
     return hasattr(value, "name") and hasattr(value, "field_info")
@@ -3428,6 +3445,130 @@ class JsonModel(RedisModel, abc.ABC):
             document_data = restore_missing_pk(cls, document_data, requested_pk)
             models.append(validate_model_data(cls, document_data))
         return models
+
+    @classmethod
+    def _resolve_field_path(cls, field_path: str) -> Tuple[str, Any, bool]:
+        """Translate a model field path into a JSONPath expression plus the
+        metadata needed to deserialize the retrieved sub-value(s).
+
+        The field path uses the same ``__`` nested-field syntax as
+        ``update()`` (e.g. ``"address__city"`` or ``"orders__items__name"``).
+        A raw JSONPath string (one starting with ``"$"`` or ``"."``) is also
+        accepted and passed through unchanged; in that case no type
+        information is resolved.
+
+        Returns a tuple of ``(json_path, value_type, crosses_list)`` where
+        ``value_type`` is the annotation of an individual returned value (used
+        for type conversion) and ``crosses_list`` indicates whether the path
+        descends into one or more arrays (in which case multiple values may be
+        returned).
+        """
+        # Allow callers to pass a raw JSONPath directly. We can't infer the
+        # Python type for an arbitrary path, so we return the values as-is.
+        if field_path.startswith("$") or field_path.startswith("."):
+            return field_path, None, "[*]" in field_path
+
+        parts = field_path.split("__")
+        current_model: Any = cls
+        json_path = "$"
+        crosses_list = False
+        value_type: Any = None
+
+        for index, part in enumerate(parts):
+            model_fields = get_model_fields(current_model)
+            if part not in model_fields:
+                raise QuerySyntaxError(
+                    f"The field path '{field_path}' contains a field that does "
+                    f"not exist on {cls.__name__}. The field is: {part}"
+                )
+            field = model_fields[part]
+            outer_type = get_outer_type(field)
+            is_last = index == len(parts) - 1
+
+            if is_supported_container_type(outer_type):
+                inner_args = get_args(outer_type)
+                inner_type = inner_args[0] if inner_args else None
+                json_path += f".{part}[*]"
+                crosses_list = True
+                current_model = inner_type
+                if is_last:
+                    value_type = inner_type
+            else:
+                json_path += f".{part}"
+                current_model = outer_type
+                if is_last:
+                    value_type = outer_type
+                elif not has_model_field_mapping(outer_type):
+                    raise QuerySyntaxError(
+                        f"The field path '{field_path}' tries to descend into "
+                        f"'{part}', which is not an embedded model on "
+                        f"{cls.__name__}."
+                    )
+
+        return json_path, value_type, crosses_list
+
+    @classmethod
+    def _convert_sub_value(cls, value: Any, value_type: Any) -> Any:
+        """Deserialize a single JSON sub-value into the appropriate Python
+        type (datetime/date, bytes, nested models) based on ``value_type``."""
+        if value_type is None or value is None:
+            return value
+        fields: Mapping[str, Any] = {_SUB_VALUE_KEY: _SubValueField(value_type)}
+        wrapper = convert_timestamp_to_datetime({_SUB_VALUE_KEY: value}, fields)
+        wrapper = convert_base64_to_bytes(wrapper, fields)
+        return wrapper[_SUB_VALUE_KEY]
+
+    @classmethod
+    async def get_value(cls, pk: Any, field_path: str, *, raw: bool = False) -> Any:
+        """Retrieve a sub-value of a stored JSON document using a JSONPath,
+        without loading and deserializing the entire document.
+
+        This implements the Redis JSON "retrieve a sub-value" pattern
+        (``JSON.GET key <jsonpath>``), which is more efficient than fetching
+        the whole document when you only need one field.
+
+        Args:
+            pk: The primary key of the document.
+            field_path: A nested model field path using ``__`` as the
+                separator (e.g. ``"address__city"``), or a raw JSONPath string
+                starting with ``"$"``.
+            raw: When ``True``, return the value(s) exactly as Redis returns
+                them, skipping type conversion and single-value unwrapping.
+
+        Returns:
+            The resolved sub-value. For a path that does not descend into an
+            array, a single value is returned (or ``None`` if the path matches
+            nothing). For a path that descends into one or more arrays, a list
+            of matching values is returned.
+
+        Raises:
+            NotFoundError: If no document exists for ``pk``.
+            QuerySyntaxError: If ``field_path`` references a field that does
+                not exist on the model.
+        """
+        json_path, value_type, crosses_list = cls._resolve_field_path(field_path)
+        key = cls.make_key(pk)
+        result = await cls.db().json().get(key, json_path)
+
+        # ``JSON.GET`` returns nil (None) only when the key itself is missing.
+        # A path that exists but matches nothing yields an empty list under
+        # enhanced ($) JSONPath syntax.
+        if result is None:
+            raise NotFoundError
+
+        if raw:
+            return result
+
+        if isinstance(result, list):
+            converted = [cls._convert_sub_value(item, value_type) for item in result]
+            if crosses_list:
+                return converted
+            if not converted:
+                return None
+            return converted[0]
+
+        # Legacy JSONPath (e.g. ".address.city") returns the value directly.
+        return cls._convert_sub_value(result, value_type)
 
     @classmethod
     def redisearch_schema(cls):
