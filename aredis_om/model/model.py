@@ -3463,8 +3463,12 @@ class JsonModel(RedisModel, abc.ABC):
         descends into one or more arrays (in which case multiple values may be
         returned).
         """
-        # Allow callers to pass a raw JSONPath directly. We can't infer the
-        # Python type for an arbitrary path, so we return the values as-is.
+        # Allow callers to pass a raw JSONPath directly (anything starting with
+        # "$" or "."). Model field names never start with those characters, so
+        # this prefix check unambiguously separates raw paths from "__" paths.
+        # For a raw path we can't infer the Python type, so values are returned
+        # as-is. We treat the path as multi-valued only when it contains a "[*]"
+        # wildcard; callers needing other shapes can use ``raw=True``.
         if field_path.startswith("$") or field_path.startswith("."):
             return field_path, None, "[*]" in field_path
 
@@ -3563,6 +3567,10 @@ class JsonModel(RedisModel, abc.ABC):
             converted = [cls._convert_sub_value(item, value_type) for item in result]
             if crosses_list:
                 return converted
+            # A non-array path matches at most one value under enhanced ($)
+            # JSONPath syntax. An empty list means the field exists in the
+            # schema but is null/absent in this document, so we surface that as
+            # a single ``None`` rather than an empty list.
             if not converted:
                 return None
             return converted[0]

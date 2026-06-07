@@ -2215,3 +2215,32 @@ async def test_get_value_converts_bytes(key_prefix, redis):
     blob = Blob(payload=b"\x00\x01\x02binary")
     await blob.save()
     assert await Blob.get_value(blob.pk, "payload") == b"\x00\x01\x02binary"
+
+
+@py_test_mark_asyncio
+async def test_get_value_requests_only_the_subpath(member_with_orders, m):
+    """get_value must fetch only the targeted JSONPath via JSON.GET, not the
+    whole document at "$"."""
+    conn = m.Member.db()
+    original_json = conn.json
+    captured_paths = []
+
+    def spy_json(*args, **kwargs):
+        client = original_json(*args, **kwargs)
+        original_get = client.get
+
+        def get(name, *get_args, **get_kwargs):
+            captured_paths.append(list(get_args))
+            return original_get(name, *get_args, **get_kwargs)
+
+        client.get = get
+        return client
+
+    with mock.patch.object(conn, "json", spy_json):
+        value = await m.Member.get_value(member_with_orders.pk, "address__city")
+
+    assert value == "Portland"
+    # The targeted JSONPath was passed to JSON.GET; the whole document ("$")
+    # was never requested.
+    assert ["$.address.city"] in captured_paths
+    assert ["$"] not in captured_paths
