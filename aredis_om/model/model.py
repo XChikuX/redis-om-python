@@ -33,15 +33,13 @@ from typing import (
     Union,
 )
 from typing import get_args as typing_get_args
-from typing import (
-    no_type_check,
-)
+from typing import no_type_check
 
 from more_itertools import ichunked
 from pydantic import ConfigDict, model_validator
 from redis.commands.json.path import Path
 from redis.exceptions import ResponseError
-from typing_extensions import Annotated, Protocol, get_args, get_origin
+from typing_extensions import Annotated, Protocol, TypeGuard, get_args, get_origin
 from ulid import ULID
 
 from .. import redis
@@ -272,7 +270,7 @@ class _SubValueField:
         self.annotation = annotation
 
 
-def is_model_field_instance(value: Any) -> bool:
+def is_model_field_instance(value: Any) -> TypeGuard[ModelField]:
     """Detect both legacy and compatibility ModelField-like objects."""
     return hasattr(value, "name") and hasattr(value, "field_info")
 
@@ -521,12 +519,12 @@ class ExpressionProxy:
         self.field = field
         self.parents = parents.copy()
 
-    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]
+    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         return Expression(
             left=self.field, op=Operators.EQ, right=other, parents=self.parents
         )
 
-    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]
+    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         return Expression(
             left=self.field, op=Operators.NE, right=other, parents=self.parents
         )
@@ -1779,7 +1777,7 @@ class FindQuery:
     async def execute(
         self, exhaust_results=True, return_raw_result=False, return_query_args=False
     ):
-        args: List[Union[str, bytes]] = [
+        args: List[Union[str, bytes]] = [  # type: ignore
             "FT.SEARCH",
             self.model.Meta.index_name,
             self.query,
@@ -2086,7 +2084,7 @@ def __dataclass_transform__(
     return lambda a: a
 
 
-class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]
+class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]  # ty: ignore[subclass-of-final-class]
     def __init__(self, default: Any = Undefined, **kwargs: Any) -> None:
         primary_key = kwargs.pop("primary_key", False)
         sortable = kwargs.pop("sortable", Undefined)
@@ -2361,6 +2359,9 @@ class BaseMeta(Protocol):
     encoding: str
     default_ttl: Optional[int]
     index_health_checked: bool
+    # Bookkeeping for lazy database resolution; not part of the public API.
+    _database_generated: bool
+    _database_loop: Optional[asyncio.AbstractEventLoop]
 
 
 @dataclasses.dataclass
@@ -2392,7 +2393,11 @@ class ModelMeta(ModelMetaclass):
 
     def __new__(cls, name, bases, attrs, **kwargs):  # noqa C901
         meta = attrs.pop("Meta", None)
-        new_class = super().__new__(cls, name, bases, attrs, **kwargs)
+        new_class: Any = super().__new__(cls, name, bases, attrs, **kwargs)
+        # `super().__new__` is typed as returning `type`, but this class is
+        # constructed by `ModelMeta`, which attaches `_meta`, `Meta`, and
+        # pydantic internals dynamically. The local annotation above widens
+        # it to `Any` so attribute access inside this method type-checks.
 
         # The fact that there is a Meta field and _meta field is important: a
         # user may have given us a Meta object with their configuration, while
@@ -2551,6 +2556,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     pk: Optional[str] = Field(default=None, primary_key=True)
 
     Meta = DefaultMeta
+    # Populated by ``ModelMeta.__new__``; declared here so attribute access on
+    # instances and subclasses resolves to ``BaseMeta`` for static analysis.
+    _meta: ClassVar[BaseMeta]
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         from_attributes=True,
@@ -2809,9 +2817,11 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             (index_errors, "indexing failures"),
             (info, "indexing failures"),
         ):
-            if isinstance(mapping, dict) and mapping.get(key) is not None:
-                indexing_failures = mapping.get(key)
-                break
+            if isinstance(mapping, dict):
+                value = mapping.get(key)
+                if value is not None:
+                    indexing_failures = value
+                    break
 
         try:
             indexing_failures = int(indexing_failures)
@@ -3020,7 +3030,7 @@ class HashModel(RedisModel, abc.ABC):
             for name, field_type in cls.__annotations__.items():
                 origin = get_origin(field_type)
                 for typ in (Set, Mapping, List):
-                    if isinstance(origin, type) and issubclass(origin, typ):
+                    if isinstance(origin, type) and issubclass(origin, typ):  # type: ignore
                         raise RedisModelError(
                             f"HashModels cannot index set, list, "
                             f"or mapping fields. Field: {name}"
@@ -3043,7 +3053,7 @@ class HashModel(RedisModel, abc.ABC):
             origin = get_origin(outer_type)
             if origin:
                 for typ in (Set, Mapping, List):
-                    if isinstance(origin, type) and issubclass(origin, typ):
+                    if isinstance(origin, type) and issubclass(origin, typ):  # type: ignore
                         raise RedisModelError(
                             f"HashModels cannot index set, list, "
                             f"or mapping fields. Field: {name}"
@@ -3615,7 +3625,7 @@ class JsonModel(RedisModel, abc.ABC):
         name: str,
         name_prefix: str,
         typ: Any,
-        field_info: PydanticFieldInfo,
+        field_info: Union[PydanticFieldInfo, ModelField],
         parent_type: Optional[Any] = None,
     ) -> str:
         typ = _unwrap_type_annotation(typ)

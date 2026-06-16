@@ -378,3 +378,112 @@ def test_embedded_model_instantiation_with_stale_pk_in_dict():
     tag = Tag.model_validate(stale)
     assert tag.pk is None
     assert tag.name == "python"
+
+
+@pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@py_test_mark_asyncio
+async def test_migrator_dry_run_does_not_apply_migrations(key_prefix, redis, capsys):
+    """``Migrator.run(dry_run=True)`` prints the plan without executing it."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class DryRunProduct(BaseJsonModel):
+        name: str = Field(index=True)
+
+    migrator = Migrator(conn=redis)
+    await migrator.detect_migrations()
+    assert len(migrator.migrations) >= 1
+
+    await migrator.run(dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "Dry run" in captured.out
+    assert "CREATE" in captured.out
+
+    # Index must not actually exist after a dry run.
+    index_name = DryRunProduct.Meta.index_name
+    try:
+        await redis.ft(index_name).info()
+        pytest.fail("Index should not exist after dry run")
+    except migrator_module.redis.ResponseError:
+        pass
+
+
+@pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@py_test_mark_asyncio
+async def test_migrator_records_history_in_redis(key_prefix, redis):
+    """``Migrator.run()`` appends a JSON record per applied migration."""
+    import json
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class HistoryProduct(BaseJsonModel):
+        name: str = Field(index=True)
+
+    migrator = Migrator(conn=redis)
+    await migrator.run()
+
+    raw = await redis.lrange(migrator_module.MIGRATION_HISTORY_KEY, 0, -1)
+    assert raw, "expected at least one history entry"
+    # Each entry should be valid JSON with the documented fields.
+    record = json.loads(raw[-1])
+    assert record["action"] == "CREATE"
+    assert record["index"] == HistoryProduct.Meta.index_name
+    assert "timestamp" in record
+    assert "hash" in record
+
+
+@pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@py_test_mark_asyncio
+async def test_migrator_record_history_can_be_disabled(key_prefix, redis):
+    """``record_history=False`` skips writing to the history list."""
+    # Snapshot the existing history length so the test is order-independent.
+    before = await redis.llen(migrator_module.MIGRATION_HISTORY_KEY)
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class NoHistoryProduct(BaseJsonModel):
+        name: str = Field(index=True)
+
+    migrator = Migrator(conn=redis)
+    await migrator.run(record_history=False)
+
+    after = await redis.llen(migrator_module.MIGRATION_HISTORY_KEY)
+    assert after == before, "history must not grow when record_history=False"
+
+
+def test_index_migration_summary_and_history_record_shape():
+    """``IndexMigration.summary()`` and ``history_record()`` format."""
+    from aredis_om.model.migrations.migrator import IndexMigration, MigrationAction
+
+    migration = IndexMigration(
+        model_name="m",
+        index_name="idx",
+        schema="SCHEMA",
+        hash="abc",
+        action=MigrationAction.CREATE,
+        conn=None,
+        previous_hash="prev",
+    )
+    summary = migration.summary()
+    assert "CREATE" in summary
+    assert "idx" in summary
+    assert "abc" in summary
+    assert "prev" in summary
+
+    record = migration.history_record()
+    assert record["action"] == "CREATE"
+    assert record["model"] == "m"
+    assert record["index"] == "idx"
+    assert record["hash"] == "abc"
+    assert record["previous_hash"] == "prev"
+    assert "timestamp" in record

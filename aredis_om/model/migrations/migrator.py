@@ -1,18 +1,22 @@
 # mypy: disable-error-code="attr-defined"
 
 import hashlib
+import importlib
+import json
 import logging
+import pkgutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from ... import redis
 
+
 log = logging.getLogger(__name__)
 
-
-import importlib  # noqa: E402
-import pkgutil  # noqa: E402
+# Redis key holding a chronological JSON log of applied migrations.
+MIGRATION_HISTORY_KEY = "redis_om:migration_history"
 
 
 class MigrationError(Exception):
@@ -20,8 +24,12 @@ class MigrationError(Exception):
 
 
 def import_submodules(root_module_name: str):
-    """Import all submodules of a module, recursively."""
-    # TODO: Call this without specifying a module name, to import everything?
+    """Import all submodules of a module, recursively.
+
+    ``pkgutil.walk_packages`` requires a concrete package name to traverse,
+    so a root module name is mandatory. Pass ``module=None`` to ``Migrator``
+    to skip automatic submodule import entirely.
+    """
     root_module = importlib.import_module(root_module_name)
 
     if not hasattr(root_module, "__path__"):
@@ -53,7 +61,7 @@ async def _create_index_cluster(
     exists" errors from nodes that received the index via replication.
     """
     try:
-        await conn.ft(index_name).info()
+        await conn.ft(index_name).info()  # type: ignore
     except redis.ResponseError:
         command = f"ft.create {index_name} {schema}".split()
         try:
@@ -117,9 +125,28 @@ class IndexMigration:
 
     async def drop(self):
         try:
-            await self.conn.ft(self.index_name).dropindex()
+            await self.conn.ft(self.index_name).dropindex()  # type: ignore
         except redis.ResponseError:
             log.info("Index does not exist: %s", self.index_name)
+
+    def summary(self) -> str:
+        """Return a short human-readable description of this migration."""
+        parts = [f"{self.action.name} {self.model_name}", f"index={self.index_name}"]
+        if self.previous_hash is not None:
+            parts.append(f"from={self.previous_hash}")
+        parts.append(f"to={self.hash}")
+        return " ".join(parts)
+
+    def history_record(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable record describing this migration."""
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "model": self.model_name,
+            "index": self.index_name,
+            "action": self.action.name,
+            "hash": self.hash,
+            "previous_hash": self.previous_hash,
+        }
 
 
 class Migrator:
@@ -153,7 +180,7 @@ class Migrator:
             current_hash = hashlib.sha1(schema.encode("utf-8")).hexdigest()  # nosec
 
             try:
-                await conn.ft(cls.Meta.index_name).info()
+                await conn.ft(cls.Meta.index_name).info()  # type: ignore
             except redis.ResponseError:
                 self.migrations.append(
                     IndexMigration(
@@ -167,14 +194,17 @@ class Migrator:
                 )
                 continue
 
-            stored_hash = await conn.get(hash_key)
+            stored_hash = await conn.get(hash_key)  # type: ignore
             if isinstance(stored_hash, bytes):
                 stored_hash = stored_hash.decode("utf-8")
 
             schema_out_of_date = current_hash != stored_hash
 
             if schema_out_of_date:
-                # TODO: Switch out schema with an alias to avoid downtime -- separate migration?
+                # Note: We drop and recreate the index in place. A zero-downtime
+                # variant would swap indexes via FT.ALIASUPDATE, but that needs
+                # dual-write coordination with application code and is left as
+                # future work tracked separately.
                 self.migrations.append(
                     IndexMigration(
                         name,
@@ -198,10 +228,42 @@ class Migrator:
                     )
                 )
 
-    async def run(self):
-        # TODO: Migration history
-        # TODO: Dry run with output
+    async def run(self, dry_run: bool = False, record_history: bool = True):
+        """Execute detected migrations.
+
+        Args:
+            dry_run: When ``True``, print the planned migrations and return
+                without applying any changes.
+            record_history: When ``True`` (default), append a JSON record per
+                applied migration to the Redis list keyed by
+                ``MIGRATION_HISTORY_KEY``. Failures to record history are
+                logged and never abort the migration itself.
+        """
         if not self.migrations:
             await self.detect_migrations()
+
+        if dry_run:
+            if not self.migrations:
+                print("No pending migrations.")
+                return
+            print(f"Dry run: {len(self.migrations)} migration(s) planned:")
+            for migration in self.migrations:
+                print(f"  - {migration.summary()}")
+            return
+
         for migration in self.migrations:
             await migration.run()
+            if record_history:
+                await self._record_history(migration)
+
+    async def _record_history(self, migration: IndexMigration) -> None:
+        """Best-effort append of a migration record to Redis history."""
+        try:
+            payload = json.dumps(migration.history_record())
+            await migration.conn.rpush(MIGRATION_HISTORY_KEY, payload)  # type: ignore
+        except Exception:  # pragma: no cover - history is best effort
+            log.warning(
+                "Failed to record migration history for %s",
+                migration.index_name,
+                exc_info=True,
+            )
