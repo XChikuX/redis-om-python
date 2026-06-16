@@ -31,7 +31,7 @@ def import_submodules(root_module_name: str):
         )
 
     for loader, module_name, is_pkg in pkgutil.walk_packages(
-        root_module.__path__, root_module.__name__ + "."  # type: ignore
+        root_module.__path__, root_module.__name__ + "."
     ):
         importlib.import_module(module_name)
 
@@ -83,8 +83,7 @@ async def create_index(
         await conn.ft(index_name).info()
     except redis.ResponseError:
         await conn.execute_command(f"ft.create {index_name} {schema}")
-        # TODO: remove "type: ignore" when type stubs will be fixed
-        await conn.set(schema_hash_key(index_name), current_hash)  # type: ignore
+        await conn.set(schema_hash_key(index_name), current_hash)
     else:
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
