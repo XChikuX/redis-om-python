@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from ... import redis
 
-
 log = logging.getLogger(__name__)
 
 # Redis key holding a chronological JSON log of applied migrations.
