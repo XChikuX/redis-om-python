@@ -127,6 +127,7 @@ Here is a table of the settings available in the Meta object and what they contr
 | index_name              | The RediSearch index name to use for this model. Only used if at least one of the model's fields are marked as indexable (`index=True`).                                                                                                                    | "{global_key_prefix}:{model_key_prefix}:index"                  |
 | embedded                | Whether or not this model is "embedded." Embedded models are not included in migrations that create and destroy indexes. Instead, their indexed fields are included in the index for the parent model. **Note**: Only `JsonModel` can have embedded models. | False                                                           |
 | encoding                | The default encoding to use for strings. This encoding is given to redis-py at the connection level. In both cases, Redis OM will decode binary strings from Redis using your chosen encoding.                                                  | "utf-8"                                                         |
+| default_ttl             | A default TTL (in seconds) applied to every saved model instance. When set, `save()` automatically calls `EXPIRE` on the Redis key with this value. Can be overridden per-instance by passing `expire=` to the constructor. Use `None` to disable.        | None                                                            |
 ## Configuring Pydantic
 
 Every Redis OM model is also a Pydantic model, so in addition to configuring Redis OM behavior with the Meta object, you can control Pydantic configuration via the `model_config` object within a model class.
@@ -316,6 +317,173 @@ class Customer(HashModel):
 
 In this example, we marked `Customer.last_name` as indexed.
 
+### Indexing Every Field on a Model
+
+The class-level `index=True` flag marks a model as indexed (so that
+migrations create a RediSearch index for it), but it does **not** by itself
+turn every field into an indexed field. You still need to opt each field
+in, either with `Field(index=True)` or by setting a field-level option that
+implies indexing (vector, full-text search, or sortable):
+
+```python
+from redis_om import HashModel, Field
+
+
+class Customer(HashModel, index=True):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+    email: str = Field(index=True)
+    age: int = Field(index=True, sortable=True)
+    bio: str = Field(full_text_search=True)
+```
+
+A field is included in the index when any of the following are true:
+
+* It is marked `Field(index=True)`
+* It has `Field(..., vector_options=...)` (vector fields are always indexed)
+* It has `Field(..., full_text_search=True)`
+* It has `Field(..., sortable=True)`
+
+If you set `Field(index=False)` on a field, that field is excluded from the
+index even when its model class is `index=True`.
+
+### Running Migrations
+
+After defining an indexed model, you must run migrations so that RediSearch
+creates the index:
+
+```python
+from redis_om import Migrator
+Migrator().run()
+```
+
+Or from the command line (after installing redis-om):
+
+```bash
+migrate
+# or, to point at a specific module that contains your models
+migrate --module myapp.models
+# or, to see what migrations *would* run without applying them
+migrate --dry-run
+```
+
+The CLI auto-detects indexed models in the given module and prints the
+migrations it would apply, then prompts for confirmation before running them.
+
+Migrations are idempotent: re-running them is a no-op unless the schema
+changed, in which case the existing index is dropped (your data is preserved)
+and rebuilt. The full migration reference lives in the project README.
+
+## Vector Fields for Similarity Search
+
+Redis OM supports vector fields for similarity search, enabling AI/ML use cases
+like semantic search, recommendation systems, and retrieval-augmented generation
+(RAG). Vector fields are backed by [RediSearch vector indexes][redis-vss-url]
+and work with both `JsonModel` and `HashModel`.
+
+### Defining a Vector Field
+
+Use `Field(..., vector_options=...)` with a `VectorFieldOptions` configuration to
+declare a vector field. The Python type must be a numeric container, typically
+`list[float]`:
+
+```python
+from redis_om import JsonModel, Field, VectorFieldOptions
+
+
+class Document(JsonModel, index=True):
+    title: str = Field(index=True)
+    content: str = Field(full_text_search=True)
+    embedding: list[float] = Field(
+        vector_options=VectorFieldOptions.flat(
+            type=VectorFieldOptions.TYPE.FLOAT32,
+            dimension=384,  # Must match your embedding model's output size
+            distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+        )
+    )
+```
+
+A vector field is automatically added to the RediSearch index, even if you do
+not pass `index=True` explicitly on the field — `vector_options` implies
+indexing.
+
+### Choosing an Algorithm: FLAT vs HNSW
+
+`VectorFieldOptions` offers two algorithms:
+
+**FLAT** — brute-force exact search. Best for smaller datasets (up to ~10K
+vectors) or when recall must be 100%:
+
+```python
+vector_options = VectorFieldOptions.flat(
+    type=VectorFieldOptions.TYPE.FLOAT32,
+    dimension=768,
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+    initial_cap=1000,   # Optional: pre-allocate capacity
+    block_size=1000,    # Optional: tune for batch insertions
+)
+```
+
+**HNSW** — approximate nearest neighbor (ANN) search. Best for larger datasets
+where sub-linear query latency matters:
+
+```python
+vector_options = VectorFieldOptions.hnsw(
+    type=VectorFieldOptions.TYPE.FLOAT32,
+    dimension=768,
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+    m=16,                  # Optional: max outgoing edges per node
+    ef_construction=200,   # Optional: index-time search width
+    ef_runtime=10,         # Optional: query-time search width
+    epsilon=0.01,          # Optional: distance threshold for HNSW
+)
+```
+
+### Distance Metrics
+
+Choose the metric that matches how your embedding model was trained:
+
+| Metric    | Best for                                                         |
+| --------- | ---------------------------------------------------------------- |
+| `COSINE`  | Normalized text embeddings (most common)                         |
+| `L2`      | Euclidean distance — image embeddings, some vision models        |
+| `IP`      | Inner product — when vectors are pre-normalized for dot product  |
+
+### Vector Data Types
+
+- `FLOAT32` — 32-bit floats (most common, default for most models)
+- `FLOAT64` — 64-bit floats (double precision)
+
+### Nested Vector Fields (JsonModel only)
+
+`JsonModel` supports vector fields nested inside a list — useful for storing
+multiple embeddings per record (e.g., one per chunk of a long document):
+
+```python
+from typing import List
+
+class ChunkedDocument(JsonModel, index=True):
+    title: str = Field(index=True)
+    # A list of embeddings, one per chunk
+    chunk_embeddings: List[List[float]] = Field(
+        vector_options=vector_options
+    )
+```
+
+### Verifying Your Schema
+
+After running migrations, you can inspect the generated RediSearch schema:
+
+```python
+print(Document.redisearch_schema())
+# ON JSON PREFIX 1 your-app:Document:index SCHEMA
+#   $.title AS title TAG SEPARATOR |
+#   $.content AS content TAG SEPARATOR | $.content AS content_fts TEXT
+#   $.embedding AS embedding VECTOR FLAT 6 TYPE FLOAT32 DIM 384 DISTANCE_METRIC COSINE
+```
+
+For querying vector fields, see [Vector Similarity Search](getting_started.md#vector-similarity-search) in the Getting Started guide.
+
 To create the indexes for any models that have indexed fields, use the `migrate` CLI command that Redis OM installs in your Python environment.
 
 This command detects any `JsonModel` or `HashModel` instances in your project and does the following for each model that isn't abstract or embedded:
@@ -338,3 +506,7 @@ from redis_om import (
 redis = get_redis_connection()
 Migrator().run()
 ```
+
+<!-- Links -->
+
+[redis-vss-url]: https://redis.io/docs/latest/develop/interact/search-and-query/vectors/

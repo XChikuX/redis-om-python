@@ -107,16 +107,19 @@ async def startup():
 
 ## Testing the app
 
-You should install the app's dependencies first. This app uses Poetry, so you'll want to make sure you have Poetry installed first:
+You should install the app's dependencies first. This example uses [uv](https://docs.astral.sh/uv/) (the same dependency manager used by redis-om-python itself):
 
-    $ pip install poetry
-
-Then install the dependencies:
-
-    $ poetry install
+    $ pip install uv
+    $ uv sync
 
 Next, start the server:
 
+    $ uv run uvicorn --reload main:app
+
+If you prefer Poetry:
+
+    $ pip install poetry
+    $ poetry install
     $ poetry run uvicorn --reload main:app
 
 Then, in another shell, create a customer:

@@ -98,3 +98,31 @@ class Customer(HashModel):
     class Meta:
         database = Redis(port=6378)
 ```
+
+## Redis Cluster
+
+Redis OM also supports connecting to a Redis Cluster. Either pass
+`cluster=True` to `get_redis_connection()` or add `cluster=true` as a query
+parameter to your `REDIS_OM_URL`:
+
+```python
+from redis_om import HashModel, get_redis_connection
+
+
+# Via keyword argument
+redis = get_redis_connection(cluster=True, host="node1", port=6379)
+
+
+# Or via the URL environment variable
+# REDIS_OM_URL=redis://node1:6379,node2:6379,node3:6379/?cluster=true
+class Customer(HashModel):
+    first_name: str
+    last_name: str
+
+    class Meta:
+        database = redis
+```
+
+The `cluster=true` query parameter is consumed by `get_redis_connection()`
+and stripped before the URL is forwarded to `redis.RedisCluster` so it does
+not interfere with cluster initialization.

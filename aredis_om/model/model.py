@@ -2182,6 +2182,29 @@ def _apply_redis_om_field_metadata(target: Any, source: Optional[Any] = None) ->
     return target
 
 
+def should_index_field(field_info: Any) -> bool:
+    """Determine whether a field should be added to the RediSearch index.
+
+    A field is indexed if any of the following are true:
+      * ``index=True``
+      * the field has ``vector_options`` set
+      * the field is marked ``full_text_search=True``
+      * the field is marked ``sortable=True``
+
+    Vector, full-text-search, and sortable fields must always be indexed for
+    RediSearch to support those features, so we index them even when
+    ``index`` is not explicitly set.
+    """
+    _index = getattr(field_info, "index", None)
+
+    index = _index is True
+    vector_options = getattr(field_info, "vector_options", None) is not None
+    full_text_search = getattr(field_info, "full_text_search", None) is True
+    sortable = getattr(field_info, "sortable", None) is True
+
+    return index or vector_options or full_text_search or sortable
+
+
 class RelationshipInfo(Representation):
     def __init__(
         self,
@@ -3230,7 +3253,7 @@ class HashModel(RedisModel, abc.ABC):
                 else:
                     redisearch_field = cls.schema_for_type(name, _type, field_info)
                 schema_parts.append(redisearch_field)
-            elif getattr(field_info, "index", None) is True:
+            elif should_index_field(field_info):
                 schema_parts.append(cls.schema_for_type(name, _type, field_info))
             elif is_subscripted_type:
                 # Ignore subscripted types (usually containers!) that we don't
@@ -3636,7 +3659,7 @@ class JsonModel(RedisModel, abc.ABC):
         parent_type: Optional[Any] = None,
     ) -> str:
         typ = _unwrap_type_annotation(typ)
-        should_index = getattr(field_info, "index", False)
+        should_index = should_index_field(field_info)
         is_container_type = is_supported_container_type(typ)
         parent_is_container_type = is_supported_container_type(parent_type)
         parent_is_model = False

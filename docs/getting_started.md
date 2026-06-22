@@ -89,19 +89,27 @@ The command to start Redis with Docker depends on the image you've chosen to use
 
 ## Installing Redis OM
 
-The recommended way to install Redis OM is with [Poetry](https://python-poetry.org/docs/). You can install Redis OM using Poetry with the following command:
+The recommended way to install Redis OM is with [uv](https://docs.astral.sh/uv/),
+which is what the project itself uses for dependency management and CI:
+
+    $ uv add pyredis-om
+
+If you're using Poetry, the command is:
 
     $ poetry add pyredis-om
 
-If you're using Pipenv, the command is:
+If you're using Pipenv:
 
     $ pipenv install pyredis-om
 
-Finally, you can install Redis OM with `pip` by running the following command:
+Finally, you can install Redis OM with `pip`:
 
     $ pip install pyredis-om
 
-**TIP:** If you aren't using Poetry or Pipenv and are instead installing directly with `pip`, we recommend that you install Redis OM in a virtual environment (AKA, a virtualenv). If you aren't familiar with this concept, see [Dan Bader's video and transcript](https://realpython.com/lessons/creating-virtual-environment/).
+**TIP:** If you aren't using a project manager and are instead installing
+directly with `pip`, we recommend that you install Redis OM in a virtual
+environment (AKA, a virtualenv). If you aren't familiar with this concept, see
+[Dan Bader's video and transcript](https://realpython.com/lessons/creating-virtual-environment/).
 
 
 ## Setting the Redis URL Environment Variable
@@ -309,7 +317,7 @@ andrew = Customer(
     age=38)  # <- Notice, we didn't give a bio!
 
 print(andrew.bio)  # <- So we got the default value.
-# > 'Super Dope'
+# > 'Super dope'
 ```
 
 The model will then save this default value to Redis the next time you call `save()`.
@@ -387,7 +395,7 @@ try:
 except ValidationError as e:
     print(e)
     """
-    pydantic.error_wrappers.ValidationError: 1 validation error for Customer
+    pydantic_core._pydantic_core.ValidationError: 1 validation error for Customer
     join_date
       invalid date format (type=value_error.date)
     """
@@ -420,7 +428,7 @@ andrew = Customer(
 )
 
 print(andrew.join_date)
-# > 2021-11-02
+# > 2020-01-02
 type(andrew.join_date)
 # > datetime.date  # The model parsed the string automatically!
 ```
@@ -469,7 +477,7 @@ try:
 except ValidationError as e:
     print(e)
     """
-    pydantic.error_wrappers.ValidationError: 1 validation error for Customer
+    pydantic_core._pydantic_core.ValidationError: 1 validation error for Customer
     age
       Value is not a valid integer (type=type_error.integer)
     """
@@ -479,22 +487,20 @@ Pydantic doesn't include a `StrictDate` class, but we can create our own. In thi
 
 ```python
 import datetime
+from typing import Annotated, Any
 from typing import Optional
 
-from pydantic import ValidationError
+from pydantic import AfterValidator, ValidationError
 from redis_om import HashModel
 
 
-class StrictDate(datetime.date):
-    @classmethod
-    def __get_validators__(cls) -> 'CallableGenerator':
-        yield cls.validate
+def ensure_date(value: Any) -> datetime.date:
+    if not isinstance(value, datetime.date):
+        raise ValueError("Value must be a datetime.date object")
+    return value
 
-    @classmethod
-    def validate(cls, value: datetime.date, **kwargs) -> datetime.date:
-        if not isinstance(value, datetime.date):
-            raise ValueError("Value must be a datetime.date object")
-        return value
+
+StrictDate = Annotated[datetime.date, AfterValidator(ensure_date)]
 
 
 class Customer(HashModel):
@@ -519,11 +525,15 @@ try:
 except ValidationError as e:
     print(e)
     """
-    pydantic.error_wrappers.ValidationError: 1 validation error for Customer
+    pydantic_core._pydantic_core.ValidationError: 1 validation error for Customer
     join_date
       Value must be a datetime.date object (type=value_error)
     """
 ```
+
+(Note: this example uses Pydantic v2's `Annotated` + `AfterValidator` syntax. If
+you are still on Pydantic v1, use the older `__get_validators__` pattern from
+the Pydantic v1 docs.)
 
 ## Saving Models
 
@@ -561,6 +571,26 @@ We can expire an instance of a model using `expire`, and passing it the number o
 # Expire Andrew in 2 minutes (120 seconds)
 andrew.expire(120)
 ```
+
+### Default TTL for a Model
+
+If you want every saved instance of a model to expire automatically, set
+`default_ttl` on its `Meta` class. Redis OM will call `EXPIRE` on the Redis
+key with this value after every `save()`:
+
+```python
+from redis_om import HashModel
+
+
+class Session(HashModel):
+    user_id: str
+    token: str
+
+    class Meta:
+        default_ttl = 60 * 60  # Sessions expire after 1 hour
+```
+
+Set `default_ttl = None` (the default) to disable auto-expiration.
 
 ## Examining Your Data In Redis
 
@@ -722,6 +752,193 @@ d = Demo(b=True)
 d.save()
 res = Demo.find(Demo.b == True)
 ```
+
+## Vector Similarity Search
+
+Redis OM supports K-nearest-neighbors (KNN) similarity search via
+RediSearch vector indexes, which is useful for semantic search, RAG, and
+recommendation systems. See [Vector Fields for Similarity Search](models.md#vector-fields-for-similarity-search)
+for how to define a vector field; this section covers the query side.
+
+### A Minimal KNN Example
+
+Given a `Document` model with a vector field, you can find the K nearest
+neighbors of a reference vector with `KNNExpression`:
+
+```python
+import struct
+from typing import Optional
+
+from redis_om import (
+    Field,
+    JsonModel,
+    KNNExpression,
+    Migrator,
+    VectorFieldOptions,
+)
+
+
+# A model with a 4-dimensional float32 vector field. In a real application the
+# dimension would match your embedding model (e.g. 384, 768, 1536).
+vector_options = VectorFieldOptions.flat(
+    type=VectorFieldOptions.TYPE.FLOAT32,
+    dimension=4,
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+)
+
+
+class Document(JsonModel, index=True):
+    title: str = Field(index=True)
+    embedding: list[float] = Field(vector_options=vector_options)
+    embeddings_score: Optional[float] = None
+
+
+Migrator().run()
+
+
+def to_bytes(vectors: list[float]) -> bytes:
+    return struct.pack(f"<{len(vectors)}f", *vectors)
+
+
+# Save a document
+await Document(
+    title="How to train your dragon",
+    embedding=[0.1, 0.2, 0.3, 0.4],
+).save()
+
+
+# Build a KNN query
+knn = KNNExpression(
+    k=3,
+    vector_field=Document.embedding,
+    score_field=Document.embeddings_score,
+    reference_vector=to_bytes([0.1, 0.2, 0.3, 0.4]),
+)
+
+results = await Document.find(knn=knn).all()
+for doc in results:
+    print(doc.title, doc.embeddings_score)  # score is the similarity distance
+```
+
+`KNNExpression.__str__` is `KNN $K @{vector_field} $knn_ref_vector AS {score_field}`,
+and `query_params` returns the `PARAMS` dict. You can inspect the raw query with
+`FindQuery.query` and `FindQuery.query_params` for debugging.
+
+### Hybrid Search: KNN + Filters
+
+Combine vector search with traditional filter expressions by passing both
+positional expressions and `knn=` to `find()`. The filter expressions are
+applied *before* the KNN ranking:
+
+```python
+from redis_om import KNNExpression
+
+# Only consider documents in the "tutorial" category
+results = await Document.find(
+    Document.category == "tutorial",
+    knn=KNNExpression(
+        k=10,
+        vector_field=Document.embedding,
+        score_field=Document.embeddings_score,
+        reference_vector=to_bytes([0.1, 0.2, 0.3, 0.4]),
+    ),
+).all()
+```
+
+OR expressions are also supported with KNN — the filter is automatically
+wrapped in parentheses so the KNN clause applies to the whole filter, not just
+the last term:
+
+```python
+# Find the K nearest neighbors in EITHER category
+results = await Document.find(
+    (Document.category == "tutorial") | (Document.category == "guide"),
+    knn=KNNExpression(
+        k=10,
+        vector_field=Document.embedding,
+        score_field=Document.embeddings_score,
+        reference_vector=to_bytes([0.1, 0.2, 0.3, 0.4]),
+    ),
+).all()
+```
+
+### Score Field
+
+The `score_field` parameter on `KNNExpression` names a model attribute that
+Redis OM will populate with the distance/similarity score for each result.
+If you don't provide one, Redis OM uses a default name of
+`__<vector_field>_score` (e.g. `__embedding_score`) and sets the attribute on
+the model automatically.
+
+### Cursor Pagination over KNN Results
+
+For large result sets, use `FindQuery.iter_cursor()` which uses
+`FT.AGGREGATE WITHCURSOR` to page through KNN results without loading them
+all into memory:
+
+```python
+cursor = await Document.find(knn=knn).iter_cursor(count=100)
+while not cursor.exhausted:
+    page = await cursor.read()
+    for doc in page:
+        print(doc.title, doc.embeddings_score)
+```
+
+## Bulk Operations
+
+### Saving Many Models at Once
+
+Use the class method `Model.add()` to save a sequence of models in a single
+pipelined batch. This is significantly faster than calling `save()` in a
+loop because it uses a single Redis pipeline:
+
+```python
+customers = [
+    Customer(first_name="Andrew", last_name="Brookins", email="a@example.com", age=38),
+    Customer(first_name="Kim",    last_name="Brookins", email="k@example.com", age=34),
+    Customer(first_name="Simon",  last_name="Prickett", email="s@example.com", age=99),
+]
+Customer.add(customers)
+```
+
+If you already have a pipeline object, pass it in to compose with other
+operations:
+
+```python
+with redis.pipeline(transaction=False) as pipe:
+    Customer.add(customers, pipeline=pipe)
+    # ... more commands ...
+    pipe.execute()
+```
+
+### Fetching Many Models by Primary Key
+
+Use `Model.get_many()` to fetch multiple models in one pipelined round-trip:
+
+```python
+pks = ["01F...", "01F...", "01F..."]
+customers = Customer.get_many(pks)
+```
+
+### Deleting Many Models
+
+Use `Model.delete_many()` to delete a sequence of model instances in
+batches:
+
+```python
+Customer.delete_many(customers)
+```
+
+For deleting by query, chain `.delete()` onto a `FindQuery`:
+
+```python
+deleted = Customer.find(Customer.last_name == "Brookins").delete()
+```
+
+> **Note:** The examples above use the sync API (`from redis_om import ...`).
+> If you're using the async API (`from aredis_om import ...`), use `async def`
+> and `await` for the same calls. The signatures and return types are
+> identical otherwise.
 
 ## Calling Other Redis Commands
 
