@@ -73,7 +73,7 @@ async def m(key_prefix, redis):
         last_name: str = Field(index=True)
         email: Optional[EmailStr] = Field(index=True, default=None)
         join_date: datetime.date
-        age: Optional[PositiveInt] = Field(index=True, default=None)
+        age: Optional[PositiveInt] = Field(index=True, sortable=True, default=None)
         bio: Optional[str] = Field(index=True, full_text_search=True, default="")
 
         # Creates an embedded model.
@@ -1123,7 +1123,7 @@ async def test_schema(m, key_prefix):
         "$.first_name AS first_name TAG SEPARATOR | CASESENSITIVE "
         "$.last_name AS last_name TAG SEPARATOR | "
         "$.email AS email TAG SEPARATOR |  "
-        "$.age AS age NUMERIC "
+        "$.age AS age NUMERIC SORTABLE "
         "$.bio AS bio TAG SEPARATOR | "
         "$.bio AS bio_fts TEXT "
         "$.address.city AS address_city TAG SEPARATOR | "

@@ -74,7 +74,7 @@ async def nested_models(key_prefix, redis):
 
     class RedisUser(BaseJsonModel):
         name: str = Field(index=True)
-        age: int = Field(index=True)
+        age: int = Field(index=True, sortable=True)
         height: float = Field(index=True)
         bio: Optional[str] = Field(index=True, full_text_search=True, default="")
         gender: Gender

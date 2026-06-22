@@ -2,6 +2,8 @@
 
 import abc
 import datetime
+import json
+
 try:
     from typing import Self
 except ImportError:
@@ -12,10 +14,16 @@ from unittest import mock
 
 import pytest
 from pydantic import field_validator, model_validator
+from pydantic_core import PydanticUndefined
 
 from aredis_om import EmbeddedJsonModel, Field, HashModel, JsonModel, Migrator
+from aredis_om.model.model import (
+    REDIS_OM_METADATA_KEY,
+    ExpressionProxy,
+    convert_timestamp_to_datetime,
+    validate_model_data,
+)
 from tests._compat import ValidationError
-from aredis_om.model.model import ExpressionProxy, convert_timestamp_to_datetime, validate_model_data
 from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
@@ -277,3 +285,48 @@ async def test_hash_model_get_uses_model_fields(key_prefix, redis):
 
     assert retrieved == person
     assert isinstance(retrieved.joined_on, datetime.date)
+
+
+def test_json_schema_generation_does_not_leak_pydantic_undefined():
+    """Regression test: PydanticUndefined must not leak into json_schema_extra.
+
+    Redis OM stores field metadata (sortable, index, full_text_search, ...) in
+    Pydantic's json_schema_extra. When a Field() omits one of these options the
+    sentinel PydanticUndefined was previously stored, which is not
+    JSON-serializable and broke FastAPI's /openapi.json generation.
+    """
+
+    class Model(JsonModel):
+        name: str = Field(index=True)
+        description: str = Field(sortable=True)
+        count: int = Field(index=True, sortable=True)
+
+    # 1. Generating the JSON schema must not raise.
+    schema = Model.model_json_schema()
+    json.dumps(schema)  # fully serializable
+
+    # 2. No field should carry PydanticUndefined in its redis_om metadata.
+    for field_name, field_info in Model.model_fields.items():
+        extra = getattr(field_info, "json_schema_extra", None) or {}
+        redis_om_meta = extra.get(REDIS_OM_METADATA_KEY, {})
+        for attr, value in redis_om_meta.items():
+            assert (
+                value is not PydanticUndefined
+            ), f"{field_name}.{attr} leaked PydanticUndefined into json_schema_extra"
+
+
+def test_field_attribute_defaults_are_json_serializable():
+    """Every unset Redis OM field attribute should fall back to a JSON-safe default."""
+
+    class Model(JsonModel):
+        only_index: str = Field(index=True)
+
+    field_info = Model.model_fields["only_index"]
+    # Attributes that were not passed to Field() should resolve to their defaults.
+    assert field_info.sortable is False
+    assert field_info.case_sensitive is False
+    assert field_info.full_text_search is False
+    assert field_info.index is True  # explicitly set
+    # And the metadata dict must be serializable.
+    extra = getattr(field_info, "json_schema_extra", None) or {}
+    json.dumps(extra.get(REDIS_OM_METADATA_KEY, {}))

@@ -69,7 +69,7 @@ async def m(key_prefix, redis):
         last_name: str = Field(index=True)
         email: Optional[EmailStr] = Field(index=True, default=None)
         join_date: datetime.date
-        age: Optional[PositiveInt] = Field(index=True, default=None)
+        age: Optional[PositiveInt] = Field(index=True, sortable=True, default=None)
         bio: Optional[str] = Field(index=True, full_text_search=True, default="")
 
         # Creates an embedded model.

@@ -2139,6 +2139,13 @@ def _get_redis_om_field_attr(field: Any, attr: str, default: Any = None) -> Any:
 
 
 def _set_redis_om_field_attr(field: Any, attr: str, value: Any) -> None:
+    # Pydantic v2 uses the PydanticUndefined sentinel to signal "unset."  Storing
+    # it in json_schema_extra would leak a non-JSON-serializable value into the
+    # field metadata, which breaks schema generation (e.g. FastAPI's
+    # /openapi.json).  The getter falls back to the field default when the attr
+    # is absent, so skipping the sentinel is safe.
+    if value is Undefined:
+        return
     extra = dict(getattr(field, "json_schema_extra", None) or {})
     metadata = dict(extra.get(REDIS_OM_METADATA_KEY, {}))
     metadata[attr] = value
