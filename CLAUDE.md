@@ -144,6 +144,15 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - Pydantic v2 / strawberry GraphQL `ExpressionProxy` primary-key stripping.
 - RESP3 accommodation: protocol-aware parsers, `protocol_version()` helper, URL/`protocol` kwarg passthrough, end-to-end RESP2/RESP3 parity tests, and a RESP2-vs-RESP3 benchmark file.
 - `JsonModel.get_value(pk, field_path)` for efficient JSON sub-value retrieval via `JSON.GET`; supports `__`-separated field paths and raw `$`-prefixed JSONPath strings.
+- **Redis Streams** via `RedisStream` (XADD/XREAD/XREADGROUP with 8.2 `XACKDEL`/`XDELEX`, 8.4 `CLAIM`, 8.6 `IDMP`/`IDMPAUTO`, 8.8 `XNACK`).
+- **Hash field TTL** methods on `HashModel` (`set_field_ttl`, `get_field_ttl`, `persist_field`, etc. — Redis 7.4+).
+- **Atomic strings** via `AtomicString` (SET IFEQ/IFNE, DELEX IFEQ, DIGEST) and `msetex()` for bulk set-with-expiry (Redis 8.4+).
+- **Vector sets** via `VectorSet` (VADD/VSIM/VINFO/VCARD/VDIM/VEMB/VLINKS/VRANDMEMBER/VREM/VSETATTR/VGETATTR — Redis 8.8+).
+- **Hot-keys tracker** via `hotkeys_snapshot` (HOTKEYS START/GET/STOP/RESET — Redis 8.6+).
+- **Bitmap operators** via `BitmapOps` (BITOP DIFF/DIFF1/ANDOR/ONE — Redis 8.2+).
+- **Sorted set aggregations** via `SortedSetOps` (ZUNION/ZINTER with AGGREGATE COUNT — Redis 8.8+).
+- **Cluster admin** via `ClusterAdmin` (CLUSTER SLOT-STATS, CLUSTER MIGRATION STATUS/START/STOP/ABORT/LOG — Redis 8.2+ cluster mode).
+- **Keyspace notification helpers** via `KeyspaceEvents`, `build_flags`, `enable_keyspace_events` (Redis 2.8+).
 
 ## Embedded model primary-key behavior
 

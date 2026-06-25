@@ -123,6 +123,11 @@
                     "title": "Migrations",
                     "href": "/migrations",
                     "icon": "arrows-rotate"
+                },
+                {
+                    "title": "Keyspace Notifications",
+                    "href": "/keyspace_notifications",
+                    "icon": "bell"
                 }
             ]
         },
@@ -180,6 +185,11 @@
                     "title": "Redis Cluster",
                     "href": "/cluster",
                     "icon": "network-wired"
+                },
+                {
+                    "title": "Cluster Admin (8.2+)",
+                    "href": "/cluster_admin",
+                    "icon": "gauge-high"
                 },
                 {
                     "title": "Protocol Selection",

@@ -1,0 +1,144 @@
+---
+title: Keyspace Notifications
+description: Constants and helpers for Redis keyspace event notifications (notify-keyspace-events).
+---
+
+# Keyspace Notifications
+
+Redis can emit Pub/Sub events when keys are modified, expired, evicted,
+or accessed. The set of enabled event types is controlled by the
+`notify-keyspace-events` server configuration parameter.
+
+pyredis-om ships a constants module and helpers for combining flags and
+toggling notifications from your application code. The constants work
+on any Redis 2.8+ instance — no special server version is required.
+
+## Event flags
+
+```python
+from aredis_om.model.keyspace_events import KeyspaceEvents
+```
+
+| Group | Constant | Description |
+| --- | --- | --- |
+| Prefix | `KeyspaceEvents.KEYSPACE_PREFIX` (`"K"`) | Use the `__keyspace__` channel namespace |
+| Prefix | `KeyspaceEvents.KEYEVENT_PREFIX` (`"E"`) | Use the `__keyevent__` channel namespace |
+| Prefix | `KeyspaceEvents.ALL_KEY_EVENTS_ALIAS` (`"A"`) | Alias for `"g$lshzxet"` |
+| Category | `KeyspaceEvents.GENERIC_COMMANDS` (`"g"`) | `DEL`, `EXPIRE`, `RENAME`, ... |
+| Category | `KeyspaceEvents.STRING_COMMANDS` (`"$"`) | `SET`, `SETRANGE`, ... |
+| Category | `KeyspaceEvents.LIST_COMMANDS` (`"l"`) | `LPUSH`, `RPUSH`, ... |
+| Category | `KeyspaceEvents.SET_COMMANDS` (`"s"`) | `SADD`, `SREM`, ... |
+| Category | `KeyspaceEvents.HASH_COMMANDS` (`"h"`) | `HSET`, `HDEL`, ... |
+| Category | `KeyspaceEvents.SORTED_SET_COMMANDS` (`"z"`) | `ZADD`, `ZREM`, ... |
+| Category | `KeyspaceEvents.STREAM_COMMANDS` (`"t"`) | `XADD`, `XDEL`, ... |
+| Special | `KeyspaceEvents.EXPIRED_EVENTS` (`"x"`) | Key expiry events |
+| Special | `KeyspaceEvents.EVICTED_EVENTS` (`"e"`) | `maxmemory` eviction events |
+| Special | `KeyspaceEvents.KEY_MISS_EVENTS` (`"m"`) | Miss events |
+| Special | `KeyspaceEvents.NEW_KEY_EVENTS` (`"n"`) | New-key events |
+| Preset | `KeyspaceEvents.ALL_EVENTS_PRESET` (`"AKE"`) | All events, both prefixes |
+| Preset | `KeyspaceEvents.EXPIRATIONS_PRESET` (`"Ex"`) | Expired events only |
+
+The same module also exposes the **event identifier strings** that are
+published on the channel (e.g. `KeyspaceEvents.EXPIRED == "expired"`).
+Use them to match against incoming Pub/Sub messages.
+
+## Building flag combinations
+
+```python
+from aredis_om.model.keyspace_events import (
+    KeyspaceEvents,
+    build_flags,
+)
+
+# Order doesn't matter; duplicate flags are removed.
+flags = build_flags(
+    KeyspaceEvents.KEYSPACE_PREFIX,    # "K"
+    KeyspaceEvents.GENERIC_COMMANDS,   # "g"
+    KeyspaceEvents.EXPIRED_EVENTS,     # "x"
+)
+# → "Kgx"
+
+# Combine presets with custom flags.
+flags = build_flags(
+    KeyspaceEvents.ALL_EVENTS_PRESET,  # "AKE"
+    KeyspaceEvents.KEY_MISS_EVENTS,    # "m"
+)
+# → "AKEm"
+```
+
+## Enabling / disabling notifications
+
+```python
+import asyncio
+from aredis_om import get_redis_connection
+from aredis_om.model.keyspace_events import (
+    KeyspaceEvents,
+    build_flags,
+    enable_keyspace_events,
+    disable_keyspace_events,
+)
+
+
+async def main():
+    db = get_redis_connection()
+
+    flags = build_flags(
+        KeyspaceEvents.KEYEVENT_PREFIX,
+        KeyspaceEvents.EXPIRED_EVENTS,
+    )
+    await enable_keyspace_events(db, flags)
+    # → "Ex"
+
+    # ... subscribe to __keyevent@0__:expired ...
+
+    await disable_keyspace_events(db)
+
+
+asyncio.run(main())
+```
+
+The setting is **server-global** — reset it explicitly when finished if
+you don't want to affect other clients on the same server.
+
+## Subscribing to events
+
+Notifications are published on the standard Pub/Sub channels. Use
+`RedisStream` or any Pub/Sub client to subscribe:
+
+```python
+# Two namespaces are exposed depending on the prefix flag:
+#   __keyspace@<db>__:<key>     (with "K")
+#   __keyevent@<db>__:<event>   (with "E")
+```
+
+For example, with `flags = "Ex"`, the channel
+`__keyevent@0__:expired` publishes whenever a key expires in database
+0.
+
+## API reference
+
+### Constants — `KeyspaceEvents` / `KeyspaceEventFlags`
+
+See the **Event flags** table above. `KeyspaceEventFlags` is a
+backwards-compatible alias.
+
+### `build_flags(*flags: str) -> str`
+
+Combine multiple flag strings, deduping and preserving first-seen order.
+
+### `enable_keyspace_events(db, flags: str) -> bool`
+
+`CONFIG SET notify-keyspace-events <flags>` (async).
+
+### `disable_keyspace_events(db) -> bool`
+
+Convenience for `enable_keyspace_events(db, "")`.
+
+## Full source
+
+See [`aredis_om/model/keyspace_events.py`][source] for the implementation
+and [`tests/test_keyspace_events.py`][tests] for the test suite
+(11 tests).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/keyspace_events.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_keyspace_events.py

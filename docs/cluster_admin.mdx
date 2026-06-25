@@ -1,0 +1,160 @@
+---
+title: Cluster Admin (CLUSTER SLOT-STATS, CLUSTER MIGRATION)
+description: Per-slot observability and migration introspection for Redis 8.2+ clusters.
+---
+
+# Cluster Admin (Redis 8.2+)
+
+Redis 8.2 added two long-awaited cluster-operations commands:
+
+- **`CLUSTER SLOT-STATS`** — per-slot CPU, network, and key counters.
+  Useful for "which shard is hottest?" troubleshooting and capacity
+  planning.
+- **`CLUSTER MIGRATION`** — start/stop/status introspection for slot
+  migrations, exposed as a structured subcommand tree (instead of the
+  historical `MIGRATE` / `CLUSTER SETSLOT` dance).
+
+Both commands require the server to be in cluster mode (they return
+"This instance has cluster support disabled" on standalone instances).
+The wrapper exposes capability probes so you can branch caller code.
+
+> **Server requirement**: Redis 8.2+ running in cluster mode.
+
+```python
+import asyncio
+from aredis_om import ClusterAdmin, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    admin = ClusterAdmin(db)
+
+    if not await admin.is_cluster_mode():
+        print("not running on a cluster")
+        return
+
+    # Top 5 slots by CPU time.
+    stats = await admin.slot_stats(order_by="cpu-usec", desc=True, limit=5)
+    for s in stats:
+        print(f"slot {s.get('slot')}: cpu={s.get('cpu-usec')}us, "
+              f"keys={s.get('keys')}")
+
+
+asyncio.run(main())
+```
+
+The class is also available from the sync mirror
+(`from redis_om import ClusterAdmin`) — drop `await`.
+
+## CLUSTER SLOT-STATS
+
+`slot_stats()` returns per-slot metrics as a list of dicts.
+
+### Arguments
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `order_by` | `str` or `None` | Field name to sort by (e.g. `"cpu-usec"`). |
+| `desc` | `bool` | Sort descending. Default False. |
+| `limit` | `int` or `None` | Cap on returned slots. |
+| `slot_range` | `(int, int)` or `None` | Restrict to a `(start, end)` slot range. |
+
+### Common field names returned by the server
+
+| Field | Description |
+| --- | --- |
+| `slot` | Slot number (0–16383). |
+| `cpu-usec` | CPU time consumed by traffic to this slot (µs). |
+| `network-bytes-in` | Incoming network bytes. |
+| `network-bytes-out` | Outgoing network bytes. |
+| `keys` | Number of keys in the slot. |
+| `read-commands` | Number of read commands processed. |
+| `write-commands` | Number of write commands processed. |
+
+The exact set of fields may vary across Redis versions; consult the
+[release notes][1] for your target version.
+
+[1]: https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.2-release-notes/
+
+### Examples
+
+```python
+# Top 10 hottest slots by CPU.
+hot = await admin.slot_stats(order_by="cpu-usec", desc=True, limit=10)
+
+# Only slots 0..1000.
+subset = await admin.slot_stats(slot_range=(0, 1000))
+
+# All slots, sorted by key count.
+by_keys = await admin.slot_stats(order_by="keys", desc=True)
+```
+
+## CLUSTER MIGRATION
+
+The `MIGRATION` subcommand tree exposes structured introspection and
+control over slot migrations.
+
+| Method | Server command |
+| --- | --- |
+| `await admin.migration_status()` | `CLUSTER MIGRATION STATUS` |
+| `await admin.migration_start(slots=None)` | `CLUSTER MIGRATION START [SLOTS ...]` |
+| `await admin.migration_stop()` | `CLUSTER MIGRATION STOP` |
+| `await admin.migration_abort()` | `CLUSTER MIGRATION ABORT` |
+| `await admin.migration_log(count=10)` | `CLUSTER MIGRATION LOG [count]` |
+
+```python
+status = await admin.migration_status()
+# → {"state": "none"}  (or a richer dict when migrating)
+
+await admin.migration_start(slots=[100, 200])
+# ...
+await admin.migration_stop()
+```
+
+## Capability probes
+
+```python
+from aredis_om import (
+    is_cluster_mode,
+    has_slot_stats,
+    has_migration,
+)
+
+if await is_cluster_mode(db) and await has_slot_stats(db):
+    stats = await ClusterAdmin(db).slot_stats()
+```
+
+`is_cluster_mode()` runs `CLUSTER INFO`; the slot-stats / migration
+probes probe the specific command. Use these to gracefully degrade
+when the server is standalone or older than 8.2.
+
+## API reference
+
+### `ClusterAdmin(db)`
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await admin.slot_stats(*, order_by=None, desc=False, limit=None, slot_range=None)` | `list[dict]` | `CLUSTER SLOT-STATS [...]` |
+| `await admin.migration_status()` | `dict` or `None` | `CLUSTER MIGRATION STATUS` |
+| `await admin.migration_start(*, slots=None)` | `bool` | `CLUSTER MIGRATION START [SLOTS ...]` |
+| `await admin.migration_stop()` | `bool` | `CLUSTER MIGRATION STOP` |
+| `await admin.migration_abort()` | `bool` | `CLUSTER MIGRATION ABORT` |
+| `await admin.migration_log(count=10)` | `list` | `CLUSTER MIGRATION LOG [count]` |
+| `await admin.is_cluster_mode()` | `bool` | `CLUSTER INFO` |
+| `await admin.has_slot_stats()` | `bool` | probes `CLUSTER SLOT-STATS` |
+| `await admin.has_migration()` | `bool` | probes `CLUSTER MIGRATION STATUS` |
+
+### Module-level helpers
+
+`is_cluster_mode(db)`, `has_slot_stats(db)`, `has_migration(db)` —
+convenience functions when you don't need a class instance.
+
+## Full source
+
+See [`aredis_om/model/cluster_admin.py`][source] for the implementation
+and [`tests/test_cluster_admin.py`][tests] for the test suite
+(4 tests; 1 runs on standalone, 3 require cluster mode and skip
+otherwise).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/cluster_admin.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_cluster_admin.py
