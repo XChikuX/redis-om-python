@@ -127,6 +127,14 @@ The `cluster=true` query parameter is consumed by `get_redis_connection()`
 and stripped before the URL is forwarded to `redis.RedisCluster` so it does
 not interfere with cluster initialization.
 
+Cluster support includes:
+
+- `HashModel` and `JsonModel` CRUD operations
+- Bulk `add()` / `delete_many()` flows
+- `get_many()` and explicit pipeline composition
+- RediSearch-backed queries, including embedded JSON and GEO lookups
+- Migrator support for creating search indexes on cluster deployments
+
 ## RESP2 vs RESP3
 
 Redis OM works against either RESP2 or RESP3 wire protocols.  redis-py 8.0+

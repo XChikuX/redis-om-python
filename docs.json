@@ -1,22 +1,82 @@
 {
-  "$schema": "https://docs.page/schema.json",
-  "name": "pyredis-om",
-  "description": "pyredis-om documentation",
-  "sidebar": [
-    {
-      "group": "Getting Started",
-      "pages": [
+    "$schema": "https://docs.page/schema.json",
+    "name": "pyredis-om",
+    "description": "pyredis-om documentation — async-first Redis object mapper built on Pydantic v2",
+    "sidebar": [
         {
-          "title": "Getting to know docs.page",
-          "href": "/",
-          "icon": "rocket"
+            "group": "Getting Started",
+            "pages": [
+                {
+                    "title": "Introduction",
+                    "href": "/",
+                    "icon": "rocket"
+                },
+                {
+                    "title": "Getting Started",
+                    "href": "/getting_started",
+                    "icon": "book"
+                },
+                {
+                    "title": "Connecting to Redis",
+                    "href": "/connections",
+                    "icon": "plug"
+                }
+            ]
         },
         {
-          "title": "Next Steps",
-          "href": "/next-steps",
-          "icon": "arrow-right"
+            "group": "Core Features",
+            "pages": [
+                {
+                    "title": "Models and Fields",
+                    "href": "/models",
+                    "icon": "database"
+                },
+                {
+                    "title": "Validation",
+                    "href": "/validation",
+                    "icon": "check"
+                },
+                {
+                    "title": "Error Messages",
+                    "href": "/errors",
+                    "icon": "alert-triangle"
+                }
+            ]
+        },
+        {
+            "group": "Redis 8.8+ Features",
+            "pages": [
+                {
+                    "title": "AtomicCounter (INCREX)",
+                    "href": "/atomic_counter",
+                    "icon": "zap"
+                },
+                {
+                    "title": "Redis Arrays",
+                    "href": "/redis_arrays",
+                    "icon": "list"
+                },
+                {
+                    "title": "OpenTelemetry Observability",
+                    "href": "/observability",
+                    "icon": "activity"
+                }
+            ]
+        },
+        {
+            "group": "Integrations",
+            "pages": [
+                {
+                    "title": "FastAPI Integration",
+                    "href": "/fastapi_integration",
+                    "icon": "server"
+                },
+                {
+                    "title": "Redis Modules",
+                    "href": "/redis_modules",
+                    "icon": "package"
+                }
+            ]
         }
-      ]
-    }
-  ]
+    ]
 }

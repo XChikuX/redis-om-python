@@ -76,7 +76,27 @@ The current release includes:
 - JsonModel `Annotated[...]` and `X | Y` (PEP 604) union type annotation support
 - ExpressionProxy isolation for EmbeddedJsonModel (Pydantic v2 compatibility)
 - Comprehensive token escaping for TAG and TEXT fields
+- Vector similarity search (FLAT / HNSW) with `VectorFieldOptions`
+- **AtomicCounter** backed by Redis 8.8 `INCREX` — atomic increment-with-bounds + TTL + saturation, with a transparent fallback on older servers
+- **RedisArray** for Redis 8.8+ sparse, index-addressable arrays — ring buffers, single-pass `AROP` aggregates, server-side `ARGREP` text search
+- **OpenTelemetry observability** wrapper around redis-py 8.0 instrumentation — opt-in metrics, zero cost when disabled
 - A comprehensive async benchmark suite in `tests/test_performance_benchmark.py`
+
+## 💡 Why this fork?
+
+This fork keeps current with redis-py 8.0+ and Redis 8.8+ while staying
+backwards compatible with Redis 6.2+. See
+[`docs/index.md`](docs/index.md) for full documentation and
+[`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) for the design notes.
+
+The three flagship features from this fork — each documented and tested
+end-to-end — are:
+
+| Feature | Doc | Test coverage | Server requirement |
+| --- | --- | --- | --- |
+| `AtomicCounter` | [docs/atomic_counter.md](docs/atomic_counter.md) | [tests/test_atomic_counter.py](tests/test_atomic_counter.py) (14 tests) | Redis 8.8+ fast path, transparent fallback otherwise |
+| `RedisArray` | [docs/redis_arrays.md](docs/redis_arrays.md) | [tests/test_redis_array.py](tests/test_redis_array.py) (15 tests) | Redis 8.8+ |
+| OTel observability | [docs/observability.md](docs/observability.md) | [tests/test_observability.py](tests/test_observability.py) (7 tests) | Any (requires `pip install redis[otel]`) |
 
 ## ✅ Solved Upstream Issues in This Fork
 

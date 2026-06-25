@@ -972,6 +972,20 @@ redis_conn = get_redis_connection()
 redis_conn.set("hello", "world")
 ```
 
+## Redis 8.8+ features
+
+The current release of redis-om-python also ships three top-level helpers
+that take direct advantage of Redis 8.8+. Each one is documented and
+tested independently:
+
+- **[AtomicCounter](atomic_counter.md)** — atomic increment with bounds,
+  saturation, expiration, and `ENX`. Drop-in for rate limiters and capped
+  counters.
+- **[RedisArray](redis_arrays.md)** — sparse, index-addressable arrays with
+  ring buffers, `AROP` aggregates, and `ARGREP` text search.
+- **[OpenTelemetry Observability](observability.md)** — opt-in metrics via
+  redis-py 8.0 instrumentation.
+
 ## Next Steps
 
 Now that you know the basics of working with Redis OM, start playing around with it in your project!

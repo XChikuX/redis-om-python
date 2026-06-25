@@ -1,0 +1,240 @@
+# AtomicCounter (Redis `INCREX`)
+
+`AtomicCounter` is a thin async wrapper around the [`INCREX`][increx-url]
+command that Redis 8.8+ ships for **atomic increment-with-bounds**. It
+combines an `INCRBY`/`INCRBYFLOAT`, optional lower/upper bounds, optional
+saturation, optional expiration, and the `ENX` "set TTL only when absent"
+flag into a **single round trip**.
+
+Use it for rate limiters, view/download counters, capped tally counters,
+and any counter you would otherwise guard with a Lua script or
+`MULTI`/`EXEC`.
+
+```python
+from aredis_om import AtomicCounter
+
+counter = AtomicCounter(db, f"ratelimit:{user_id}")
+new_value, applied = await counter.incr(
+    expire=60, bounds=(0, 100), enx=True,
+)
+if applied == 0:
+    raise RateLimitExceeded()
+```
+
+The class is also available from the sync mirror (`from redis_om import
+AtomicCounter`) — drop `await` and the rest of the API is identical.
+
+## Installation
+
+`AtomicCounter` ships with `pyredis-om`; nothing extra to install. The
+Redis server must be **8.8 or newer** to use the `INCREX` fast path.
+On older servers the helper transparently falls back to
+`INCRBY`/`INCRBYFLOAT` + `EXPIRE` (two round trips, no atomic bounds).
+
+## Basic usage
+
+```python
+import asyncio
+from aredis_om import AtomicCounter, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    counter = AtomicCounter(db, "demo:counter")
+
+    new_val, applied = await counter.incr()
+    print(f"increment: new_val={new_val}, applied={applied}")
+    # > increment: new_val=1, applied=1
+
+    new_val, applied = await counter.incr(amount=5)
+    print(f"increment by 5: new_val={new_val}, applied={applied}")
+    # > increment by 5: new_val=6, applied=5
+
+    await counter.reset()           # back to 0 (TTL preserved)
+    # Or, if you want to remove the key entirely:
+    await counter.delete()
+
+
+asyncio.run(main())
+```
+
+`applied` is the amount that actually changed the counter. For
+unbounded increments it equals `amount`. With bounds it can be `0`
+(see below).
+
+## Bounds and saturation
+
+`bounds` is an optional `(lower, upper)` pair. Either element may be
+`None`, meaning "no limit on that side". When the requested increment
+would take the counter outside the bounds the operation is **skipped**
+and `applied` is `0`. Pass `saturate=True` to instead **cap** the
+result at the bound:
+
+```python
+import asyncio
+from aredis_om import AtomicCounter, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    counter = AtomicCounter(db, "demo:bounds")
+    await counter.reset()
+
+    # Inside the bounds — increment succeeds
+    new_val, applied = await counter.incr(
+        amount=50, bounds=(0, 100),
+    )
+    # new_val=50, applied=50
+
+    # Without saturation: increment would push to 105, so it's skipped.
+    new_val, applied = await counter.incr(
+        amount=55, bounds=(0, 100),
+    )
+    # new_val=50, applied=0  (counter unchanged)
+
+    # With saturation: result is clamped at the upper bound.
+    new_val, applied = await counter.incr(
+        amount=55, bounds=(0, 100), saturate=True,
+    )
+    # new_val=100, applied=50  (capped at 100)
+
+    await counter.delete()
+
+
+asyncio.run(main())
+```
+
+> **Note:** When `saturate=True` the `applied` value is the *delta* that
+> was actually applied, which on Redis 8.8+ matches the saturation
+> amount. The exact reported delta may differ across server versions
+> when an increment is partially clamped; treat `applied` as a
+> "did anything change?" signal for `saturate=True` operations.
+
+## Expiration
+
+Pass `expire=<seconds>` to set a TTL on the counter. Pass `enx=True`
+to set the TTL **only on the first increment** in a window — the
+counter key is then reused across calls without resetting the
+expiration.
+
+```python
+import asyncio
+from aredis_om import AtomicCounter, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    counter = AtomicCounter(db, "demo:ratelimit")
+
+    # 5 requests per 60 s window. ENX keeps the original TTL alive
+    # across calls, so the window starts when the first request lands.
+    for i in range(8):
+        new_val, applied = await counter.incr(
+            expire=60, bounds=(0, 5), enx=True,
+        )
+        status = "allowed" if applied else "rate-limited"
+        print(f"request {i + 1}: value={new_val} status={status}")
+
+    ttl = await counter.ttl()
+    print(f"window resets in {ttl}s")
+    # > window resets in ~60s
+
+    await counter.delete()
+
+
+asyncio.run(main())
+```
+
+Expected output:
+
+```
+request 1: value=1 status=allowed
+request 2: value=2 status=allowed
+request 3: value=3 status=allowed
+request 4: value=4 status=allowed
+request 5: value=5 status=allowed
+request 6: value=5 status=rate-limited
+request 7: value=5 status=rate-limited
+request 8: value=5 status=rate-limited
+window resets in 60s
+```
+
+## Float counters
+
+Pass a `float` `amount` to use `BYFLOAT` instead of `BYINT`. Useful
+for accumulating fractional measurements (e.g. monetary amounts, sensor
+readings):
+
+```python
+async def total_purchase(counter: AtomicCounter, price: float) -> float:
+    new_val, _ = await counter.incr(amount=price, expire=86400)
+    return new_val
+```
+
+## API reference
+
+### `AtomicCounter(db, key)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `db` | `redis.asyncio.Redis` (or sync `redis.Redis`) | An active Redis client. |
+| `key` | `str` | The Redis key that holds the counter value. |
+
+### `await counter.incr(amount=1, *, expire=None, bounds=None, saturate=False, enx=False)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `amount` | `int` or `float` | Increment to apply. Floats use `BYFLOAT`. |
+| `expire` | `int` or `None` | TTL in seconds. Use `0` to clear the TTL via `PERSIST`. |
+| `bounds` | `(lower, upper)` or `None` | Either bound may be `None`. Out-of-bounds increments are skipped. |
+| `saturate` | `bool` | When `True`, cap at the bounds instead of skipping. |
+| `enx` | `bool` | Set the TTL only when the key has no current TTL. Requires `expire`. |
+
+Returns `(new_value, applied)`:
+
+- `new_value` — the counter after the call. When `saturate=False` and
+  the increment is rejected, this is the unchanged current value.
+- `applied` — the actual delta that was added. `0` when the
+  operation was rejected; otherwise the increment (or the capped
+  amount with `saturate=True`).
+
+### Other methods
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await counter.value()` | `int`, `float`, or `None` | Current value, or `None` if unset. |
+| `await counter.reset()` | `None` | Sets the counter to `0` (TTL preserved). |
+| `await counter.persist()` | `None` | Removes the TTL via `PERSIST`. |
+| `await counter.delete()` | `None` | Deletes the key. |
+| `await counter.ttl()` | `int` | `-1` if no TTL, `-2` if the key doesn't exist. |
+| `counter.key` | `str` | The configured Redis key. |
+
+### `clear_increx_cache()`
+
+`AtomicCounter` caches the result of probing the server for `INCREX`
+support per connection id, so it only probes once per client. Call
+`clear_increx_cache()` if you want to force a re-probe — for example
+in tests that swap the underlying Redis client:
+
+```python
+from aredis_om.model.counter import clear_increx_cache
+
+clear_increx_cache()
+```
+
+## Backwards compatibility with Redis < 8.8
+
+When `INCREX` is unavailable, `AtomicCounter` falls back to
+`INCRBY`/`INCRBYFLOAT` followed by `EXPIRE`. The two-step fallback is
+**not** atomic — a concurrent client can interleave between the two
+commands — so prefer Redis 8.8+ for production rate-limit deployments.
+
+## Full source
+
+See [`aredis_om/model/counter.py`][counter-source] for the
+implementation and [`tests/test_atomic_counter.py`][counter-tests] for
+the full test suite (14 tests).
+
+[increx-url]: https://redis.io/docs/latest/commands/increx/
+[counter-source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/counter.py
+[counter-tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_atomic_counter.py
