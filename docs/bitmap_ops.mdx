@@ -1,0 +1,173 @@
+---
+title: Bitmap Operations (BITOP DIFF, DIFF1, ANDOR, ONE)
+description: New BITOP set operators introduced in Redis 8.2 — DIFF, DIFF1, ANDOR, and ONE.
+---
+
+# Bitmap Operations (Redis 8.2+)
+
+Redis 8.2 extended `BITOP` with four operators that previously required
+either Lua scripts or multiple round trips:
+
+| Operator | Semantics |
+| --- | --- |
+| `BITOP DIFF dest a b` | `dest := a AND NOT b` |
+| `BITOP DIFF1 dest a b` | `dest := b AND NOT a` |
+| `BITOP ANDOR dest a b [c ...]` | `dest := a AND (b OR c OR ...)` |
+| `BITOP ONE dest a b [c ...]` | `dest` set where **exactly one** source has the bit set |
+
+All four return the length of the destination string in bytes, like the
+legacy `AND`/`OR`/`XOR`/`NOT` operators.
+
+> **Server requirement**: Redis 8.2+. The `BitmapOps` wrapper probes the
+> server and raises a Redis `ResponseError` on older builds; use
+> `has_bitmap_ops(db)` to guard caller code.
+
+```python
+import asyncio
+from aredis_om import BitmapOps, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    ops = BitmapOps(db)
+
+    # Set some bits.
+    for i in (0, 1, 2, 3, 4, 5):
+        await db.setbit("demo:new", i, 1)
+    for i in (0, 2, 5):
+        await db.setbit("demo:premium", i, 1)
+
+    # dest = new AND NOT premium → users in new who are not yet premium.
+    n = await ops.diff("demo:trial_target", "demo:new", "demo:premium")
+    print(f"wrote {n} bytes")
+    # > wrote 1 bytes
+
+
+asyncio.run(main())
+```
+
+The class is also available from the sync mirror (`from redis_om import
+BitmapOps`) — drop `await`.
+
+## When to use these
+
+Bitmaps are the densest representation for set membership over an
+integer key space. Each user-id-style value (e.g. user id 42) is a
+single bit, so:
+
+| Representation | 10M users |
+| --- | --- |
+| `SET` of strings | ~300 MB |
+| Hash with one field per user | ~600 MB |
+| Bitmap | **1.25 MB** |
+
+The new operators let you combine multiple bitmaps in a single round
+trip:
+
+- **DIFF** — "users in segment A who are not in segment B"
+  (e.g. trial candidates: new users who are not paying yet).
+- **DIFF1** — symmetric complement of DIFF (e.g. "segment B not in A").
+- **ANDOR** — "users in segment A who are also in segment B or C"
+  (combines intersection + union into one op).
+- **ONE** — "users in exactly one of segments A, B, C"
+  (mutually-exclusive segments; XOR-of-sets).
+
+## DIFF — set difference
+
+`dest := src1 AND NOT src2`. Set bits that are in `src1` but **not** in
+`src2`. The classic "users in A who are not in B" query:
+
+```python
+ops = BitmapOps(db)
+# Users signed up in the last 7 days.
+await _seed_bits("new_users", [0, 1, 2, 3, 4, 5])
+# Users on the premium plan.
+await _seed_bits("premium", [0, 2, 5])
+
+await ops.diff("trial_candidates", "new_users", "premium")
+# → bits set: [1, 3, 4]
+```
+
+## DIFF1 — complement DIFF
+
+`dest := src2 AND NOT src1`. The mirror of DIFF:
+
+```python
+await ops.diff1("premium_excl_new", "new_users", "premium")
+# → bits set: [] (all premium users are also in new)
+```
+
+## ANDOR — intersect + union
+
+`dest := src1 AND (src2 OR src3 OR ...)`. Combines intersection and
+union in a single op:
+
+```python
+# dest = first AND (second OR third)
+await ops.andor("target", "campaign_a", "channel_email", "channel_push")
+```
+
+Requires at least two source keys (the first + at least one more):
+
+```python
+ops.andor("out", "a")  # ValueError: andor() requires at least two source keys
+```
+
+## ONE — exactly one
+
+`dest` has a bit set iff **exactly one** of the source bitmaps has that
+bit set. Useful for ensuring mutually-exclusive segment assignment:
+
+```python
+# Bits set in exactly one of (segment_a, segment_b, segment_c).
+await ops.one("exclusive_segments", "segment_a", "segment_b", "segment_c")
+```
+
+For two sources, `ONE` equals `XOR`.
+
+Requires at least two source keys:
+
+```python
+ops.one("out", "a")  # ValueError: one() requires at least two source keys
+```
+
+## Legacy passthroughs
+
+For convenience, the wrapper also exposes the legacy `BITOP` operators
+(`AND`, `OR`, `XOR`, `NOT`):
+
+```python
+await ops.and_("dest", "a", "b")
+await ops.or_("dest", "a", "b")
+await ops.xor("dest", "a", "b")
+await ops.not_("dest", "a")
+```
+
+## API reference
+
+### `BitmapOps(db)`
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await ops.diff(dest, src1, src2)` | `int` | `BITOP DIFF dest src1 src2` |
+| `await ops.diff1(dest, src1, src2)` | `int` | `BITOP DIFF1 dest src1 src2` |
+| `await ops.andor(dest, src1, *others)` | `int` | `BITOP ANDOR dest src1 ...` |
+| `await ops.one(dest, *sources)` | `int` | `BITOP ONE dest ...` |
+| `await ops.and_(dest, *sources)` | `int` | `BITOP AND dest ...` |
+| `await ops.or_(dest, *sources)` | `int` | `BITOP OR dest ...` |
+| `await ops.xor(dest, *sources)` | `int` | `BITOP XOR dest ...` |
+| `await ops.not_(dest, source)` | `int` | `BITOP NOT dest source` |
+
+All methods return the size of `dest` in bytes.
+
+### `has_bitmap_ops(db)` → `bool`
+
+Returns `True` if the server supports `BITOP DIFF` (Redis 8.2+).
+
+## Full source
+
+See [`aredis_om/model/bitmap.py`][source] for the implementation and
+[`tests/test_bitmap.py`][tests] for the full test suite (14 tests).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/bitmap.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_bitmap.py

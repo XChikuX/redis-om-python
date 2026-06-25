@@ -4,6 +4,7 @@ from .connections import get_redis_connection
 from .hotkeys import HotKeysSnapshot, has_hotkeys, hotkeys_snapshot
 from .model.array import RedisArray
 from .model.atomic_string import AtomicString, msetex
+from .model.bitmap import BitmapOps, has_bitmap_ops
 from .model.counter import AtomicCounter
 from .model.migrations.migrator import MigrationError, Migrator
 from .model.model import (

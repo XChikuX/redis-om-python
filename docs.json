@@ -156,6 +156,11 @@
                     "icon": "lock"
                 },
                 {
+                    "title": "Bitmap Operations",
+                    "href": "/bitmap_ops",
+                    "icon": "table-cells"
+                },
+                {
                     "title": "Vector Sets",
                     "href": "/vector_sets",
                     "icon": "shapes"
