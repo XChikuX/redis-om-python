@@ -1,108 +1,108 @@
 services:
-  redis-cluster-7001:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7001
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7001.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7001
-      --cluster-announce-bus-port 17001
+    redis-cluster-7001:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7001
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7001.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7001
+            --cluster-announce-bus-port 17001
 
-  redis-cluster-7002:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7002
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7002.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7002
-      --cluster-announce-bus-port 17002
+    redis-cluster-7002:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7002
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7002.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7002
+            --cluster-announce-bus-port 17002
 
-  redis-cluster-7003:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7003
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7003.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7003
-      --cluster-announce-bus-port 17003
+    redis-cluster-7003:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7003
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7003.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7003
+            --cluster-announce-bus-port 17003
 
-  redis-cluster-7004:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7004
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7004.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7004
-      --cluster-announce-bus-port 17004
+    redis-cluster-7004:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7004
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7004.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7004
+            --cluster-announce-bus-port 17004
 
-  redis-cluster-7005:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7005
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7005.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7005
-      --cluster-announce-bus-port 17005
+    redis-cluster-7005:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7005
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7005.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7005
+            --cluster-announce-bus-port 17005
 
-  redis-cluster-7006:
-    image: "redis:8-alpine"
-    restart: always
-    network_mode: host
-    command: >
-      redis-server
-      --port 7006
-      --dir /data
-      --save ""
-      --appendonly no
-      --protected-mode no
-      --cluster-enabled yes
-      --cluster-config-file nodes-7006.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-ip 127.0.0.1
-      --cluster-announce-port 7006
-      --cluster-announce-bus-port 17006
+    redis-cluster-7006:
+        image: "redis:8-alpine"
+        restart: always
+        network_mode: host
+        command: >
+            redis-server
+            --port 7006
+            --dir /data
+            --save ""
+            --appendonly no
+            --protected-mode no
+            --cluster-enabled yes
+            --cluster-config-file nodes-7006.conf
+            --cluster-node-timeout 5000
+            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-port 7006
+            --cluster-announce-bus-port 17006
