@@ -93,18 +93,23 @@ redis_cluster:
 	$(CLUSTER_COMPOSE) up -d
 	@echo "Waiting for Redis Cluster nodes to start..."
 	@sleep 5
-	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
-	if ! docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+	# Bootstrap and health-check via the HOST (not inside a container),
+	# so that all six port-mapped nodes are reachable on 127.0.0.1. The
+	# compose file uses explicit `ports:` mappings instead of
+	# `network_mode: host` to stay compatible with WSL2/Docker Desktop,
+	# where `host` networking does not work.
+	@if redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+		echo "Redis Cluster already bootstrapped."; \
+	else \
 		echo "Bootstrapping Redis Cluster topology..."; \
-		docker exec $$cluster_init_container redis-cli --cluster create \
+		redis-cli --cluster create \
 			127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
 			127.0.0.1:7004 127.0.0.1:7005 127.0.0.1:7006 \
 			--cluster-replicas 1 --cluster-yes; \
 	fi
 	@echo "Waiting for Redis Cluster to become healthy..."
-	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
-	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
-		if docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+	@for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
 			echo "Redis Cluster is healthy."; \
 			exit 0; \
 		fi; \

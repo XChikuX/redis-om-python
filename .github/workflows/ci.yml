@@ -71,7 +71,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest]
                 pyver: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-            fail-fast: false
+            fail-fast: true
         services:
             redis:
                 image: redis:8-alpine
@@ -139,3 +139,38 @@ jobs:
                   flags: unit
                   env_vars: OS
                   fail_ci_if_error: false
+
+    test-cluster:
+        name: Test Cluster
+        needs: lint
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        env:
+            REDIS_OM_URL: "redis://localhost:6380?decode_responses=True"
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+            - name: Setup Python 3.12
+              uses: actions/setup-python@v6.3.0
+              with:
+                  python-version: "3.12"
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+            - name: Load cached venv
+              id: cached-venv
+              uses: actions/cache@v6.0.0
+              with:
+                  path: .venv
+                  key: venv-${{ runner.os }}-3.12-${{ hashFiles('uv.lock') }}
+            - name: Make sync version of library (redis_om)
+              run: make sync
+            - name: Install dependencies
+              if: steps.cached-venv.outputs.cache-hit != 'true'
+              run: uv sync --extra dev
+            - name: Install library
+              run: uv sync --extra dev
+            - name: Run cluster tests
+              run: make test_cluster
