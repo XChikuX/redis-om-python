@@ -175,7 +175,6 @@ class TestMSetEx:
         if not await _has_command(db, "msetex")():
             pytest.skip("MSETEX requires Redis 8.4+")
         k1 = f"{key_prefix}:a"
-        k2 = f"{key_prefix}:b"
         await db.set(k1, "existing")
         # XX should succeed because k1 exists (k2 doesn't, but MSETEX is
         # all-or-nothing on the condition — it sets when keys exist).

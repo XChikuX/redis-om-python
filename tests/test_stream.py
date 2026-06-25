@@ -211,7 +211,7 @@ class TestStreamTrim:
     @py_test_mark_asyncio
     async def test_trim_maxlen(self, stream):
         for i in range(5):
-            await stream.add({"i": str(i)}, id=f"{i+1}-0")
+            await stream.add({"i": str(i)}, id=f"{i + 1}-0")
         removed = await stream.trim(maxlen=2, approximate=False)
         assert removed >= 3
         assert await stream.length() <= 2
