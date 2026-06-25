@@ -16,6 +16,7 @@ Object mapping library for Redis built on Pydantic v2, using Redis Search and Re
 - **Dependency/tooling manager:** `uv` is used by the Makefile and GitHub Actions.
 - **Test dependencies:** `pytest`, `pytest-asyncio`, `pytest-xdist`, `pytest-cov`, `pytest-codspeed`, `bandit`, `mypy`, `black`, `isort`, and `flake8` are installed via `uv sync --extra dev`.
 - **Redis test targets:** local Compose exposes `redis:8-alpine` on port 6380 and OSS `redis:latest` on port 6381; CI uses `redis:8-alpine` on port 6379.
+- **RESP3 accommodation:** `aredis_om/model/resp3_shim.py` normalises RESP3 dict responses from `FT.SEARCH`, `FT.AGGREGATE`, and `FT.AGGREGATE WITHCURSOR` into the legacy RESP2 flat-pair shape. Tests in `tests/test_protocol_compat.py`, `tests/test_protocol_negotiation.py`, `tests/test_resp3_shim.py`, and `tests/test_protocol_benchmark.py` cover both protocols.
 
 ## Repository structure
 
@@ -139,6 +140,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - KNN + OR query syntax wrapping.
 - RediSearch cursor pagination through `FindQuery.iter_cursor()` and `FindQueryCursor`.
 - Pydantic v2 / strawberry GraphQL `ExpressionProxy` primary-key stripping.
+- RESP3 accommodation: protocol-aware parsers, `protocol_version()` helper, URL/`protocol` kwarg passthrough, end-to-end RESP2/RESP3 parity tests, and a RESP2-vs-RESP3 benchmark file.
 
 ## Embedded model primary-key behavior
 

@@ -41,3 +41,39 @@ def _strip_cluster_param(url: str) -> str:
     ]
     new_query = urlencode(params, doseq=True)
     return urlunparse(parsed._replace(query=new_query))
+
+
+def protocol_version(connection) -> int:
+    """Return the active RESP protocol version for a Redis client.
+
+    Looks at the connection pool's negotiated protocol when available and
+    falls back to introspecting an established connection. Returns 2 if the
+    value cannot be determined (the historical default for redis-py).
+    """
+    # Prefer the connection pool's negotiated value when present.
+    pool = getattr(connection, "connection_pool", None)
+    if pool is not None:
+        getter = getattr(pool, "get_protocol", None)
+        if callable(getter):
+            try:
+                version = getter()
+            except Exception:
+                version = None
+            else:
+                if version in (2, 3):
+                    return version
+
+    # Fall back to introspecting the underlying connection class.
+    if pool is not None:
+        make_connection = getattr(pool, "make_connection", None)
+        if callable(make_connection):
+            try:
+                underlying = make_connection()
+            except Exception:
+                underlying = None
+            else:
+                proto = getattr(underlying, "protocol", None)
+                if proto in (2, 3):
+                    return proto
+
+    return 2

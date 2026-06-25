@@ -24,7 +24,11 @@ POST_SYNC_FIXES = {
         # return values, not coroutines, so the async gather wrapper must be
         # removed.
         "asyncio.gather(*tasks)": "tasks",
-    }
+    },
+    # The RESP3 accommodation tests use async-only ``aclose()`` for cleanup.
+    "tests_sync/test_protocol_negotiation.py": {
+        "conn.aclose()": "conn.close()",
+    },
 }
 
 

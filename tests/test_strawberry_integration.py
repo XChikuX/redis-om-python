@@ -359,15 +359,17 @@ async def test_strawberry_input_with_explicit_pk_to_model_validate(key_prefix, r
         device_id="device-update",
     )
     # Even with pk=None from the input, model_validate must work
-    user = StrawberryUser.model_validate({
-        "fname": "Bob",
-        "email": "bob@test.com",
-        "phone": phone_input.to_pydantic().dict(),
-        "ethnicity": "caucasian",
-        "interests": ["go"],
-        "bio": "update test",
-        "pk": None,
-    })
+    user = StrawberryUser.model_validate(
+        {
+            "fname": "Bob",
+            "email": "bob@test.com",
+            "phone": phone_input.to_pydantic().dict(),
+            "ethnicity": "caucasian",
+            "interests": ["go"],
+            "bio": "update test",
+            "pk": None,
+        }
+    )
     assert user.pk is not None
 
 
@@ -412,7 +414,9 @@ async def test_strawberry_input_with_expression_proxy_pk_stripped(key_prefix, re
 
 
 @pytest.mark.asyncio
-async def test_strawberry_input_with_expression_proxy_to_pydantic_succeeds(key_prefix, redis):
+async def test_strawberry_input_with_expression_proxy_to_pydantic_succeeds(
+    key_prefix, redis
+):
     """to_pydantic() with an ExpressionProxy pk should succeed and auto-generate pk.
 
     The model_validator on RedisModel strips the ExpressionProxy before

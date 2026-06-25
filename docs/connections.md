@@ -126,3 +126,42 @@ class Customer(HashModel):
 The `cluster=true` query parameter is consumed by `get_redis_connection()`
 and stripped before the URL is forwarded to `redis.RedisCluster` so it does
 not interfere with cluster initialization.
+
+## RESP2 vs RESP3
+
+Redis OM works against either RESP2 or RESP3 wire protocols.  redis-py 8.0+
+auto-negotiates the protocol with the server on connect, so most users will
+not need to think about it: Redis 6+ defaults to RESP3 and older servers
+fall back to RESP2 transparently.
+
+If you need to pin the protocol explicitly (for example to reproduce a
+behaviour seen in production), use the `protocol=` URL query parameter or the
+matching keyword argument to `get_redis_connection()`:
+
+```python
+from redis_om import get_redis_connection
+
+# Pin to RESP3 via the URL
+redis = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True&protocol=3"
+)
+
+# Or pin via a keyword argument
+redis = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True",
+    protocol=2,
+)
+```
+
+You can also read the negotiated protocol version from any active client:
+
+```python
+from redis_om import get_redis_connection, protocol_version
+
+redis = get_redis_connection()
+print(protocol_version(redis))  # 2 or 3
+```
+
+The library normalises both protocol shapes internally for `FT.SEARCH`,
+`FT.AGGREGATE`, and `FT.AGGREGATE WITHCURSOR` so your application code does
+not need to branch on the protocol.

@@ -49,10 +49,15 @@ from .._compat import ModelField, ModelMetaclass, NoArgAnyCallable
 from .._compat import PydanticUndefined as Undefined
 from .._compat import Representation, UndefinedType
 from ..checks import has_redis_json, has_redisearch
-from ..connections import get_redis_connection
+from ..connections import get_redis_connection, protocol_version
 from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 from .encoders import jsonable_encoder
 from .render_tree import render_tree
+from .resp3_shim import (
+    extract_key_from_row,
+    split_cursor_response,
+    split_search_response,
+)
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
 
@@ -1007,7 +1012,10 @@ class FindQueryCursor:
             "COUNT",
             self.count,
         )
-        aggregate_result, self.cursor_id = self._split_cursor_result(raw_result)
+        protocol = protocol_version(self.model.db())
+        aggregate_result, self.cursor_id = self._split_cursor_result(
+            raw_result, protocol=protocol
+        )
         return await self._models_from_aggregate_result(self.model, aggregate_result)
 
     async def all(self) -> Sequence["RedisModel"]:
@@ -1035,29 +1043,46 @@ class FindQueryCursor:
             self.cursor_id = 0
 
     @staticmethod
-    def _split_cursor_result(raw_result: Any) -> Tuple[Any, int]:
-        if (
-            isinstance(raw_result, (list, tuple))
-            and len(raw_result) == 2
-            and isinstance(raw_result[1], (int, str, bytes))
-        ):
-            return raw_result[0], int(raw_result[1])
-        return raw_result, 0
+    def _split_cursor_result(
+        raw_result: Any, protocol: Optional[int] = None
+    ) -> Tuple[Any, int]:
+        rows, cursor_id = split_cursor_response(raw_result, protocol=protocol)
+        return rows, cursor_id
 
     @staticmethod
-    def _aggregate_total(aggregate_result: Any) -> int:
+    def _aggregate_total(aggregate_result: Any, protocol: Optional[int] = None) -> int:
+        # RESP3 produces a dict; RESP2 produces a flat list starting with the
+        # group/document count.  split_search_response normalises both;
+        # pass command="aggregate" so the RESP2 parser uses the
+        # FT.AGGREGATE layout ([count, row1, row2, ...]) instead of the
+        # FT.SEARCH layout.
         try:
-            return int(aggregate_result[0])
+            total, _ = split_search_response(
+                aggregate_result, protocol=protocol, command="aggregate"
+            )
+            return total
         except (IndexError, TypeError, ValueError):
             return 0
 
     @staticmethod
-    def _extract_key(row: Sequence[Any]) -> Optional[str]:
-        for index in range(0, len(row), 2):
-            name = _decode_token_value(row[index])
-            if name == "__key":
-                return _decode_token_value(row[index + 1])
-        return None
+    def _extract_key(row: Any) -> Optional[str]:
+        if isinstance(row, dict):
+            extra = row.get("extra_attributes") or {}
+            if isinstance(extra, dict):
+                value = extra.get("__key")
+                if value is not None:
+                    return _decode_token_value(value)
+            # RESP3 ``values`` is ``[name, value, name, value, ...]``.
+            values = row.get("values") or []
+            if isinstance(values, list):
+                for i in range(0, len(values), 2):
+                    if i + 1 >= len(values):
+                        break
+                    name = _decode_token_value(values[i])
+                    if name == "__key":
+                        return _decode_token_value(values[i + 1])
+            return None
+        return extract_key_from_row(row)
 
     @classmethod
     def _pk_from_redis_key(cls, model: Type["RedisModel"], key: str) -> str:
@@ -1068,7 +1093,22 @@ class FindQueryCursor:
     async def _models_from_aggregate_result(
         cls, model: Type["RedisModel"], aggregate_result: Any
     ) -> Sequence["RedisModel"]:
-        rows = aggregate_result[1:] if aggregate_result else []
+        # ``aggregate_result`` is already normalised by ``_split_cursor_result``
+        # into a list of ``[key, fields_list]`` rows; RESP3 dicts are converted
+        # to the same shape by ``split_cursor_response``.  RESP2 callers may
+        # still pass the raw ``[count, key, fields, ...]`` shape, in which case
+        # we slice off the leading count.
+        if (
+            aggregate_result
+            and isinstance(aggregate_result, list)
+            and not (
+                len(aggregate_result) > 0
+                and isinstance(aggregate_result[0], (list, dict))
+            )
+        ):
+            rows = aggregate_result[1:]
+        else:
+            rows = aggregate_result or []
         pks = []
         for row in rows:
             key = cls._extract_key(row)
@@ -1824,8 +1864,9 @@ class FindQuery:
         raw_result = await self.model.db().execute_command(*args)
         if return_raw_result:
             return raw_result
-        count = raw_result[0]
-        results = self.model.from_redis(raw_result)
+        protocol = protocol_version(self.model.db())
+        count, _ = split_search_response(raw_result, protocol=protocol)
+        results = self.model.from_redis(raw_result, protocol=protocol)
         self._model_cache += results
 
         if not exhaust_results:
@@ -1862,7 +1903,11 @@ class FindQuery:
     async def count(self):
         query = self.copy(offset=0, limit=0, nocontent=True)
         result = await query.execute(exhaust_results=True, return_raw_result=True)
-        return result[0]
+        # ``result`` is the raw FT.SEARCH payload, whose total is at index 0
+        # for RESP2 and inside ``total_results`` for RESP3.
+        protocol = protocol_version(self.model.db())
+        total, _ = split_search_response(result, protocol=protocol)
+        return total
 
     async def aggregate_ct(self) -> int:
         # WARN: Has issues when multiple 'find' parameters match the same record
@@ -1883,18 +1928,36 @@ class FindQuery:
             "0",
         ]
         raw_result = await self.model.db().execute_command(*args)
+        # RESP3 returns a dict ``{"results": [{...}, ...]}`` while RESP2
+        # returns a flat ``[count, row1, row2, ...]`` list.  Each row's
+        # COUNT value sits at index 3 of the legacy flat-pair row (the second
+        # ``(name, value)`` pair) and inside ``extra_attributes`` of the RESP3
+        # dict row, keyed by the generated alias ``__generated_aliascount``.
+        rows: List[Any] = []
+        if isinstance(raw_result, dict):
+            rows = list(raw_result.get("results") or [])
+        elif isinstance(raw_result, (list, tuple)):
+            rows = list(raw_result[1:])
         try:
+            counts = []
+            for result in rows:
+                if isinstance(result, dict):
+                    extra = result.get("extra_attributes") or {}
+                    if isinstance(extra, dict) and "__generated_aliascount" in extra:
+                        counts.append(extra["__generated_aliascount"])
+                        continue
+                counts.append(result[3])
             return sum(
                 [
                     int(
-                        result[3].decode("utf-8", "ignore")
-                        if isinstance(result[3], bytes)
-                        else result[3]
+                        value.decode("utf-8", "ignore")
+                        if isinstance(value, bytes)
+                        else value
                     )
-                    for result in raw_result[1:]
+                    for value in counts
                 ]
             )
-        except IndexError:
+        except (IndexError, TypeError, ValueError):
             return 0
 
     async def iter_cursor(
@@ -1938,17 +2001,29 @@ class FindQuery:
             args += ["MAXIDLE", str(max_idle)]
 
         raw_result = await self.model.db().execute_command(*args)
-        aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(raw_result)
+        protocol = protocol_version(self.model.db())
+        aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(
+            raw_result, protocol=protocol
+        )
         results = await FindQueryCursor._models_from_aggregate_result(
             self.model, aggregate_result
         )
+        # ``_aggregate_total`` needs the inner aggregate payload (RESP3 dict
+        # or RESP2 ``[count, key, fields, ...]``), not the WITHCURSOR wrapper.
+        total_payload = raw_result
+        if (
+            isinstance(raw_result, (list, tuple))
+            and len(raw_result) == 2
+            and not isinstance(raw_result[0], (int, str, bytes))
+        ):
+            total_payload = raw_result[0]
         return FindQueryCursor(
             model=self.model,
             index_name=index_name,
             cursor_id=cursor_id,
             count=count,
             results=results,
-            total=FindQueryCursor._aggregate_total(aggregate_result),
+            total=FindQueryCursor._aggregate_total(total_payload, protocol=protocol),
         )
 
     async def all(self, batch_size=DEFAULT_PAGE_SIZE):
@@ -2917,8 +2992,11 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return FindQuery(expressions=expressions, knn=knn, model=cls)
 
     @classmethod
-    def from_redis(cls, res: Any):
-        # TODO: Parsing logic copied from redisearch-py. Evaluate.
+    def from_redis(cls, res: Any, protocol: Optional[int] = None):
+        # ``res`` may come from a RESP2 wire (flat list) or a RESP3 wire
+        # (structured dict).  ``split_search_response`` normalises both to the
+        # historical ``(total, [[key, fields_list], ...])`` shape so the rest
+        # of this method stays simple.
         def to_string(s):
             if isinstance(s, (str,)):
                 return s
@@ -2927,6 +3005,61 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             else:
                 return s  # Not a string we care about
 
+        if (
+            isinstance(res, dict)
+            and "results" in res
+            and (protocol == 3 or protocol is None)
+        ):
+            # RESP3 path: structured dict from FT.SEARCH.  Walk the ``results``
+            # entries and reuse the same fields-handling logic as the RESP2
+            # path.
+            docs = []
+            for entry in res.get("results") or []:
+                if not isinstance(entry, dict):
+                    continue
+                extra = entry.get("extra_attributes") or {}
+                # ``extra_attributes`` is already a flat dict of decoded
+                # strings/values; convert to the ``[name, value, ...]`` shape
+                # the rest of the method expects so legacy code paths work.
+                fields_list: List[Any] = []
+                for name, value in extra.items():
+                    fields_list.append(name)
+                    fields_list.append(value)
+                # ``values`` carries LOAD-bearing fields (e.g. score fields).
+                for v in entry.get("values") or []:
+                    if isinstance(v, list) and len(v) == 2:
+                        fields_list.append(v[0])
+                        fields_list.append(v[1])
+                if not fields_list:
+                    continue
+                fields: Dict[str, str] = dict(
+                    zip(
+                        map(to_string, fields_list[::2]),
+                        map(to_string, fields_list[1::2]),
+                    )
+                )
+                if fields.get("$"):
+                    json_fields = json.loads(fields.pop("$"))
+                    model_fields = get_model_fields(cls)
+                    json_fields = convert_timestamp_to_datetime(
+                        json_fields, model_fields
+                    )
+                    json_fields = convert_base64_to_bytes(json_fields, model_fields)
+                    doc = cls(**json_fields)
+                    for k, v in fields.items():
+                        if k.startswith("__") and k.endswith("_score"):
+                            setattr(doc, k[1:], float(v))
+                        elif k.endswith("_score") and hasattr(doc, k):
+                            setattr(doc, k, float(v))
+                else:
+                    model_fields = get_model_fields(cls)
+                    fields = convert_empty_strings_to_none(fields, model_fields)
+                    fields = convert_base64_to_bytes(fields, model_fields)
+                    doc = cls(**fields)
+                docs.append(doc)
+            return docs
+
+        # Legacy RESP2 path.
         docs = []
         step = 2  # Because the result has content
         offset = 1  # The first item is the count of total matches.

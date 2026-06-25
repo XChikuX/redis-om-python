@@ -3,6 +3,8 @@ import decimal
 import inspect
 from typing import Any, Type, get_args
 
+from .connections import protocol_version
+
 
 def is_async_mode() -> bool:
     async def f() -> None:

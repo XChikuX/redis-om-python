@@ -199,6 +199,42 @@ make test_cluster
 URL and strips the query flag before handing the URL to redis-py, so other URL
 parameters such as `decode_responses=True` continue to work unchanged.
 
+### RESP2 / RESP3 protocol support
+
+Redis OM works on both RESP2 and RESP3 wire protocols. redis-py 8.0+ negotiates
+the protocol with the server on connect: Redis 6+ defaults to RESP3, older
+servers fall back to RESP2. The library transparently normalises both
+RediSearch response shapes (``FT.SEARCH``, ``FT.AGGREGATE``,
+``FT.AGGREGATE WITHCURSOR``) so you do not need to pick a protocol.
+
+If you need to pin the protocol explicitly, pass it through the URL or as a
+keyword argument:
+
+```python
+from aredis_om import get_redis_connection
+
+# Pin via the URL query string
+resp3 = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True&protocol=3"
+)
+
+# Or as an explicit keyword
+resp2 = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True",
+    protocol=2,
+)
+```
+
+You can also read the negotiated protocol version from any active client via
+``aredis_om.connections.protocol_version``:
+
+```python
+from aredis_om import get_redis_connection, protocol_version
+
+conn = get_redis_connection()
+print(protocol_version(conn))  # 2 or 3
+```
+
 ## 📇 Modeling Your Data
 
 Redis OM contains powerful declarative models that give you data validation, serialization, and persistence to Redis.
@@ -918,10 +954,13 @@ We'd love your contributions!
 You can also **contribute documentation** -- or just let us know if something needs more detail. [Open an issue on GitHub](https://github.com/XChikuX/redis-om-python/issues/new) to get started.
 
 Current local coverage baseline: **88% overall** across `aredis_om/` and the
-generated `redis_om/` mirror, with **982 passing async + sync tests** (excluding
+generated `redis_om/` mirror, with **1100+ passing async + sync tests** (excluding
 the cluster and benchmark suites, which require their own Redis topologies and
 are run separately by `make test_cluster` and
-`tests/test_performance_benchmark.py`).
+`tests/test_performance_benchmark.py`).  RESP2 vs RESP3 parity is exercised
+end-to-end by `tests/test_protocol_compat.py` and
+`tests/test_protocol_negotiation.py`, and a side-by-side timing comparison
+is provided by `tests/test_protocol_benchmark.py`.
 
 ## 📝 License
 
