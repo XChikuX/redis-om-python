@@ -100,6 +100,16 @@
                     "icon": "layer-group"
                 },
                 {
+                    "title": "Geospatial Queries",
+                    "href": "/geo_queries",
+                    "icon": "location-dot"
+                },
+                {
+                    "title": "Pipelines and execute_command",
+                    "href": "/pipelines",
+                    "icon": "code-merge"
+                },
+                {
                     "title": "Migrations",
                     "href": "/migrations",
                     "icon": "arrows-rotate"

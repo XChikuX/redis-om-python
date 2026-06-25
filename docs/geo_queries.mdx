@@ -196,10 +196,12 @@ async def nearby_with_weather(user_lat: float, user_lon: float):
                          "FROMLONLAT", user_lon, user_lat,
                          "BYRADIUS", "5", "mi",
                          "ASC", "COUNT", "1", "WITHCOORD", "WITHDIST")
-    # 3) Model: list nearby stores in the same round trip
-    Store.get_many([s.pk for s in nearby_stores], pipeline=pipe)
+    # 3) Model: list nearby stores in the same round trip.
+    # get_many() is async def, so await it even when passing pipeline=;
+    # it returns [] and queues the HGETALLs onto the pipeline.
+    await Store.get_many([s.pk for s in nearby_stores], pipeline=pipe)
     results = await pipe.execute()
-    return {"weather": results[1], "stores": results[-1]}
+    return {"weather": results[1], "stores": results[len(nearby_stores):]}
 ```
 
 This collapses three logical operations into one network round trip.

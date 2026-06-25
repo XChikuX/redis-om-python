@@ -368,12 +368,12 @@ A wrong secret raises `ValueError("Cursor token signature is invalid.")`.
 # Total matching count, no document data fetched
 n = await Customer.find(Customer.age > 30).count()
 
-# Aggregate count — works correctly with OR/duplicate matches
+# Aggregate count via FT.AGGREGATE — useful for nested/grouped queries,
+# but double-counts records that match multiple OR branches.
 n = await Customer.find(Customer.last_name == "Brookins").aggregate_ct()
 
 # First match (raises NotFoundError if no match)
-first = await Customer.find(Customer.age >= 35).first()  # sync
-first = await Customer.find(Customer.age >= 35).first()  # async, await it
+first = await Customer.find(Customer.age >= 35).first()
 ```
 
 > **NOTE:** `aggregate_ct()` double-counts records that match multiple
@@ -420,7 +420,7 @@ from redis_om import JsonModel, Field, KNNExpression, VectorFieldOptions
 
 vector_options = VectorFieldOptions.flat(
     type=VectorFieldOptions.TYPE.FLOAT32,
-    dimension=384,                              # match your embedding model
+    dimension=4,                               # match your embedding model
     distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
 )
 

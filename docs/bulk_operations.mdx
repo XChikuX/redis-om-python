@@ -29,7 +29,7 @@ class Customer(JsonModel):
     age: int = Field(index=True)
 
 
-Migrator().run()
+await Migrator().run()
 
 customers = [
     Customer(first_name="Andrew", last_name="Brookins",  age=38),
@@ -66,11 +66,12 @@ await Session.add([Session(user_id="alice", token="..."), Session(...)])
 ### Compose with another pipeline
 
 If you already have a pipeline object, pass it in and `add()` will
-queue its commands without executing:
+queue its commands without executing. `add()` is itself `async def`,
+so you must still `await` it even when supplying `pipeline=`:
 
 ```python
 async with Customer.db().pipeline(transaction=False) as pipe:
-    Customer.add(customers, pipeline=pipe)
+    await Customer.add(customers, pipeline=pipe)
     pipe.incr("metrics:customer_creations")
     results = await pipe.execute()
 ```
@@ -95,12 +96,18 @@ length as the input, with `None` placeholders for missing keys.
 
 ### Compose with another pipeline
 
+`get_many()` is `async def` — always `await` it, even when you pass a
+`pipeline=`. When `pipeline=` is supplied it returns `[]` and queues
+one fetch command per pk onto your pipeline; you execute and parse
+the results yourself:
+
 ```python
 pipe = Customer.db().pipeline(transaction=False)
 pipe.incr("metrics:bulk_fetches")
-Customer.get_many(pks, pipeline=pipe)
+await Customer.get_many(pks, pipeline=pipe)  # queues HGETALLs, returns []
 results = await pipe.execute()
-counter, customers = results
+counter = results[0]
+customers = results[1:]  # one dict per pk, in order
 ```
 
 ## `Model.delete_many()` — delete many models

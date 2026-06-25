@@ -66,15 +66,16 @@ with other commands in the same round trip.
 
 ## Pattern: bulk fetch + secondary key lookup
 
-When you pass `pipeline=` to `get_many()`, it queues `HGETALL` calls
-onto your pipeline and returns `[]` — you're responsible for executing
-the pipeline and parsing results. The pipeline position of the
-`get_many` calls is `[start:start+len(pks)]`:
+`get_many()` is `async def`, so always `await` it — even when you pass
+`pipeline=`. With `pipeline=` supplied it returns `[]` and queues one
+fetch per pk onto your pipeline; you execute and parse results
+yourself. The pipeline position of the `get_many` calls is
+`[start:start+len(pks)]`:
 
 ```python
 pipe = Customer.db().pipeline(transaction=False)
 start = 0  # nothing queued yet
-Customer.get_many(pks, pipeline=pipe)  # queues len(pks) HGETALL calls
+await Customer.get_many(pks, pipeline=pipe)  # queues len(pks) HGETALLs
 end = start + len(pks)
 pipe.mget([f"customer:{pk}:last_seen" for pk in pks])
 results = await pipe.execute()
@@ -101,7 +102,9 @@ await pipe.execute()
 Run a model query, then feed the primary keys into a raw command:
 
 ```python
-# Find VIPs, then look up their GEO positions in a single round trip
+# Find VIPs, then look up their GEO positions in a single round trip.
+# `<<` is redis-om's IN operator for TAG fields — a single string works
+# (equivalent to `==`), and a list produces an OR over the tag values.
 nearby_vips = await Customer.find(Customer.tags << "vip").all()
 
 pipe = Customer.db().pipeline(transaction=False)
@@ -151,39 +154,63 @@ results = await pipe.execute()
 closest_5 = results[-1]
 ```
 
-## Pattern: KNN + filter + raw stream publish
+## Pattern: KNN search followed by a raw stream publish
 
-For an AI assistant that streams a chat completion:
+KNN queries are best run through the high-level `find(knn=...)` API,
+which automatically emits the right `PARAMS`, `DIALECT 2`, and `RETURN`
+clauses. Combine it with a raw `XADD` for logging by running them
+back-to-back — both calls reuse the same connection so there's no
+reconnect cost:
 
 ```python
 import struct
-from aredis_om import KNNExpression, JsonModel, Field
+from aredis_om import (
+    Field,
+    JsonModel,
+    KNNExpression,
+    Migrator,
+    VectorFieldOptions,
+)
+
+
+vector_options = VectorFieldOptions.flat(
+    type=VectorFieldOptions.TYPE.FLOAT32,
+    dimension=4,
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+)
 
 
 class Doc(JsonModel):
     text: str = Field(index=True)
-    embedding: list[float] = Field(index=True)
+    embedding: list[float] = Field(vector_options=vector_options)
 
 
 async def answer(query_vec: list[float], user_id: str) -> str:
+    await Migrator().run()
     knn = KNNExpression(
         k=5,
         vector_field=Doc.embedding,
         reference_vector=struct.pack(f"<{len(query_vec)}f", *query_vec),
     )
 
-    # Pipeline: KNN search + log the query + publish to a stream
-    pipe = Doc.db().pipeline(transaction=False)
-    pipe.xadd("queries:log", {"user": user_id, "ts": time.time()})
-    pipe.execute_command(
-        "FT.SEARCH", Doc.Meta.index_name,
-        str(knn), "LIMIT", "0", "5",
-    )
-    results = await pipe.execute()
-    log_id, search_result = results
-    docs = Doc._from_search_results(search_result)
+    db = Doc.db()
+
+    # 1) Run the KNN search (FindQuery emits FT.SEARCH with the correct
+    #    PARAMS, DIALECT, and RETURN clauses for you).
+    docs = await Doc.find(knn=knn).all()
+
+    # 2) Publish a single audit event. Both calls share the connection
+    #    pool, so there's no reconnect cost between them.
+    await db.xadd("queries:log", {"user": user_id, "hits": len(docs)})
+
     return await llm_complete([d.text for d in docs])
 ```
+
+If you need a true single round trip, replace the `await Doc.find(knn=knn).all()`
+call with raw `db.execute_command("FT.SEARCH", ...)`. You'll have to
+build the `PARAMS`, `DIALECT 2`, and `RETURN` arrays yourself —
+inspect `FindQuery.query_params` and `FindQuery.query` on a throwaway
+query to see the exact argument order.
 
 ## Pattern: rate limit + write
 
@@ -211,7 +238,7 @@ pipe.execute_command(
     "INCREX", rl.key,
     "BYINT", "1", "UBOUND", "100", "EX", "60", "ENX",
 )
-model.save(pipeline=pipe)
+await model.save(pipeline=pipe)
 results = await pipe.execute()
 new_val, applied = results[0][0], results[0][1]
 ```
