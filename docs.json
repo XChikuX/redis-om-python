@@ -30,7 +30,7 @@
     },
     "content": {
         "headerDepth": 4,
-        "showPageTitle": true,
+        "showPageTitle": false,
         "showPageImage": true,
         "automaticallyInferNextPrevious": true,
         "zoomImages": true
