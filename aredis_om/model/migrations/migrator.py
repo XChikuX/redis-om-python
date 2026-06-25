@@ -60,7 +60,7 @@ async def _create_index_cluster(
     exists" errors from nodes that received the index via replication.
     """
     try:
-        await conn.ft(index_name).info()  # type: ignore
+        await conn.ft(index_name).info()
     except redis.ResponseError:
         command = f"ft.create {index_name} {schema}".split()
         try:
@@ -69,7 +69,7 @@ async def _create_index_cluster(
         except redis.ResponseError as exc:
             if "Index already exists" not in str(exc):
                 raise
-        await conn.set(schema_hash_key(index_name), current_hash)  # type: ignore
+        await conn.set(schema_hash_key(index_name), current_hash)
     else:
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
@@ -124,7 +124,7 @@ class IndexMigration:
 
     async def drop(self):
         try:
-            await self.conn.ft(self.index_name).dropindex()  # type: ignore
+            await self.conn.ft(self.index_name).dropindex()
         except redis.ResponseError:
             log.info("Index does not exist: %s", self.index_name)
 
@@ -179,7 +179,7 @@ class Migrator:
             current_hash = hashlib.sha1(schema.encode("utf-8")).hexdigest()  # nosec
 
             try:
-                await conn.ft(cls.Meta.index_name).info()  # type: ignore
+                await conn.ft(cls.Meta.index_name).info()
             except redis.ResponseError:
                 self.migrations.append(
                     IndexMigration(
@@ -193,7 +193,7 @@ class Migrator:
                 )
                 continue
 
-            stored_hash = await conn.get(hash_key)  # type: ignore
+            stored_hash = await conn.get(hash_key)
             if isinstance(stored_hash, bytes):
                 stored_hash = stored_hash.decode("utf-8")
 
@@ -259,7 +259,7 @@ class Migrator:
         """Best-effort append of a migration record to Redis history."""
         try:
             payload = json.dumps(migration.history_record())
-            await migration.conn.rpush(MIGRATION_HISTORY_KEY, payload)  # type: ignore
+            await migration.conn.rpush(MIGRATION_HISTORY_KEY, payload)
         except Exception:  # pragma: no cover - history is best effort
             log.warning(
                 "Failed to record migration history for %s",
