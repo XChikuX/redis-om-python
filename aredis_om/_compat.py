@@ -62,8 +62,13 @@ class ModelField:
         return self.field_info.annotation
 
     def __post_init__(self) -> None:
+        # ``self.field_info.annotation`` is a runtime ``type[Any]`` value;
+        # binding it to a local ``Any``-typed variable lets us use it in
+        # ``Annotated[...]`` without tripping "variable of type type[Any]
+        # is not allowed in a type expression" from strict type checkers.
+        annotation: Any = self.field_info.annotation
         self._type_adapter: TypeAdapter[Any] = TypeAdapter(
-            Annotated[self.field_info.annotation, self.field_info]  # type: ignore
+            Annotated[annotation, self.field_info]
         )
 
     def get_default(self) -> Any:

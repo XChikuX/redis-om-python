@@ -94,6 +94,24 @@ def resp3_redis():
     return get_redis_connection(url="redis://localhost:6380?decode_responses=True")
 
 
+@pytest.fixture
+def legacy_false_resp2_redis():
+    """RESP2 wire + unified response shapes (``legacy_responses=False``)."""
+    return get_redis_connection(
+        url="redis://localhost:6380?decode_responses=True&protocol=2",
+        legacy_responses=False,
+    )
+
+
+@pytest.fixture
+def legacy_false_resp3_redis():
+    """RESP3 wire + unified response shapes (``legacy_responses=False``)."""
+    return get_redis_connection(
+        url="redis://localhost:6380?decode_responses=True",
+        legacy_responses=False,
+    )
+
+
 # ── HashModel CRUD parity ────────────────────────────────────────────────
 
 
@@ -297,6 +315,141 @@ class TestAggregateCtParity:
         M = _make_json_model(key_prefix, resp3_redis, name="_Resp3JsonAgg")
         await Migrator().run()
 
+        for n in ["a", "a", "b", "b", "b"]:
+            await M(name=n, age=1).save()
+        n = await M.find().aggregate_ct()
+        assert n == 5
+        for m in await M.find().all():
+            await M.delete(m.pk)
+
+
+# ── legacy_responses=False parity ──────────────────────────────────────
+#
+# redis-py 8.0 introduces ``legacy_responses=False`` which selects
+# protocol-independent unified response shapes for ~84 commands.  These
+# tests confirm that the RESP3 shim and the FT.* parsing paths produce
+# identical results regardless of the ``legacy_responses`` setting.
+
+
+class TestUnifiedResponsesHashParity:
+    @py_test_mark_asyncio
+    async def test_save_and_get_unified_resp2(
+        self, key_prefix, legacy_false_resp2_redis
+    ):
+        M = _make_hash_model(
+            key_prefix, legacy_false_resp2_redis, name="_UniResp2HashSave"
+        )
+        await Migrator().run()
+        m = M(name="Alice", age=30)
+        await m.save()
+        loaded = await M.get(m.pk)
+        assert loaded.name == "Alice"
+        assert loaded.age == 30
+        await M.delete(m.pk)
+
+    @py_test_mark_asyncio
+    async def test_save_and_get_unified_resp3(
+        self, key_prefix, legacy_false_resp3_redis
+    ):
+        M = _make_hash_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3HashSave"
+        )
+        await Migrator().run()
+        m = M(name="Bob", age=25)
+        await m.save()
+        loaded = await M.get(m.pk)
+        assert loaded.name == "Bob"
+        assert loaded.age == 25
+        await M.delete(m.pk)
+
+    @py_test_mark_asyncio
+    async def test_find_eq_unified_resp3(self, key_prefix, legacy_false_resp3_redis):
+        M = _make_hash_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3HashFind"
+        )
+        await Migrator().run()
+        for n, age in [("a", 1), ("b", 2), ("c", 3)]:
+            await M(name=n, age=age).save()
+        results = await M.find(M.age == 2).all()
+        assert [r.name for r in results] == ["b"]
+        for r in await M.find().all():
+            await M.delete(r.pk)
+
+    @py_test_mark_asyncio
+    async def test_count_unified_resp3(self, key_prefix, legacy_false_resp3_redis):
+        M = _make_hash_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3HashCount"
+        )
+        await Migrator().run()
+        for i in range(5):
+            await M(name=f"u_{i}", age=i).save()
+        n = await M.find().count()
+        assert n == 5
+        for m in await M.find().all():
+            await M.delete(m.pk)
+
+
+class TestUnifiedResponsesJsonParity:
+    @py_test_mark_asyncio
+    async def test_save_and_get_unified_resp3(
+        self, key_prefix, legacy_false_resp3_redis
+    ):
+        M = _make_json_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3JsonSave"
+        )
+        await Migrator().run()
+        m = M(name="Alice", age=30)
+        await m.save()
+        loaded = await M.get(m.pk)
+        assert loaded.name == "Alice"
+        assert loaded.age == 30
+        await M.delete(m.pk)
+
+    @py_test_mark_asyncio
+    async def test_get_many_unified_resp3(self, key_prefix, legacy_false_resp3_redis):
+        M = _make_json_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3JsonMany"
+        )
+        await Migrator().run()
+        pks = []
+        for n in ["x", "y", "z"]:
+            m = M(name=n, age=10)
+            await m.save()
+            pks.append(m.pk)
+        loaded = await M.get_many(pks)
+        names = sorted(r.name for r in loaded)
+        assert names == ["x", "y", "z"]
+        for pk in pks:
+            await M.delete(pk)
+
+    @py_test_mark_asyncio
+    async def test_iter_cursor_unified_resp3(
+        self, key_prefix, legacy_false_resp3_redis
+    ):
+        M = _make_json_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3JsonCursor"
+        )
+        await Migrator().run()
+        for i in range(5):
+            await M(name=f"uc_{i}", age=i).save()
+        cursor = await M.find().sort_by("age").iter_cursor(count=2)
+        all_results = []
+        async for m in cursor:
+            all_results.append(m)
+        assert len(all_results) == 5
+        assert cursor.total == 5
+        await cursor.close()
+        for m in await M.find().all():
+            await M.delete(m.pk)
+
+    @py_test_mark_asyncio
+    async def test_aggregate_ct_unified_resp3(
+        self, key_prefix, legacy_false_resp3_redis
+    ):
+        M = _make_json_model(
+            key_prefix, legacy_false_resp3_redis, name="_UniResp3JsonAgg"
+        )
+        await Migrator().run()
         for n in ["a", "a", "b", "b", "b"]:
             await M(name=n, age=1).save()
         n = await M.find().aggregate_ct()

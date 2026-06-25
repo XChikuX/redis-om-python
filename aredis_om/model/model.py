@@ -37,8 +37,8 @@ from typing import no_type_check
 
 from more_itertools import ichunked
 from pydantic import ConfigDict, model_validator
-from redis.commands.json.path import Path
 from redis import ResponseError
+from redis.commands.json.path import Path
 from typing_extensions import Annotated, Protocol, TypeGuard, get_args, get_origin
 from ulid import ULID
 

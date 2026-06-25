@@ -72,8 +72,8 @@ def jsonable_encoder(
         if custom_encoder:
             encoder.update(custom_encoder)
         obj_dict = obj.model_dump(
-            include=include,
-            exclude=exclude,
+            include=include,  # type: ignore[arg-type]
+            exclude=exclude,  # type: ignore[arg-type]
             by_alias=by_alias,
             exclude_unset=exclude_unset,
             exclude_none=exclude_none,
@@ -89,7 +89,7 @@ def jsonable_encoder(
             sqlalchemy_safe=sqlalchemy_safe,
         )
     if dataclasses.is_dataclass(obj):
-        return dataclasses.asdict(obj)
+        return dataclasses.asdict(obj)  # type: ignore[arg-type]
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, PurePath):
