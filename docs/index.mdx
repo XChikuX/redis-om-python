@@ -20,18 +20,17 @@ hash models, atomic string CAS/CAD/MULTI-SET, and OpenTelemetry observability.
 
 - [Models and Fields](/models) — `HashModel`, `JsonModel`, `EmbeddedJsonModel`, `Field`, the `Meta` object, and vector fields.
 - [Queries and Vector Search](/queries) — expression syntax, dynamic queries, KNN, sort, pagination, cursors.
-- [Bulk Operations](/bulk_operations) — `add()`, `get_many()`, `delete_many()`, pipelines.
-- [Migrations](/migrations) — `Migrator`, the `migrate` CLI, drop/recreate, dry-run, history, cluster mode.
 - [Validation](/validation) — Pydantic-backed validation, strict types, custom validators.
 - [Error Messages](/errors) — common errors and how to fix them.
 
 ## Operations
 
+- [Bulk Operations](/bulk_operations) — `add()`, `get_many()`, `delete_many()`, pipelines.
 - [Streams](/streams) — typed wrapper around the Redis `X*` family with 7.4–8.8 extensions (`XACKDEL`, `XDELEX`, `XNACK`, `IDMP`, `XREADGROUP ... CLAIM`).
 - [Geospatial Queries](/geo_queries) — `Coordinates`, `GeoFilter`, GEO + TAG combinations.
 - [Hash Field Expiration](/hash_field_ttl) — per-field TTL (`HEXPIRE` family, Redis 7.4+) and atomic field ops (`HGETEX`/`HSETEX`/`HGETDEL`, Redis 8.0+).
 - [Pipelines and `execute_command`](/pipelines) — composing model calls with raw Redis commands.
-- [Bulk Operations](/bulk_operations) — bulk save/load/delete.
+- [Migrations](/migrations) — `Migrator`, the `migrate` CLI, drop/recreate, dry-run, history, cluster mode.
 
 ## Redis 8.x features
 

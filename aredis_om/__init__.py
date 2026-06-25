@@ -22,6 +22,7 @@ from .model.model import (
 )
 from .model.stream import RedisStream, StreamEntry
 from .model.types import Coordinates, GeoFilter
+from .model.vector_set import VectorSet, has_vector_sets
 from .observability import (
     ObservabilityConfig,
     disable_observability,

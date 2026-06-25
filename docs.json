@@ -149,6 +149,11 @@
                     "title": "Atomic Strings (CAS, MSETEX)",
                     "href": "/atomic_strings",
                     "icon": "lock"
+                },
+                {
+                    "title": "Vector Sets",
+                    "href": "/vector_sets",
+                    "icon": "shapes"
                 }
             ]
         },
