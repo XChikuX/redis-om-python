@@ -19,6 +19,7 @@ from .model.model import (
     RedisModelError,
     VectorFieldOptions,
 )
+from .model.stream import RedisStream, StreamEntry
 from .model.types import Coordinates, GeoFilter
 from .observability import (
     ObservabilityConfig,

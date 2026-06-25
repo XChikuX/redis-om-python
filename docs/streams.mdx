@@ -1,0 +1,348 @@
+---
+title: Streams
+description: Typed helper for the Redis X* stream command family with 7.4–8.8 extensions.
+---
+
+# RedisStream (Redis Streams)
+
+`RedisStream` is a typed async wrapper around the Redis `X*` stream
+command family. Redis Streams are a core data type that pyredis-om did
+not previously expose at the helper level — this module fills that gap
+and adds typed support for the newer stream extensions:
+
+- **Redis 8.2** — `XACKDEL` and `XDELEX` (ack-and-delete /
+  delete-by-id strategies: `DELREF`, `ACKED`).
+- **Redis 8.4** — `XREADGROUP ... CLAIM <min-idle>` for consuming idle
+  pending entries *and* new incoming entries in a single call.
+- **Redis 8.6** — `XADD ... IDMP` / `IDMPAUTO` for at-most-once
+  idempotent production.
+- **Redis 8.8** — `XNACK` for explicitly releasing pending messages
+  without acknowledging them.
+
+```python
+from aredis_om import RedisStream
+
+stream = RedisStream(db, "orders")
+
+# Idempotent produce (Redis 8.6+): retries are safe.
+await stream.add({"event": "created"}, idempotent=True)
+
+# Read and process in a consumer group.
+entries = await stream.read_group("workers", "w1", count=10)
+for entry in entries:
+    await process(entry)
+    await stream.ack_and_delete("workers", entry.id)
+```
+
+The class is also available from the sync mirror (`from redis_om import
+RedisStream`) — drop `await` and the rest of the API is identical.
+
+## Installation
+
+`RedisStream` ships with pyredis-om; nothing extra to install.
+
+The standard stream commands (`XADD`, `XREAD`, `XREADGROUP`, `XACK`,
+`XDEL`, `XLEN`, `XRANGE`, `XREVRANGE`, `XINFO`, `XGROUP`, `XCLAIM`,
+`XTRIM`) work on **any Redis version**. The newer extension commands
+degrade gracefully on older servers:
+
+| Feature | Requires | Fallback on older servers |
+| --- | --- | --- |
+| Idempotent `XADD ... IDMP` | Redis 8.6+ | Keyword silently dropped |
+| `XACKDEL` (ack + delete) | Redis 8.2+ | `XACK` then `XDEL` (non-atomic) |
+| `XDELEX` with strategy | Redis 8.2+ | `XDEL` (strategy ignored) |
+| `XNACK` | Redis 8.8+ | No-op (returns `0`) |
+| `XTRIM` with strategy | Redis 8.2+ | `XTRIM` (strategy ignored) |
+| `XREADGROUP ... CLAIM` | Redis 8.4+ | Keyword ignored |
+
+## Producing
+
+`add()` wraps `XADD`. Pass a field/value mapping; Redis assigns an id
+when you use the default `id="*"`.
+
+```python
+import asyncio
+from aredis_om import RedisStream, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    stream = RedisStream(db, "demo:orders")
+
+    # XADD with an auto-assigned id.
+    eid = await stream.add({"event": "created", "amount": "42"})
+    print(f"entry id: {eid}")
+    # > entry id: 1718000000000-0
+
+    # XADD with an explicit id and a MAXLEN cap.
+    eid = await stream.add(
+        {"event": "shipped"}, id="1-0", maxlen=1000
+    )
+
+    # XADD MINID trims entries older than the given id.
+    await stream.add({"event": "delivered"}, minid="1-0")
+
+    await db.delete("demo:orders")
+
+
+asyncio.run(main())
+```
+
+### Idempotent production (Redis 8.6+)
+
+Pass `idempotent=True` to enable at-most-once semantics. Repeated calls
+with the same field payload within the idempotency window are
+deduplicated by the server, so retries are safe.
+
+```python
+# Retries are safe — the server deduplicates by field hash.
+await stream.add(
+    {"event": "created", "order_id": "abc"},
+    idempotent=True,
+    idempotent_duration=60,  # seconds
+)
+```
+
+On servers older than 8.6 the `IDMP` keyword is silently dropped and
+the call behaves like a normal `XADD`.
+
+## Reading
+
+`read()` wraps `XREAD`. Use `last_id="0"` to read from the start, or
+`last_id="$"` (default) to read only new entries.
+
+```python
+import asyncio
+from aredis_om import RedisStream, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    stream = RedisStream(db, "demo:events")
+    await stream.add({"i": "1"}, id="1-0")
+    await stream.add({"i": "2"}, id="2-0")
+
+    # Read everything from the start.
+    entries = await stream.read(last_id="0")
+    print(f"got {len(entries)} entries")
+    # > got 2 entries
+    print(entries[0].id, entries[0].fields)
+    # > 1-0 {'i': '1'}
+
+    # Block for up to 5 seconds for new entries.
+    new_entries = await stream.read(block=5000)
+
+    await db.delete("demo:events")
+
+
+asyncio.run(main())
+```
+
+Each entry is a `StreamEntry` with `.id` (str) and `.fields` (dict).
+
+## Consumer groups
+
+```python
+import asyncio
+from aredis_om import RedisStream, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    stream = RedisStream(db, "demo:tasks")
+
+    await stream.add({"task": "a"}, id="1-0")
+    await stream.add({"task": "b"}, id="2-0")
+
+    # XGROUP CREATE — id="0" means "read existing entries"; "$" means
+    # "only new entries". Use mkstream=True to auto-create the stream.
+    await stream.create_group("workers", id="0", mkstream=True)
+
+    # XREADGROUP — read up to 10 entries for consumer "w1".
+    entries = await stream.read_group("workers", "w1", count=10)
+    for entry in entries:
+        print(f"processing {entry.id}: {entry.fields['task']}")
+
+    # XACK — acknowledge processed entries.
+    await stream.ack("workers", *[e.id for e in entries])
+
+    await db.delete("demo:tasks")
+
+
+asyncio.run(main())
+```
+
+### Claiming idle pending entries (Redis 8.4+)
+
+`read_group(claim_min_idle=ms)` returns both idle pending entries older
+than `ms` **and** new incoming entries in a single call. This is the
+Redis 8.4 `CLAIM` option for `XREADGROUP`.
+
+```python
+# In one call: pick up stale pending entries AND new ones.
+entries = await stream.read_group(
+    "workers", "w2", claim_min_idle=30_000, count=10
+)
+```
+
+For manual claiming of specific entry ids, use `claim()`:
+
+```python
+claimed = await stream.claim("workers", "w2", 0, "1-0")
+print(claimed[0].id)  # 1-0
+```
+
+## Acknowledging and deleting
+
+### `XACK` + `XACKDEL` (Redis 8.2+)
+
+`ack()` is the standard `XACK`. `ack_and_delete()` acknowledges **and**
+deletes entries, using `XACKDEL` (single round trip) on Redis 8.2+ or
+falling back to `XACK` + `XDEL` on older servers:
+
+```python
+entries = await stream.read_group("workers", "w1", count=10)
+for entry in entries:
+    await process(entry)
+    # Atomic ack + delete on 8.2+; two-step fallback otherwise.
+    await stream.ack_and_delete("workers", entry.id)
+```
+
+Pass `strategy="delref"` or `strategy="acked"` to select the Redis 8.2+
+trimming strategy for `XACKDEL` (ignored on the fallback path).
+
+### `XDELEX` (Redis 8.2+)
+
+`delete_ex()` deletes entries with an optional strategy, using `XDELEX`
+when available:
+
+```python
+await stream.delete_ex("1-0", "2-0", strategy="delref")
+```
+
+### `XNACK` (Redis 8.8+)
+
+`nack()` releases pending messages **without** acknowledging them —
+useful for signalling "I can't process this, hand it back." Uses `XNACK`
+on Redis 8.8+ and is a no-op (returns `0`) on older servers:
+
+```python
+n = await stream.nack("workers", "w1", "1-0", retry=True)
+```
+
+## Trimming
+
+```python
+# Keep the most recent 1000 entries.
+removed = await stream.trim(maxlen=1000)
+
+# Trim by min id.
+removed = await stream.trim(minid="100-0")
+
+# Redis 8.2+ strategy (ignored on older servers).
+removed = await stream.trim(maxlen=1000, strategy="acked")
+```
+
+## Introspection
+
+```python
+# XLEN — number of entries.
+n = await stream.length()
+
+# XRANGE / XREVRANGE — entries within an id range.
+entries = await stream.range("1-0", "100-0", count=50)
+entries = await stream.revrange()
+
+# XINFO STREAM — stream metadata (flat dict).
+info = await stream.info()
+print(info.get("length"))
+```
+
+## API reference
+
+### `RedisStream(db, key)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `db` | `redis.asyncio.Redis` (or sync `redis.Redis`) | Active Redis client. |
+| `key` | `str` | The Redis key that holds the stream. |
+
+### `StreamEntry`
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `id` | `str` | The entry id assigned by Redis. |
+| `fields` | `dict[str, Any]` | The field/value mapping of the entry. |
+
+### Producing
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.add(fields, *, id="*", maxlen=None, approximate=True, minid=None, idempotent=False, idempotent_duration=None)` | `str` | `XADD`. Returns the entry id. |
+
+### Reading
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.read(*, count=None, block=None, last_id="$")` | `list[StreamEntry]` | `XREAD`. |
+| `await stream.read_group(group, consumer, *, count=None, block=None, noack=False, claim_min_idle=None)` | `list[StreamEntry]` | `XREADGROUP`. `claim_min_idle` enables the Redis 8.4+ `CLAIM` option. |
+
+### Consumer groups
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.create_group(group, *, id="$", mkstream=False)` | `bool` | `XGROUP CREATE`. Returns `False` if the group already exists. |
+| `await stream.destroy_group(group)` | `int` | `XGROUP DESTROY`. |
+
+### Acknowledging and deleting
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.ack(group, *ids)` | `int` | `XACK`. |
+| `await stream.delete(*ids)` | `int` | `XDEL`. |
+| `await stream.ack_and_delete(group, *ids, strategy=None)` | `int` | `XACKDEL` (8.2+) or `XACK`+`XDEL` fallback. Returns the ack count. |
+| `await stream.delete_ex(*ids, strategy=None)` | `int` | `XDELEX` (8.2+) or `XDEL` fallback. |
+| `await stream.nack(group, consumer, *ids, retry=False)` | `int` | `XNACK` (8.8+) or no-op (returns `0`). |
+
+### Claiming
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.claim(group, consumer, min_idle_time, *ids, justid=False)` | `list[StreamEntry]` | `XCLAIM`. |
+
+### Trimming
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.trim(maxlen=None, *, minid=None, approximate=True, strategy=None)` | `int` | `XTRIM`. Returns the number of entries removed. |
+
+### Introspection
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `await stream.length()` | `int` | `XLEN`. |
+| `await stream.range(start="-", end="+", count=None)` | `list[StreamEntry]` | `XRANGE`. |
+| `await stream.revrange(start="+", end="-", count=None)` | `list[StreamEntry]` | `XREVRANGE`. |
+| `await stream.info()` | `dict` | `XINFO STREAM`. |
+
+### `clear_stream_capability_cache()`
+
+`RedisStream` caches the result of probing the server for the newer
+extension commands per connection id, so it only probes once per client.
+Call `clear_stream_capability_cache()` to force a re-probe — for example
+in tests that swap the underlying Redis client:
+
+```python
+from aredis_om.model.stream import clear_stream_capability_cache
+
+clear_stream_capability_cache()
+```
+
+## Full source
+
+See [`aredis_om/model/stream.py`][stream-source] for the implementation
+and [`tests/test_stream.py`][stream-tests] for the full test suite
+(23 tests).
+
+[stream-source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/stream.py
+[stream-tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_stream.py
