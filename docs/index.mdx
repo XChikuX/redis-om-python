@@ -8,7 +8,8 @@ Welcome! This is the documentation for redis-om-python.
 A declarative, async-first object mapper for Redis built on [Pydantic v2](https://docs.pydantic.dev/),
 with support for rich queries via RediSearch, JSON-backed embedded models,
 vector similarity search (KNN), bulk operations, atomic counters
-(`INCREX`), sparse Redis Arrays, and OpenTelemetry observability.
+(`INCREX`), sparse Redis Arrays, typed Streams wrappers, per-field TTL on
+hash models, atomic string CAS/CAD/MULTI-SET, and OpenTelemetry observability.
 
 ## Getting Started
 
@@ -24,10 +25,19 @@ vector similarity search (KNN), bulk operations, atomic counters
 - [Validation](/validation) — Pydantic-backed validation, strict types, custom validators.
 - [Error Messages](/errors) — common errors and how to fix them.
 
-## Redis 8.8+ features
+## Operations
+
+- [Streams](/streams) — typed wrapper around the Redis `X*` family with 7.4–8.8 extensions (`XACKDEL`, `XDELEX`, `XNACK`, `IDMP`, `XREADGROUP ... CLAIM`).
+- [Geospatial Queries](/geo_queries) — `Coordinates`, `GeoFilter`, GEO + TAG combinations.
+- [Hash Field Expiration](/hash_field_ttl) — per-field TTL (`HEXPIRE` family, Redis 7.4+) and atomic field ops (`HGETEX`/`HSETEX`/`HGETDEL`, Redis 8.0+).
+- [Pipelines and `execute_command`](/pipelines) — composing model calls with raw Redis commands.
+- [Bulk Operations](/bulk_operations) — bulk save/load/delete.
+
+## Redis 8.x features
 
 - [AtomicCounter (`INCREX`)](/atomic_counter) — atomic increment with bounds, saturation, expiration, and `ENX`. Useful for rate limiters and capped counters.
 - [Redis Arrays](/redis_arrays) — sparse, index-addressable arrays with ring-buffer, aggregate (`AROP`), and inline grep (`ARGREP`) operations.
+- [Atomic Strings (CAS, MSETEX)](/atomic_strings) — `AtomicString` (`SET IFEQ`/`IFNE`, `DELEX`, `DIGEST`) and bulk `MSETEX` (Redis 8.4+).
 - [OpenTelemetry Observability](/observability) — opt-in OTel metrics via redis-py 8.0 instrumentation.
 
 ## Deployment

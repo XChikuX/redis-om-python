@@ -3353,6 +3353,172 @@ class HashModel(RedisModel, abc.ABC):
             setattr(self, field, value)
         await self.save()
 
+    # ── per-field expiration (Redis 7.4+ HEXPIRE family) ─────────
+    #
+    # These methods wrap the per-field TTL commands introduced in Redis
+    # Community Edition 7.4 (HEXPIRE, HPEXPIRE, HEXPIREAT, HPEXPIREAT,
+    # HPERSIST, HEXPIRETIME, HPEXPIRETIME, HTTL, HPTTL). They operate on
+    # the model's own Redis key, so callers just pass field names.
+    #
+    # The redis-py 8.0+ client exposes native high-level methods for all
+    # of these (db.hexpire, db.httl, ...); we use them so argument
+    # ordering and response parsing match the redis-py contract exactly.
+
+    async def set_field_ttl(
+        self, field: str, ttl_seconds: int, *, px: bool = False
+    ) -> int:
+        """Set a TTL on a single hash field (``HEXPIRE``/``HPEXPIRE``).
+
+        Args:
+            field: The hash field name.
+            ttl_seconds: Time-to-live.  Seconds by default; milliseconds
+                when ``px=True`` (uses ``HPEXPIRE``).
+
+        Returns:
+            ``1`` on success, ``-2`` if the field or key doesn't exist.
+        """
+        db = self.db()
+        if px:
+            results = await db.hpexpire(self.key(), int(ttl_seconds), field)
+        else:
+            results = await db.hexpire(self.key(), int(ttl_seconds), field)
+        return int(results[0])
+
+    async def set_field_ttl_at(
+        self, field: str, unix_timestamp: int, *, px: bool = False
+    ) -> int:
+        """Set field expiration to a UNIX timestamp (``HEXPIREAT``/``HPEXPIREAT``).
+
+        Args:
+            field: The hash field name.
+            unix_timestamp: Absolute expiry.  Seconds by default;
+                milliseconds when ``px=True``.
+
+        Returns:
+            ``1`` on success, ``-2`` if the field or key doesn't exist.
+        """
+        db = self.db()
+        if px:
+            results = await db.hpexpireat(self.key(), int(unix_timestamp), field)
+        else:
+            results = await db.hexpireat(self.key(), int(unix_timestamp), field)
+        return int(results[0])
+
+    async def get_field_ttl(self, field: str, *, px: bool = False) -> int:
+        """Get the remaining TTL of a field (``HTTL``/``HPTTL``).
+
+        Returns:
+            Remaining time (seconds or ms), ``-1`` if the field has no
+            expiry, ``-2`` if the field or key doesn't exist.
+        """
+        db = self.db()
+        if px:
+            results = await db.hpttl(self.key(), field)
+        else:
+            results = await db.httl(self.key(), field)
+        return int(results[0])
+
+    async def get_field_expire_time(
+        self, field: str, *, px: bool = False
+    ) -> int:
+        """Get the absolute expiration timestamp of a field
+        (``HEXPIRETIME``/``HPEXPIRETIME``).
+
+        Returns:
+            Absolute expiry (seconds or ms since epoch), ``-1`` if no
+            expiry, ``-2`` if the field or key doesn't exist.
+        """
+        db = self.db()
+        if px:
+            results = await db.hpexpiretime(self.key(), field)
+        else:
+            results = await db.hexpiretime(self.key(), field)
+        return int(results[0])
+
+    async def persist_field(self, field: str) -> int:
+        """Remove the TTL from a single field (``HPERSIST``).
+
+        Returns:
+            ``1`` on success, ``-2`` if the field or key doesn't exist.
+        """
+        db = self.db()
+        results = await db.hpersist(self.key(), field)
+        return int(results[0])
+
+    async def expire_fields(
+        self, ttl_seconds: int, *fields: str, px: bool = False
+    ) -> List[int]:
+        """Set the same TTL on multiple fields at once (``HEXPIRE``/``HPEXPIRE``).
+
+        Returns a list of per-field results (``1``/``-2``).
+        """
+        db = self.db()
+        if px:
+            results = await db.hpexpire(self.key(), int(ttl_seconds), *fields)
+        else:
+            results = await db.hexpire(self.key(), int(ttl_seconds), *fields)
+        return [int(r) for r in results]
+
+    # ── HGETEX / HSETEX / HGETDEL (Redis 8.0+) ─────────────────────
+    #
+    # These three commands have no redis-py high-level binding, so they
+    # go through ``execute_command``.
+
+    async def get_and_set_field_expiry(
+        self, field: str, ttl_seconds: int
+    ) -> Optional[str]:
+        """Get a field's value and set its expiry in one round trip
+        (``HGETEX ... EX``).
+
+        Returns:
+            The field's current value, or ``None`` if it doesn't exist.
+        """
+        db = self.db()
+        raw = await db.execute_command(
+            "HGETEX", self.key(), "EX", int(ttl_seconds), "FIELDS", 1, field
+        )
+        if not raw:
+            return None
+        return raw[0]
+
+    async def set_fields_with_expiry(
+        self, ttl_seconds: int, **field_values: str
+    ) -> int:
+        """Set multiple fields with a shared expiry (``HSETEX ... EX``).
+
+        Returns the number of new fields created.
+        """
+        if not field_values:
+            return 0
+        db = self.db()
+        fields = list(field_values.items())
+        flat: List[Any] = []
+        for name, value in fields:
+            flat.extend([name, value])
+        return await db.execute_command(
+            "HSETEX",
+            self.key(),
+            "EX",
+            int(ttl_seconds),
+            "FIELDS",
+            len(fields),
+            *flat,
+        )
+
+    async def get_and_delete_field(self, field: str) -> Optional[str]:
+        """Get a field's value and delete it atomically (``HGETDEL``).
+
+        Returns:
+            The field's previous value, or ``None`` if it didn't exist.
+        """
+        db = self.db()
+        raw = await db.execute_command(
+            "HGETDEL", self.key(), "FIELDS", 1, field
+        )
+        if not raw:
+            return None
+        return raw[0]
+
     @classmethod
     def schema_for_fields(cls):
         schema_parts = []

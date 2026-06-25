@@ -1,0 +1,217 @@
+---
+title: Atomic Strings (CAS, DELEX, DIGEST, MSETEX)
+description: Atomic compare-and-set, compare-and-delete, digest, and bulk set-with-expiry for Redis 8.4+.
+---
+
+# AtomicString & MSETEX (Redis 8.4+)
+
+Redis 8.4 introduced several atomic string operations that previously
+required Lua scripts or `MULTI`/`EXEC` pipelines:
+
+- **`SET ... IFEQ`** — atomic compare-and-set (CAS).
+- **`SET ... IFNE`** — set only if the current value differs.
+- **`DELEX ... IFEQ`** — atomic compare-and-delete (CAD).
+- **`DIGEST`** — compute a stable hash of a value without transferring it.
+- **`MSETEX`** — set multiple keys atomically with a shared expiry.
+
+`AtomicString` wraps the single-key operations for one key; `msetex()` is
+a standalone function for the multi-key bulk set.
+
+> **Server requirement**: Redis 8.4+. These methods are opt-in and never
+> called automatically. On older servers they raise a Redis
+> `ResponseError`.
+
+```python
+from aredis_om import AtomicString, msetex
+
+lock = AtomicString(db, "lock:resource1")
+got = await lock.compare_and_set(expected="idle", new="held")
+if got:
+    try:
+        await do_work()
+    finally:
+        await lock.compare_and_set(expected="held", new="idle")
+```
+
+The class is also available from the sync mirror (`from redis_om import
+AtomicString, msetex`) — drop `await` and the API is identical.
+
+## Installation
+
+`AtomicString` ships with pyredis-om; nothing extra to install.
+
+## Compare-and-set (`SET ... IFEQ`)
+
+`compare_and_set()` updates the key only if its current value matches
+`expected`. This is the Redis 8.4 atomic CAS primitive — perfect for
+optimistic locking, distributed locks, and state machines:
+
+```python
+import asyncio
+from aredis_om import AtomicString, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    lock = AtomicString(db, "demo:lock")
+    await lock.set("idle")
+
+    # Attempt to acquire the lock.
+    got = await lock.compare_and_set(expected="idle", new="held")
+    print(f"acquired: {got}")
+    # > acquired: True
+
+    # Another caller races — fails because the value changed.
+    got = await lock.compare_and_set(expected="idle", new="stolen")
+    print(f"race won: {got}")
+    # > race won: False
+    print(f"current: {await lock.get()}")
+    # > current: held
+
+    # Release the lock.
+    await lock.compare_and_set(expected="held", new="idle")
+
+    await db.delete("demo:lock")
+
+
+asyncio.run(main())
+```
+
+### With expiry
+
+Pass `expire=<seconds>` to attach a TTL to the new value — useful for
+self-releasing locks:
+
+```python
+got = await lock.compare_and_set(expected="idle", new="held", expire=30)
+```
+
+## Set if not equal (`SET ... IFNE`)
+
+`set_if_not_equal()` writes the value only when the current value is
+**different** from the given one. Useful for "update if changed" patterns
+that avoid redundant writes:
+
+```python
+# Only write if the cached value is stale.
+updated = await cache.set_if_not_equal(
+    not_equal="v1", new="v2", expire=300
+)
+```
+
+## Compare-and-delete (`DELEX ... IFEQ`)
+
+`compare_and_delete()` removes the key only if its current value matches
+`expected`. This prevents deleting a key that has been modified by
+another client (e.g. a lock that was already released and re-acquired):
+
+```python
+# Only delete the lock if we still hold it.
+released = await lock.compare_and_delete(expected="held")
+```
+
+## Digest (`DIGEST`)
+
+`digest()` computes a stable hex hash of the key's value **without
+transferring the value** to the client. Useful for cache validation and
+change detection on large values:
+
+```python
+d1 = await AtomicString(db, "big:blob").digest()
+# ... later, after a potential update ...
+d2 = await AtomicString(db, "big:blob").digest()
+if d1 != d2:
+    print("value changed")
+```
+
+## Bulk set with expiry (`MSETEX`)
+
+`msetex()` sets multiple keys atomically with an optional shared expiry.
+This replaces a `SET` + `EXPIRE` pipeline and is significantly more
+efficient for cache warm-up patterns:
+
+```python
+import asyncio
+from aredis_om import get_redis_connection, msetex
+
+
+async def main():
+    db = get_redis_connection()
+
+    # Set 3 keys with a 60-second TTL in one round trip.
+    n = await msetex(
+        db,
+        {
+            "demo:cache:user:1": "alice",
+            "demo:cache:user:2": "bob",
+            "demo:cache:user:3": "carol",
+        },
+        expire=60,
+    )
+    print(f"set {n} batches")
+    # > set 1 batches
+
+    print(f"user1: {await db.get('demo:cache:user:1')}, ttl: {await db.ttl('demo:cache:user:1')}")
+    # > user1: alice, ttl: 60
+
+
+asyncio.run(main())
+```
+
+### Condition flags
+
+`MSETEX` supports `NX` (only set missing keys) and `XX` (only update
+existing keys). The operation is **all-or-nothing**: the condition is
+evaluated for the entire batch.
+
+```python
+# NX — only set if NONE of the keys exist.
+n = await msetex(db, {"k1": "v1", "k2": "v2"}, nx=True, expire=60)
+# → 1 if both keys were missing, 0 otherwise.
+
+# XX — only set if ALL keys already exist.
+n = await msetex(db, {"k1": "v1"}, xx=True, keepttl=True)
+```
+
+## API reference
+
+### `AtomicString(db, key)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `db` | `redis.asyncio.Redis` (or sync) | Active Redis client. |
+| `key` | `str` | The Redis key to operate on. |
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await atom.compare_and_set(expected, new, *, expire=None)` | `bool` | `SET key new IFEQ expected` |
+| `await atom.set_if_not_equal(not_equal, new, *, expire=None)` | `bool` | `SET key new IFNE not_equal` |
+| `await atom.compare_and_delete(expected)` | `bool` | `DELEX key IFEQ expected` |
+| `await atom.digest()` | `str` or `None` | `DIGEST key` |
+| `await atom.get()` | `str` or `None` | `GET key` |
+| `await atom.set(value, *, expire=None)` | `bool` | `SET key value` |
+| `await atom.delete()` | `bool` | `DEL key` |
+| `atom.key` | `str` | The configured Redis key. |
+
+### `msetex(db, mapping, *, expire=None, expire_ms=None, nx=False, xx=False, keepttl=False)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `db` | Redis client | Active Redis client. |
+| `mapping` | `dict[str, str]` | Key-value pairs to set. |
+| `expire` | `int` or `None` | Shared TTL in seconds (`EX`). |
+| `expire_ms` | `int` or `None` | Shared TTL in milliseconds (`PX`). |
+| `nx` | `bool` | Only set if keys don't exist. |
+| `xx` | `bool` | Only set if keys already exist. |
+| `keepttl` | `bool` | Preserve existing TTLs. |
+
+Returns `1` if the batch was set, `0` if the condition prevented it.
+
+## Full source
+
+See [`aredis_om/model/atomic_string.py`][source] for the implementation
+and [`tests/test_atomic_string.py`][tests] for the full test suite
+(18 tests).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/atomic_string.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_atomic_string.py

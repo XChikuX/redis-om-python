@@ -110,6 +110,11 @@
                     "icon": "location-dot"
                 },
                 {
+                    "title": "Hash Field Expiration",
+                    "href": "/hash_field_ttl",
+                    "icon": "clock"
+                },
+                {
                     "title": "Pipelines and execute_command",
                     "href": "/pipelines",
                     "icon": "code-merge"
@@ -139,6 +144,11 @@
                     "title": "OpenTelemetry Observability",
                     "href": "/observability",
                     "icon": "chart-line"
+                },
+                {
+                    "title": "Atomic Strings (CAS, MSETEX)",
+                    "href": "/atomic_strings",
+                    "icon": "lock"
                 }
             ]
         },

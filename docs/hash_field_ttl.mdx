@@ -1,0 +1,164 @@
+---
+title: Hash Field Expiration
+description: Per-field TTL and atomic field operations for HashModel (Redis 7.4+/8.0+).
+---
+
+# Hash Field Expiration & Atomic Field Ops
+
+`HashModel` supports **per-field TTL** and atomic get-and-delete /
+get-and-set-expiry operations via the Redis 7.4+ `HEXPIRE` command
+family and the Redis 8.0+ `HGETEX`/`HSETEX`/`HGETDEL` commands.
+
+Before Redis 7.4, hash fields could only inherit the key-level TTL set
+via `Meta.default_ttl` or `model.expire()`. Per-field TTL lets different
+fields expire independently — useful for cache rows where some fields are
+expensive to compute and should be invalidated on a different schedule
+than the rest of the record.
+
+```python
+from aredis_om import HashModel
+
+class Session(HashModel):
+    user_id: str
+    token: str
+    preferences: str = "{}"
+
+session = await Session(user_id="u1", token="abc", preferences="{}").save()
+
+# Expire just the token field after 1 hour; the rest survives.
+await session.set_field_ttl("token", 3600)
+```
+
+## Server requirements
+
+| Feature | Requires | Notes |
+| --- | --- | --- |
+| Per-field TTL (`HEXPIRE`, `HTTL`, ...) | Redis 7.4+ | Uses redis-py native `hexpire`/`httl`/... methods. |
+| `HGETEX` / `HSETEX` / `HGETDEL` | Redis 8.0+ | Goes through `execute_command`. |
+
+All methods are **opt-in** — they are never called automatically during
+`save()`. Calling them on an unsupported server raises a Redis
+`ResponseError`. To check at runtime, probe the server directly:
+
+```python
+info = await db.execute_command("COMMAND", "INFO", "hexpire")
+has_field_ttl = bool(info and all(info))
+```
+
+## Per-field TTL (Redis 7.4+)
+
+### Set a field's TTL
+
+```python
+import asyncio
+from aredis_om import HashModel, Migrator
+
+
+class Cache(HashModel):
+    hot: str = ""
+    cold: str = ""
+
+
+async def main():
+    await Migrator().run()
+    row = await Cache(hot="computed:1", cold="static:1").save()
+
+    # HEXPIRE — expire the field after N seconds.
+    await row.set_field_ttl("hot", 60)
+
+    # HPEXPIRE — milliseconds (pass px=True).
+    await row.set_field_ttl("hot", 60_000, px=True)
+
+    # HEXPIREAT — absolute UNIX timestamp.
+    import time
+    await row.set_field_ttl_at("hot", int(time.time()) + 3600)
+
+asyncio.run(main())
+```
+
+### Query a field's TTL
+
+```python
+# HTTL — remaining seconds.
+ttl = await row.get_field_ttl("hot")          # e.g. 58
+ttl_ms = await row.get_field_ttl("hot", px=True)  # milliseconds
+
+# HEXPIRETIME — absolute expiry timestamp.
+expiry = await row.get_field_expire_time("hot")
+```
+
+Return values follow the Redis convention:
+
+| Value | Meaning |
+| --- | --- |
+| `> 0` | Remaining TTL / absolute expiry. |
+| `-1` | Field exists but has no expiry. |
+| `-2` | Field or key does not exist. |
+
+### Remove a field's TTL
+
+```python
+# HPERSIST — remove the TTL from a single field.
+await row.persist_field("hot")
+```
+
+### Set TTL on multiple fields at once
+
+```python
+# HEXPIRE with multiple fields — returns a list of per-field results.
+results = await row.expire_fields(60, "hot", "cold")
+# → [1, 1]  (1 = success)
+```
+
+## Atomic field operations (Redis 8.0+)
+
+### Get a field and set its expiry (`HGETEX`)
+
+```python
+# Returns the current value AND sets its expiry in one round trip.
+val = await row.get_and_set_field_expiry("hot", 300)
+print(val)  # → "computed:1"
+```
+
+### Set fields with a shared expiry (`HSETEX`)
+
+```python
+# Set multiple fields with the same TTL atomically.
+n = await row.set_fields_with_expiry(60, hot="computed:2", cold="static:2")
+print(n)  # → number of new fields created
+```
+
+### Get and delete a field (`HGETDEL`)
+
+```python
+# Returns the field's value and deletes it atomically.
+val = await row.get_and_delete_field("hot")
+print(val)  # → "computed:1"  (field is now gone)
+```
+
+## API reference
+
+### Per-field TTL methods
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await model.set_field_ttl(field, ttl_seconds, *, px=False)` | `int` | `HEXPIRE` / `HPEXPIRE` |
+| `await model.set_field_ttl_at(field, unix_timestamp, *, px=False)` | `int` | `HEXPIREAT` / `HPEXPIREAT` |
+| `await model.get_field_ttl(field, *, px=False)` | `int` | `HTTL` / `HPTTL` |
+| `await model.get_field_expire_time(field, *, px=False)` | `int` | `HEXPIRETIME` / `HPEXPIRETIME` |
+| `await model.persist_field(field)` | `int` | `HPERSIST` |
+| `await model.expire_fields(ttl_seconds, *fields, px=False)` | `list[int]` | `HEXPIRE` / `HPEXPIRE` (multi-field) |
+
+### Atomic field methods (Redis 8.0+)
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await model.get_and_set_field_expiry(field, ttl_seconds)` | `str` or `None` | `HGETEX ... EX` |
+| `await model.set_fields_with_expiry(ttl_seconds, **field_values)` | `int` | `HSETEX ... EX` |
+| `await model.get_and_delete_field(field)` | `str` or `None` | `HGETDEL` |
+
+## Full source
+
+See the methods in [`aredis_om/model/model.py`][hash-source] under the
+`HashModel` class and [`tests/test_hash_field_ttl.py`][hash-tests] for
+the full test suite (17 tests).

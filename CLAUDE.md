@@ -115,6 +115,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - KNN query parameters use RediSearch `PARAMS`; non-wildcard filters are wrapped before appending KNN syntax.
 - `FindQuery.iter_cursor()` uses `FT.AGGREGATE WITHCURSOR`, loads `__key`, and fetches models by primary key so cursor pages reuse normal model hydration.
 - `FindQueryCursor.token(secret=...)` produces URL-safe cursor tokens; signed tokens should be preferred for web handoff and restored with `FindQueryCursor.from_token(...)`.
+- `JsonModel.get_value(pk, field_path, *, raw=False)` retrieves a single field or nested sub-value directly via `JSON.GET key <jsonpath>` without loading the whole document. The `field_path` uses `__`-separated model field names (same syntax as `update()`) or a raw `$`-prefixed JSONPath string. Type conversion (datetime, bytes, etc.) is applied automatically unless `raw=True`.
 
 ### Bulk fetch and pipeline support
 
@@ -123,6 +124,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - `RedisModel.add()` supports bulk save via pipeline.
 - `delete_many()` chunks deletes with `more_itertools.ichunked(..., 100)`.
 - Cluster pipelines are detected by `_is_cluster_pipeline()` because redis-py cluster pipeline commands must be queued without awaiting the individual command return.
+- `JsonModel.get_value(pk, field_path)` for efficient JSON sub-value retrieval via `JSON.GET`; supports `__`-separated field paths and raw `$`-prefixed JSONPath strings.
 
 ## Recent feature/fix coverage
 
@@ -141,6 +143,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - RediSearch cursor pagination through `FindQuery.iter_cursor()` and `FindQueryCursor`.
 - Pydantic v2 / strawberry GraphQL `ExpressionProxy` primary-key stripping.
 - RESP3 accommodation: protocol-aware parsers, `protocol_version()` helper, URL/`protocol` kwarg passthrough, end-to-end RESP2/RESP3 parity tests, and a RESP2-vs-RESP3 benchmark file.
+- `JsonModel.get_value(pk, field_path)` for efficient JSON sub-value retrieval via `JSON.GET`; supports `__`-separated field paths and raw `$`-prefixed JSONPath strings.
 
 ## Embedded model primary-key behavior
 

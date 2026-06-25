@@ -62,6 +62,9 @@ The current release includes:
 - GEO queries with `Coordinates` / `GeoFilter`, plus raw `GEO*` access — see [`docs/geo_queries.mdx`](docs/geo_queries.mdx)
 - **AtomicCounter** backed by Redis 8.8 `INCREX` — see [`docs/atomic_counter.mdx`](docs/atomic_counter.mdx)
 - **RedisArray** for Redis 8.8+ sparse, index-addressable arrays — see [`docs/redis_arrays.mdx`](docs/redis_arrays.mdx)
+- **Hash field TTL** (`HEXPIRE` / `HGETEX` / `HGETDEL` / `HSETEX`) on `HashModel` for Redis 7.4+ / 8.0+ — see [`docs/hash_field_ttl.mdx`](docs/hash_field_ttl.mdx)
+- **RedisStream** wrapper around the `X*` family with 8.2/8.4/8.6/8.8 extensions (`XACKDEL`, `XDELEX`, `XNACK`, `IDMP`, `XREADGROUP ... CLAIM`) — see [`docs/streams.mdx`](docs/streams.mdx)
+- **AtomicString + MSETEX** (`SET IFEQ` / `IFNE`, `DELEX`, `DIGEST`, bulk `MSETEX`) for Redis 8.4+ — see [`docs/atomic_strings.mdx`](docs/atomic_strings.mdx)
 - **OpenTelemetry observability** wrapper around redis-py 8.0 instrumentation — see [`docs/observability.mdx`](docs/observability.mdx)
 
 ## ⚡ Why `execute_command`?
@@ -219,8 +222,8 @@ Why `execute_command` (and not the redis-py typed bindings): see [⚡ Why `execu
 
 - **Getting started** — [Overview](docs/index.mdx), [Getting Started](docs/getting_started.mdx), [Connecting to Redis](docs/connections.mdx)
 - **Models and queries** — [Models and Fields](docs/models.mdx), [Queries and Vector Search](docs/queries.mdx), [Validation](docs/validation.mdx), [Error Messages](docs/errors.mdx)
-- **Operations** — [Bulk Operations](docs/bulk_operations.mdx), [Geospatial Queries](docs/geo_queries.mdx), [Pipelines and `execute_command`](docs/pipelines.mdx), [Migrations](docs/migrations.mdx)
-- **Redis 8.8+ features** — [AtomicCounter (`INCREX`)](docs/atomic_counter.mdx), [Redis Arrays](docs/redis_arrays.mdx), [OpenTelemetry Observability](docs/observability.mdx)
+- **Operations** — [Bulk Operations](docs/bulk_operations.mdx), [Streams](docs/streams.mdx), [Geospatial Queries](docs/geo_queries.mdx), [Hash Field Expiration](docs/hash_field_ttl.mdx), [Pipelines and `execute_command`](docs/pipelines.mdx), [Migrations](docs/migrations.mdx)
+- **Redis 8.x features** — [AtomicCounter (`INCREX`)](docs/atomic_counter.mdx), [Redis Arrays](docs/redis_arrays.mdx), [Atomic Strings (`CAS`, `MSETEX`)](docs/atomic_strings.mdx), [OpenTelemetry Observability](docs/observability.mdx)
 - **Deployment** — [Redis Cluster](docs/cluster.mdx), [Protocol Selection](docs/protocol.mdx), [Redis Modules](docs/redis_modules.mdx), [FastAPI Integration](docs/fastapi_integration.mdx)
 - **Reference** — [Upstream Issues Fixed](docs/upstream_fixes.mdx)
 
