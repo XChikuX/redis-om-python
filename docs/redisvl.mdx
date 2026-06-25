@@ -1,0 +1,149 @@
+---
+title: RedisVL Integration (Coming Soon)
+description: Upcoming RedisVL integration that delegates advanced RediSearch/Vector features to the redisvl library.
+---
+
+# RedisVL Integration
+
+> **Status: COMING SOON.** This page documents the upcoming integration
+> that delegates advanced RediSearch and vector features to
+> [`redisvl`](https://github.com/redis/redis-vl). The integration is
+> expected to land in the next minor release of pyredis-om.
+
+## What is RedisVL?
+
+[RedisVL](https://docs.redisvl.com/) is the canonical Python library
+for advanced RediSearch and Redis vector features. It manages:
+
+- Index creation, updates, and lifecycle (`AsyncSearchIndex`).
+- `FT.HYBRID` queries (BM25 + vector).
+- `FT.AGGREGATE` queries (server-side group-by / reduce / sort / limit).
+- SVS-VAMANA graph-based vector index (Redis 8.8+).
+- Vector field policies (compression, runtime tuning).
+- Embedding cache and LLM helper integrations.
+
+redisvl is maintained by Redis Inc. and is the upstream-canonical path
+for these features.
+
+## What's the integration?
+
+The upcoming integration lets you use redisvl features **directly
+from your existing pyredis-om model definitions**, without managing
+indexes by hand. The integration is modeled on
+[upstream PR #791](https://github.com/redis/redis-om-python/pull/791)
+and follows the spirit of
+[upstream RFC #790](https://github.com/redis/redis-om-python/issues/790).
+
+```python
+# PLANNED — do not use yet.
+from aredis_om import JsonModel, Field, VectorFieldOptions, get_redisvl_index
+
+
+class Article(JsonModel):
+    title: str = Field(index=True, full_text_search=True)
+    body: str = Field(index=True, full_text_search=True)
+    embedding: list[float] = Field(
+        index=True,
+        vector_field=VectorFieldOptions(
+            algorithm="hnsw",          # or "svs-vamana" (Redis 8.8+)
+            dim=384,
+            distance_metric="cosine",
+        ),
+    )
+
+
+# Use the redisvl AsyncSearchIndex directly, derived from the Pydantic model.
+index = await get_redisvl_index(Article)
+await index.create()
+
+# Hybrid search — combines BM25 ranking with vector similarity.
+from redisvl.query import HybridQuery
+query = HybridQuery(
+    text="hybrid search introduction",
+    vector=embed("hybrid search introduction"),
+    text_field="body",
+    vector_field="embedding",
+    alpha=0.5,
+)
+results = await index.query(query)
+```
+
+The integration re-uses `Meta.database` for the connection, so it
+plays nicely with the rest of pyredis-om:
+
+```python
+class Article(JsonModel):
+    body: str = Field(index=True)
+    embedding: list[float] = Field(index=True)
+
+    class Meta:
+        database = get_redis_connection(url="redis://localhost:6379")
+```
+
+## Why delegate instead of building it here?
+
+pyredis-om has historically focused on **Pydantic model definition +
+basic operators** (`==`, `<<`, `>>`, KNN, GEO). The advanced
+RediSearch features (`FT.HYBRID`, `FT.AGGREGATE`, SVS-VAMANA, vector
+policies) are large surface areas on their own and would duplicate
+redisvl's maintenance burden.
+
+The [upstream RFC](https://github.com/redis/redis-om-python/issues/790)
+explicitly recommends this delegation. We agree: the right move is to
+expose redisvl's primitives through pyredis-om's model metadata, so
+users get the best of both libraries.
+
+## What changes for existing users?
+
+Nothing immediate. The integration is **additive**:
+
+- All existing pyredis-om features (queries, KNN, GEO, all the new
+  data-structure wrappers like `VectorSet`, `RedisStream`, `BitmapOps`,
+  `AtomicString`, `HOTKEYS`, etc.) continue to work unchanged.
+- New code can opt into redisvl-backed features by installing redisvl
+  (`pip install redisvl`) and using the new helpers.
+- pyredis-om itself will require `redisvl` as a soft / optional
+  dependency — importable only when you use the integration, never
+  pulled in by default.
+
+## What's in the integration?
+
+| Feature | Source | Tracking issue |
+| --- | --- | --- |
+| `get_redisvl_index(Model)` helper | upstream #791 | — |
+| `VectorFieldOptions.algorithm="svs-vamana"` | redisvl 0.6+ | — |
+| `FT.HYBRID` from model fields | redisvl | [#258](https://github.com/redis/redis-om-python/issues/258) |
+| `FT.AGGREGATE` from model fields | redisvl | [#258](https://github.com/redis/redis-om-python/issues/258) |
+| Embedding cache integration | redisvl | — |
+| Vector field policies | redisvl | — |
+
+See [Pending Features](/pending_features) for the full per-feature
+list with code samples.
+
+## Timeline
+
+The integration is being prepared in parallel with the **non-search
+features** that have already shipped (Streams, Hash Field TTL,
+AtomicString, Vector Sets, HOTKEYS, Bitmap ops, Sorted Set COUNT
+aggregator, Cluster Admin, Keyspace Events).
+
+Once the non-search batch is committed upstream, the integration
+work begins.
+
+## Tracking
+
+- [Upstream PR #791](https://github.com/redis/redis-om-python/pull/791) — reference integration
+- [Upstream RFC #790](https://github.com/redis/redis-om-python/issues/790) — delegation rationale
+- [Upstream issue #258](https://github.com/redis/redis-om-python/issues/258) — FT.AGGREGATE / hybrid search
+
+## Related
+
+- [Pending Features](/pending_features) — per-feature preview with
+  code samples.
+- [Queries and Vector Search](/queries) — what's already available
+  today (BM25, KNN, GEO).
+- [Vector Sets](/vector_sets) — the **separate** Redis 8.8
+  first-class vector-set data structure, already shipped.
+- [redis/redis-vl](https://github.com/redis/redis-vl) — the upstream
+  library.
+- [docs.redisvl.com](https://docs.redisvl.com/) — redisvl reference.

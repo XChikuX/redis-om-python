@@ -5,7 +5,7 @@
     "logo": {
         "light": "/images/logo.svg"
     },
-    "favicon": "/images/logo.svg",
+    "favicon": "/images/icon.svg",
     "theme": {
         "primary": "#DC382D",
         "primaryLight": "#B8281F"
@@ -206,6 +206,16 @@
                     "title": "Upstream Issues Fixed",
                     "href": "/upstream_fixes",
                     "icon": "wrench"
+                },
+                {
+                    "title": "RedisVL Integration (Coming Soon)",
+                    "href": "/redisvl",
+                    "icon": "sparkles"
+                },
+                {
+                    "title": "Pending Features (via RedisVL)",
+                    "href": "/pending_features",
+                    "icon": "hourglass-half"
                 },
                 {
                     "title": "FastAPI Integration",

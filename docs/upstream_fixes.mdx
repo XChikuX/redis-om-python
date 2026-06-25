@@ -344,6 +344,103 @@ for pk in await Customer.all_pks(count=100):
     ...
 ```
 
+## RESP3 / redis-py 8 quirks
+
+These don't trace to a single upstream issue but bite every new
+command wrapper ported to redis-py 8. Documenting them here so future
+additions don't repeat the mistakes.
+
+### `COMMAND INFO` shape changed
+
+Up to redis-py 7, `COMMAND INFO <cmd>` returned a flat list shaped
+like `[[name, ...], ...]` (with `None` entries for missing commands).
+From redis-py 8 (with RESP3 enabled) it returns a single dict
+`{name: {name: ..., arity: ..., ...}}`. Capability probes must handle
+both shapes — and note that probing an *unknown* command raises
+`TypeError` (parsing tries to index `None`) rather than returning an
+empty list, so wrap in `try/except`.
+
+```python
+def _command_info_present(info, name: str) -> bool:
+    if not info:
+        return False
+    name = name.lower()
+    if isinstance(info, dict):
+        return name in {k.lower() for k in info.keys()}
+    for entry in info:  # RESP2 list
+        if entry is None:
+            continue
+        if isinstance(entry, (list, tuple)) and entry:
+            if str(entry[0]).lower() == name:
+                return True
+    return False
+```
+
+### `HOTKEYS GET` wraps its dict
+
+Redis 8.6+ `HOTKEYS GET` returns its structured reply as a single
+element under RESP3 — `[{"tracking-active": ..., ...}]` — so always
+unwrap one level before parsing.
+
+### `VSIM` flag combinations produce distinct shapes
+
+The `VSIM` (and similar search commands) replies change shape
+depending on which flags you combine. Always test every combination
+explicitly:
+
+| Flags | RESP3 reply shape |
+| --- | --- |
+| (none) | `[name1, name2, ...]` |
+| `WITHSCORES` | `{name1: score1, name2: score2, ...}` |
+| `WITHATTRIBS` | `{name1: attrs1, name2: attrs2, ...}` |
+| `WITHSCORES WITHATTRIBS` | `{name1: [score1, attrs1], name2: [score2, attrs2], ...}` |
+
+A naive parser that handles only the list and dict shapes will misread
+the last case as `{name: score}` and silently drop the attributes.
+
+### Sorted-set aggregations reply as nested pairs
+
+`ZUNION` / `ZINTER` / `ZINTERSTORE` / `ZUNIONSTORE` with
+`WITHSCORES` return `[member, score, member, score, ...]` under
+RESP2 but `[[member, score], [member, score], ...]` (nested pairs)
+under RESP3. Treat the first element as a discriminator: if it's a
+list/tuple, parse as nested pairs.
+
+### `ZUNIONSTORE` argument order differs from `ZUNION`
+
+`ZUNIONSTORE dest numkeys key...` — `dest` is **positional before**
+`numkeys`. The read variant `ZUNION numkeys key...` has no `dest`.
+A wrapper that shares a code path between the two will silently
+mis-parse inputs.
+
+### `AGGREGATE COUNT` is genuinely new in 8.8
+
+The 7.4 help text for `ZUNIONSTORE` / `ZINTERSTORE` / `ZUNION` /
+`ZINTER` documents `AGGREGATE SUM|MIN|MAX`. 8.8 extends the
+allowable values with `COUNT`. The server responds with
+`ERR syntax error` on older builds, so probe the server (e.g. with
+`ZUNION 1 <throwaway> AGGREGATE COUNT`) before calling the wrapper
+on user data.
+
+### `pytest-asyncio mode=STRICT` rejects bare async fixtures
+
+When `asyncio_mode` is `STRICT` (the default in this repo), declaring
+a fixture as `async def` without the plugin decorator is deprecated
+and will become a hard error in pytest 9. Use:
+
+```python
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def sources(db, key_prefix):
+    await db.zadd(...)
+    return ...
+```
+
+Bare `@pytest.fixture` on an async coroutine is silently accepted in
+some pytest-asyncio versions but emits
+`PytestRemovedIn9Warning`.
+
 ## Reference
 
 - Repository: <https://github.com/XChikuX/redis-om-python>
