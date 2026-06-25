@@ -6,6 +6,7 @@ from .model.array import RedisArray
 from .model.atomic_string import AtomicString, msetex
 from .model.bitmap import BitmapOps, has_bitmap_ops
 from .model.counter import AtomicCounter
+from .model.sorted_set import SortedSetOps, has_aggregate_count
 from .model.migrations.migrator import MigrationError, Migrator
 from .model.model import (
     EmbeddedJsonModel,

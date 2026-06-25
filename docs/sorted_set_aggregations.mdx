@@ -1,0 +1,150 @@
+---
+title: Sorted Set Aggregations (AGGREGATE COUNT)
+description: ZUNION/ZINTER with AGGREGATE COUNT for co-occurrence counts (Redis 8.8+).
+---
+
+# Sorted Set `AGGREGATE COUNT` (Redis 8.8+)
+
+Redis 8.8 added `COUNT` as a new value for the `AGGREGATE` argument on
+sorted-set union and intersection commands. Previously only `SUM`,
+`MIN`, and `MAX` were supported — `COUNT` lets you count **how many
+input sets contain each member** without summing scores.
+
+| Command | Before 8.8 | From 8.8 |
+| --- | --- | --- |
+| `ZUNIONSTORE` `AGGREGATE` | `SUM \| MIN \| MAX` | `SUM \| MIN \| MAX \| COUNT` |
+| `ZINTERSTORE` `AGGREGATE` | `SUM \| MIN \| MAX` | `SUM \| MIN \| MAX \| COUNT` |
+| `ZUNION` `AGGREGATE` | `SUM \| MIN \| MAX` | `SUM \| MIN \| MAX \| COUNT` |
+| `ZINTER` `AGGREGATE` | `SUM \| MIN \| MAX` | `SUM \| MIN \| MAX \| COUNT` |
+
+> **Server requirement**: Redis 8.8+. The wrapper probes the server
+> and raises a Redis `ResponseError` on older builds; use
+> `has_aggregate_count(db)` to guard caller code.
+
+```python
+import asyncio
+from aredis_om import SortedSetOps, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    ops = SortedSetOps(db)
+
+    # Count how many of {tags:redis, tags:cache, tags:perf} each doc has.
+    await db.zadd("tags:redis", {"d1": 1, "d2": 1})
+    await db.zadd("tags:cache", {"d2": 1, "d3": 1})
+    await db.zadd("tags:perf", {"d1": 1})
+
+    out = await ops.zunion_count_with_scores("tags:redis", "tags:cache", "tags:perf")
+    print(out)
+    # > [('d1', 2), ('d2', 2), ('d3', 1)]
+
+
+asyncio.run(main())
+```
+
+The class is also available from the sync mirror (`from redis_om import
+SortedSetOps`) — drop `await`.
+
+## When to use
+
+`AGGREGATE COUNT` is the right answer when you want to **count
+membership overlap** between sorted sets without caring about the
+underlying scores. Common patterns:
+
+- **Tag co-occurrence**: "how many of these tags does each doc have?"
+  (see example above).
+- **Multi-source voting**: "for each option, how many campaigns
+  ranked it?"
+- **Feature intersection analysis**: "for each user, how many of the
+  activity-segment sets contain them?"
+
+It replaces Lua scripts that computed these counts manually.
+
+## Read operations
+
+### `zunion_count(*sources)` → `list[str]`
+
+Returns the union of `sources` using `AGGREGATE COUNT`. Scores are not
+returned; use `zunion_count_with_scores` to get tuples.
+
+```python
+members = await ops.zunion_count(z1, z2, z3)
+# → ['a', 'b', 'c', ...]
+```
+
+### `zunion_count_with_scores(*sources)` → `list[tuple[str, int]]`
+
+Same as `zunion_count` but returns `(member, count)` tuples:
+
+```python
+out = await ops.zunion_count_with_scores(z1, z2, z3)
+# → [('a', 1), ('b', 2), ('c', 3), ...]
+```
+
+### `zinter_count(*sources)` → `list[str]`
+
+Returns the intersection of `sources`. Every member in the result is
+present in **all** source sets, so the count equals `len(sources)`.
+
+```python
+members = await ops.zinter_count(z1, z2, z3)
+# → ['c']  # only c is in all three
+```
+
+### `zinter_count_with_scores(*sources)` → `list[tuple[str, int]]`
+
+```python
+out = await ops.zinter_count_with_scores(z1, z2, z3)
+# → [('c', 3)]
+```
+
+## Write operations
+
+### `zunionstore_count(dest, *sources)` → `int`
+
+`ZUNIONSTORE dest numkeys key... AGGREGATE COUNT`. Writes per-member
+counts to `dest` and returns the number of elements written.
+
+```python
+n = await ops.zunionstore_count("overlap", "tags:redis", "tags:cache")
+# dest now: { d1: 1, d2: 2, d3: 1 }
+```
+
+### `zinterstore_count(dest, *sources)` → `int`
+
+`ZINTERSTORE dest numkeys key... AGGREGATE COUNT`. Writes per-member
+counts (equal to `len(sources)` for all members in the intersection) to
+`dest`.
+
+```python
+n = await ops.zinterstore_count("common", "tags:redis", "tags:cache", "tags:perf")
+# dest: { d2: 3 }  (only d2 is in all three)
+```
+
+## API reference
+
+### `SortedSetOps(db)`
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await ops.zunion_count(*sources)` | `list[str]` | `ZUNION ... AGGREGATE COUNT` |
+| `await ops.zunion_count_with_scores(*sources)` | `list[(str, int)]` | `ZUNION ... AGGREGATE COUNT WITHSCORES` |
+| `await ops.zinter_count(*sources)` | `list[str]` | `ZINTER ... AGGREGATE COUNT` |
+| `await ops.zinter_count_with_scores(*sources)` | `list[(str, int)]` | `ZINTER ... AGGREGATE COUNT WITHSCORES` |
+| `await ops.zunionstore_count(dest, *sources)` | `int` | `ZUNIONSTORE dest ... AGGREGATE COUNT` |
+| `await ops.zinterstore_count(dest, *sources)` | `int` | `ZINTERSTORE dest ... AGGREGATE COUNT` |
+
+### `has_aggregate_count(db)` → `bool`
+
+Returns `True` when `ZUNION ... AGGREGATE COUNT` is supported (Redis
+8.8+).
+
+## Full source
+
+See [`aredis_om/model/sorted_set.py`][source] for the implementation
+and [`tests/test_sorted_set.py`][tests] for the full test suite
+(12 tests).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/sorted_set.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_sorted_set.py

@@ -164,6 +164,11 @@
                     "title": "Vector Sets",
                     "href": "/vector_sets",
                     "icon": "shapes"
+                },
+                {
+                    "title": "Sorted Set Aggregations",
+                    "href": "/sorted_set_aggregations",
+                    "icon": "chart-column"
                 }
             ]
         },
