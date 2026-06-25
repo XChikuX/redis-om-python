@@ -303,15 +303,15 @@ class VectorSet:
         return out
 
     async def random_member(
-            self, count: Optional[int] = None
-        ) -> Union[None, str, list[str]]:
-            """``VRANDMEMBER`` — fetch random element name(s).
+        self, count: Optional[int] = None
+    ) -> Union[None, str, list[str]]:
+        """``VRANDMEMBER`` — fetch random element name(s).
 
-            When ``count`` is ``None`` (default), returns a bare string (or
-            ``None`` if the set is empty). When ``count`` is provided, returns
-            a list of strings. Positive ``count`` returns distinct elements;
-            negative allows repetition.
-            """
+        When ``count`` is ``None`` (default), returns a bare string (or
+        ``None`` if the set is empty). When ``count`` is provided, returns
+        a list of strings. Positive ``count`` returns distinct elements;
+        negative allows repetition.
+        """
         if count is None:
             raw = await self._db.execute_command("VRANDMEMBER", self._key)
             return raw if raw is None else str(raw)

@@ -294,7 +294,7 @@ class RedisStream:
             args: List[Any] = ["XACKDEL", self._key, group]
             if strategy is not None:
                 args.append(strategy.upper())
-            args.extend(ids)
+            args.extend(["IDS", str(len(ids)), *ids])
             raw = await self._db.execute_command(*args)
             # XACKDEL returns [ack_count, del_count]; we return ack_count.
             if isinstance(raw, list) and raw:
@@ -327,7 +327,7 @@ class RedisStream:
             args: List[Any] = ["XDELEX", self._key]
             if strategy is not None:
                 args.append(strategy.upper())
-            args.extend(ids)
+            args.extend(["IDS", str(len(ids)), *ids])
             raw = await self._db.execute_command(*args)
             return int(raw) if not isinstance(raw, list) else int(raw[0])
         return await self.delete(*ids)
@@ -355,10 +355,18 @@ class RedisStream:
             The number of entries released.
         """
         if await self._supports("xnack"):
-            args: List[Any] = ["XNACK", self._key, group, consumer]
-            args.extend(ids)
+            args: List[Any] = [
+                "XNACK",
+                self._key,
+                group,
+                "SILENT",
+                "IDS",
+                str(len(ids)),
+                *ids,
+            ]
             if retry:
-                args.append("RETRY")
+                args.append("RETRYCOUNT")
+                args.append("0")
             return await self._db.execute_command(*args)
         # No graceful server-side equivalent on older Redis.
         return 0

@@ -193,8 +193,6 @@ async def hotkeys_snapshot(
     The caller is responsible for generating load during the sampling
     window. The helper blocks for the requested duration.
     """
-    import asyncio
-
     if duration_seconds < 1:
         raise ValueError(
             "duration_seconds must be >= 1 for hotkeys_snapshot(); "

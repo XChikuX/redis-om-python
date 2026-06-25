@@ -34,6 +34,20 @@ POST_SYNC_FIXES = {
     "tests_sync/test_protocol_negotiation.py": {
         "conn.aclose()": "conn.close()",
     },
+    # hotkeys_snapshot uses asyncio.sleep for the wait; the sync mirror
+    # needs time.sleep instead.
+    "redis_om/hotkeys.py": {
+        "import asyncio": "import time",
+        "asyncio.sleep(": "time.sleep(",
+    },
+    # Hotkeys async tests use import asyncio + await asyncio.sleep / create_task.
+    # After unasync strips await, the sync mirror needs time.sleep and no task.
+    "tests_sync/test_observability_hotkeys.py": {
+        "import asyncio": "import time",
+        "asyncio.sleep(": "time.sleep(",
+        "task = asyncio.create_task(gen_load())": "gen_load()",
+        "        task\n": "",
+    },
 }
 
 
