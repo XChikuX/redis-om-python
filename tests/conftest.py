@@ -60,6 +60,12 @@ def cleanup_model_registry():
 
     yield
 
+    # Models defined inside test functions (e.g. ``class Inner``) register
+    # as ``__main__.<Name>`` rather than ``tests.*``.  They hold references
+    # to the test's ``redis`` fixture, which is torn down afterwards.  If
+    # we leave them in ``model_registry`` a later test that reuses the same
+    # class name will look up the dead connection and silently find no
+    # results, causing brittle order-dependent failures.
     for key in list(model_registry):
-        if key not in existing_models and key.startswith("tests."):
+        if key not in existing_models:
             model_registry.pop(key, None)

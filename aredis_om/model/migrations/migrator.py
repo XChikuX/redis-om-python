@@ -1,5 +1,6 @@
 # mypy: disable-error-code="attr-defined"
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -74,11 +75,36 @@ async def _create_index_cluster(
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
+async def _wait_for_index(conn, index_name, timeout=5.0):
+    """Poll FT.INFO until the index reports it is fully indexed.
+
+    Redis 8.8+ introduced asynchronous background indexing for existing
+    documents, which means ``FT.CREATE`` can return before previously
+    written keys have been scanned.  Tests that create an index and
+    immediately search it can see empty or partial results unless we
+    wait for indexing to finish.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            info = await conn.ft(index_name).info()
+        except redis.ResponseError:
+            return
+        # percent_indexed is a string like "1" when complete.
+        percent = info.get("percent_indexed")
+        if percent == "1" or percent == 1:
+            return
+        await asyncio.sleep(0.05)
+    log.warning("Timeout waiting for index %s to reach 100%% indexed", index_name)
+
+
 async def create_index(
     conn: Union[redis.Redis, redis.RedisCluster], index_name, schema, current_hash
 ):
     if isinstance(conn, redis.RedisCluster):
-        return await _create_index_cluster(conn, index_name, schema, current_hash)
+        await _create_index_cluster(conn, index_name, schema, current_hash)
+        await _wait_for_index(conn, index_name)
+        return
 
     db_number = conn.connection_pool.connection_kwargs.get("db")
     if db_number and db_number > 0:
@@ -91,6 +117,7 @@ async def create_index(
     except redis.ResponseError:
         await conn.execute_command(f"ft.create {index_name} {schema}")
         await conn.set(schema_hash_key(index_name), current_hash)
+        await _wait_for_index(conn, index_name)
     else:
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
@@ -124,7 +151,7 @@ class IndexMigration:
 
     async def drop(self):
         try:
-            await self.conn.ft(self.index_name).dropindex()
+            await self.conn.ft(self.index_name).dropindex(delete_documents=True)
         except redis.ResponseError:
             log.info("Index does not exist: %s", self.index_name)
 
