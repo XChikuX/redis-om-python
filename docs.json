@@ -146,6 +146,11 @@
                     "icon": "chart-line"
                 },
                 {
+                    "title": "Hot Keys Tracker",
+                    "href": "/hotkeys",
+                    "icon": "fire"
+                },
+                {
                     "title": "Atomic Strings (CAS, MSETEX)",
                     "href": "/atomic_strings",
                     "icon": "lock"

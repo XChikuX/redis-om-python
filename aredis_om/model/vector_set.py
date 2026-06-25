@@ -72,14 +72,34 @@ async def _probe(db: Any, command: str) -> bool:
         return False
 
 
+def _command_info_present(info: Any, name: str) -> bool:
+    """Return True if a COMMAND INFO reply contains ``name``.
+
+    Handles both RESP2 ``[[name, ...]]`` and RESP3 / redis-py 8
+    ``{name: {...}}`` shapes.
+    """
+    if not info:
+        return False
+    name = name.lower()
+    if isinstance(info, dict):
+        return name in {k.lower() for k in info.keys()}
+    # RESP2 list: ``[entry_or_none, ...]``.
+    for entry in info:
+        if entry is None:
+            continue
+        if isinstance(entry, (list, tuple)) and entry:
+            if str(entry[0]).lower() == name:
+                return True
+    return False
+
+
 # ── capability helpers ──────────────────────────────────────────────────
 
 async def has_vector_sets(db: Any) -> bool:
     """Return ``True`` if the server has the ``VADD`` command (Redis 8.8+)."""
     try:
         info = await db.execute_command("COMMAND", "INFO", "VADD")
-        # COMMAND INFO returns [[name, ...]] or [nil] when absent.
-        return bool(info and info[0] is not None)
+        return bool(_command_info_present(info, "vadd"))
     except Exception:
         return False
 

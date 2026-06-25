@@ -18,9 +18,22 @@ def _has_command(db, command):
     async def _check():
         try:
             info = await db.execute_command("COMMAND", "INFO", command)
-            return bool(info and all(info))
         except Exception:
             return False
+        if not info:
+            return False
+        name = command.lower()
+        # redis-py 8 / RESP3 returns {name: {...}}
+        if isinstance(info, dict):
+            return name in {k.lower() for k in info.keys()}
+        # RESP2 returns [[name, ...], ...] with None entries for missing cmds.
+        for entry in info:
+            if entry is None:
+                continue
+            if isinstance(entry, (list, tuple)) and entry:
+                if str(entry[0]).lower() == name:
+                    return True
+        return False
 
     return _check
 
