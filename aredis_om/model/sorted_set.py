@@ -110,15 +110,23 @@ class SortedSetOps:
             with_scores=False,
         )
 
-    async def zunion_count_with_scores(self, *sources: str) -> list[Tuple[str, int]]:
-        """``ZUNION ... AGGREGATE COUNT WITHSCORES`` — convenience for
-        tuple-form results.
-        """
-        return await self._aggregate_count(
-            "ZUNION",
-            sources,
-            with_scores=True,
-        )
+    async def zunion_count_with_scores(
+            self, *sources: str
+        ) -> Union[list[str], list[Tuple[str, int]]]:
+            """``ZUNION ... AGGREGATE COUNT WITHSCORES`` — convenience for
+            tuple-form results.
+
+            Returns ``list[tuple[str, int]]`` when scores are present; the
+            declared ``Union`` widens the type to satisfy mypy because the
+            underlying parser may return bare members if the server replies
+            without WITHSCORES (it shouldn't, but the union documents that
+            ``_aggregate_count`` is the source of truth).
+            """
+            return await self._aggregate_count(
+                "ZUNION",
+                sources,
+                with_scores=True,
+            )
 
     # ── ZINTER numkeys key [key ...] AGGREGATE COUNT ────────────────────
 
@@ -137,13 +145,15 @@ class SortedSetOps:
             with_scores=False,
         )
 
-    async def zinter_count_with_scores(self, *sources: str) -> list[Tuple[str, int]]:
-        """``ZINTER ... AGGREGATE COUNT WITHSCORES``."""
-        return await self._aggregate_count(
-            "ZINTER",
-            sources,
-            with_scores=True,
-        )
+    async def zinter_count_with_scores(
+            self, *sources: str
+        ) -> Union[list[str], list[Tuple[str, int]]]:
+            """``ZINTER ... AGGREGATE COUNT WITHSCORES``."""
+            return await self._aggregate_count(
+                "ZINTER",
+                sources,
+                with_scores=True,
+            )
 
     # ── internal ────────────────────────────────────────────────────────
 

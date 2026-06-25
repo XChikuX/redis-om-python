@@ -13,6 +13,11 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
+    # unasync strips `await` from asyncio.sleep as well, leaving a bare
+    # call that returns a coroutine (mypy flags it, and runtime would
+    # crash on NameError since `asyncio` is never imported in the
+    # generated sync mirror). Rewrite to time.sleep explicitly.
+    "asyncio.sleep(": "time.sleep(",
 }
 
 

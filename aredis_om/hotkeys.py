@@ -13,17 +13,16 @@ target specific hash slots).
 
 Example::
 
-    import asyncio
-    from aredis_om.observability import hotkeys_snapshot
+    from aredis_om.hotkeys import hotkeys_snapshot
 
-    async def main():
-        snapshot = await hotkeys_snapshot(db, duration_seconds=5)
-        print(snapshot.top_by_cpu)   # [("user:1", 1234), ...]
-        print(snapshot.top_by_net)   # [("blob:big", 987654), ...]
+    snapshot = await hotkeys_snapshot(db, duration_seconds=5)
+    print(snapshot.top_by_cpu)   # [("user:1", 1234), ...]
+    print(snapshot.top_by_net)   # [("blob:big", 987654), ...]
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence
 
