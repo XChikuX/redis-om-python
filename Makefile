@@ -95,6 +95,7 @@ redis_cluster:
 	@sleep 5
 	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
 	if ! docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+		echo "Bootstrapping Redis Cluster topology..."; \
 		docker exec $$cluster_init_container redis-cli --cluster create \
 			127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
 			127.0.0.1:7004 127.0.0.1:7005 127.0.0.1:7006 \
@@ -104,6 +105,7 @@ redis_cluster:
 	@cluster_init_container=$$($(CLUSTER_COMPOSE) ps -q redis-cluster-7001); \
 	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
 		if docker exec $$cluster_init_container redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+			echo "Redis Cluster is healthy."; \
 			exit 0; \
 		fi; \
 		sleep 2; \
