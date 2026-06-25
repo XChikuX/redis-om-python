@@ -19,7 +19,6 @@ from .model.keyspace_events import (
     disable_keyspace_events,
     enable_keyspace_events,
 )
-from .model.sorted_set import SortedSetOps, has_aggregate_count
 from .model.migrations.migrator import MigrationError, Migrator
 from .model.model import (
     EmbeddedJsonModel,
@@ -36,6 +35,7 @@ from .model.model import (
     RedisModelError,
     VectorFieldOptions,
 )
+from .model.sorted_set import SortedSetOps, has_aggregate_count
 from .model.stream import RedisStream, StreamEntry
 from .model.types import Coordinates, GeoFilter
 from .model.vector_set import VectorSet, has_vector_sets

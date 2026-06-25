@@ -95,6 +95,7 @@ def _command_info_present(info: Any, name: str) -> bool:
 
 # ── capability helpers ──────────────────────────────────────────────────
 
+
 async def has_vector_sets(db: Any) -> bool:
     """Return ``True`` if the server has the ``VADD`` command (Redis 8.8+)."""
     try:
@@ -110,6 +111,7 @@ def clear_vector_set_cache() -> None:
 
 
 # ── VectorSet wrapper ───────────────────────────────────────────────────
+
 
 class VectorSet:
     """Thin wrapper around a Redis 8.8 vector-set key.
@@ -187,9 +189,7 @@ class VectorSet:
 
     # ── attributes ──────────────────────────────────────────────────────
 
-    async def set_attribute(
-        self, element: str, attributes: Mapping[str, Any]
-    ) -> bool:
+    async def set_attribute(self, element: str, attributes: Mapping[str, Any]) -> bool:
         """``VSETATTR`` — attach JSON attributes to an element.
 
         ``attributes`` is serialised with :func:`json.dumps` and stored as
@@ -199,9 +199,7 @@ class VectorSet:
         """
         payload = json.dumps(attributes)
         return bool(
-            await self._db.execute_command(
-                "VSETATTR", self._key, element, payload
-            )
+            await self._db.execute_command("VSETATTR", self._key, element, payload)
         )
 
     async def get_attribute(self, element: str) -> Optional[Mapping[str, Any]]:
@@ -210,9 +208,7 @@ class VectorSet:
         Returns the parsed JSON dict, or ``None`` if the element does not
         exist or has no attributes.
         """
-        raw = await self._db.execute_command(
-            "VGETATTR", self._key, element
-        )
+        raw = await self._db.execute_command("VGETATTR", self._key, element)
         return _coerce_attrs(raw)
 
     # ── queries ─────────────────────────────────────────────────────────
@@ -317,13 +313,12 @@ class VectorSet:
         if count is None:
             raw = await self._db.execute_command("VRANDMEMBER", self._key)
             return raw if raw is None else str(raw)
-        raw = await self._db.execute_command(
-            "VRANDMEMBER", self._key, int(count)
-        )
+        raw = await self._db.execute_command("VRANDMEMBER", self._key, int(count))
         return [str(x) for x in (raw or [])]
 
 
 # ── response parsing ────────────────────────────────────────────────────
+
 
 def _parse_vsim(
     raw: Any, with_scores: bool, with_attributes: bool
@@ -359,10 +354,7 @@ def _parse_vsim(
     if not with_scores and not with_attributes:
         return [_str(x) for x in items]
     if with_scores and not with_attributes:
-        return [
-            (_str(items[i]), _num(items[i + 1]))
-            for i in range(0, len(items), 2)
-        ]
+        return [(_str(items[i]), _num(items[i + 1])) for i in range(0, len(items), 2)]
     if with_attributes and not with_scores:
         return [
             (_str(items[i]), _coerce_attrs(items[i + 1]))

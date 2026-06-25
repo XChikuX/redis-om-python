@@ -110,9 +110,7 @@ class ClusterAdmin:
             return dict(raw[0])
         return _pairs_to_dict(raw)
 
-    async def migration_start(
-        self, *, slots: Optional[Sequence[int]] = None
-    ) -> bool:
+    async def migration_start(self, *, slots: Optional[Sequence[int]] = None) -> bool:
         """``CLUSTER MIGRATION START`` — begin a migration.
 
         Args:
@@ -140,9 +138,7 @@ class ClusterAdmin:
 
     async def migration_log(self, count: int = 10) -> list:
         """``CLUSTER MIGRATION LOG [count]`` — recent migration log entries."""
-        raw = await self._db.execute_command(
-            "CLUSTER", "MIGRATION", "LOG", int(count)
-        )
+        raw = await self._db.execute_command("CLUSTER", "MIGRATION", "LOG", int(count))
         if raw is None:
             return []
         return list(raw)
@@ -182,6 +178,7 @@ class ClusterAdmin:
 
 # ── standalone helpers ──────────────────────────────────────────────────
 
+
 async def is_cluster_mode(db: Any) -> bool:
     """Return ``True`` if the server is in cluster mode."""
     try:
@@ -216,6 +213,7 @@ async def has_migration(db: Any) -> bool:
 
 
 # ── response parsing ────────────────────────────────────────────────────
+
 
 def _parse_slot_stats(raw: Any) -> list[dict]:
     """Normalise ``CLUSTER SLOT-STATS`` reply to ``list[dict]``.

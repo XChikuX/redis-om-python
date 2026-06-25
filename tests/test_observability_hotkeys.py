@@ -103,9 +103,7 @@ class TestGet:
         if not await _has_command(db, "hotkeys")():
             pytest.skip("HOTKEYS requires Redis 8.6+")
         # Start a 1s sampling window.
-        await hotkeys_start(
-            db, metrics=["CPU", "NET"], top_k=5, duration_seconds=1
-        )
+        await hotkeys_start(db, metrics=["CPU", "NET"], top_k=5, duration_seconds=1)
         # Generate some load.
         for i in range(10):
             await db.set(f"hotkeys:test:{i}", "x" * 100)
@@ -170,9 +168,7 @@ class TestSnapshotHelper:
                 await asyncio.sleep(0.05)
 
         task = asyncio.create_task(gen_load())
-        snap = await hotkeys_snapshot(
-            db, metrics=["CPU", "NET"], duration_seconds=1
-        )
+        snap = await hotkeys_snapshot(db, metrics=["CPU", "NET"], duration_seconds=1)
         await task
 
         assert isinstance(snap, HotKeysSnapshot)
@@ -192,9 +188,7 @@ class TestTopKBounded:
         if not await _has_command(db, "hotkeys")():
             pytest.skip("HOTKEYS requires Redis 8.6+")
         # top_k=2 should cap result lists at 2 entries.
-        await hotkeys_start(
-            db, metrics=["CPU"], top_k=2, duration_seconds=1
-        )
+        await hotkeys_start(db, metrics=["CPU"], top_k=2, duration_seconds=1)
         import asyncio
 
         await asyncio.sleep(2)

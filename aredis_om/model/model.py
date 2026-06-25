@@ -3418,9 +3418,7 @@ class HashModel(RedisModel, abc.ABC):
             results = await db.httl(self.key(), field)
         return int(results[0])
 
-    async def get_field_expire_time(
-        self, field: str, *, px: bool = False
-    ) -> int:
+    async def get_field_expire_time(self, field: str, *, px: bool = False) -> int:
         """Get the absolute expiration timestamp of a field
         (``HEXPIRETIME``/``HPEXPIRETIME``).
 
@@ -3512,9 +3510,7 @@ class HashModel(RedisModel, abc.ABC):
             The field's previous value, or ``None`` if it didn't exist.
         """
         db = self.db()
-        raw = await db.execute_command(
-            "HGETDEL", self.key(), "FIELDS", 1, field
-        )
+        raw = await db.execute_command("HGETDEL", self.key(), "FIELDS", 1, field)
         if not raw:
             return None
         return raw[0]

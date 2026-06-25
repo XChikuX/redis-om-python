@@ -66,23 +66,23 @@ class KeyspaceEvents:
     ALL_KEY_EVENTS_ALIAS = "A"
 
     # ── category toggles ───────────────────────────────────────────────
-    GENERIC_COMMANDS = "g"   # DEL, EXPIRE, RENAME, SORT, ...
-    STRING_COMMANDS = "$"    # SET, SETRANGE, APPEND, INCR, ...
-    LIST_COMMANDS = "l"      # LPUSH, RPUSH, LPOP, RPOP, ...
-    SET_COMMANDS = "s"       # SADD, SREM, SPOP, SMOVE, ...
-    HASH_COMMANDS = "h"      # HSET, HDEL, HINCRBY, ...
+    GENERIC_COMMANDS = "g"  # DEL, EXPIRE, RENAME, SORT, ...
+    STRING_COMMANDS = "$"  # SET, SETRANGE, APPEND, INCR, ...
+    LIST_COMMANDS = "l"  # LPUSH, RPUSH, LPOP, RPOP, ...
+    SET_COMMANDS = "s"  # SADD, SREM, SPOP, SMOVE, ...
+    HASH_COMMANDS = "h"  # HSET, HDEL, HINCRBY, ...
     SORTED_SET_COMMANDS = "z"  # ZADD, ZREM, ZINCRBY, ...
-    STREAM_COMMANDS = "t"    # XADD, XDEL, XTRIM, ...
+    STREAM_COMMANDS = "t"  # XADD, XDEL, XTRIM, ...
 
     # ── special events ────────────────────────────────────────────────
-    EXPIRED_EVENTS = "x"     # fired when a key expires
-    EVICTED_EVENTS = "e"     # fired when a key is evicted by maxmemory
-    KEY_MISS_EVENTS = "m"    # fired when a key is accessed but missing
-    NEW_KEY_EVENTS = "n"     # fired when a new key is added
+    EXPIRED_EVENTS = "x"  # fired when a key expires
+    EVICTED_EVENTS = "e"  # fired when a key is evicted by maxmemory
+    KEY_MISS_EVENTS = "m"  # fired when a key is accessed but missing
+    NEW_KEY_EVENTS = "n"  # fired when a new key is added
 
     # ── builtin presets ───────────────────────────────────────────────
-    ALL_EVENTS_PRESET = "AKE"   # all events, both prefix styles
-    EXPIRATIONS_PRESET = "Ex"   # expired events only, keyevent prefix
+    ALL_EVENTS_PRESET = "AKE"  # all events, both prefix styles
+    EXPIRATIONS_PRESET = "Ex"  # expired events only, keyevent prefix
 
     # ── event identifiers (the strings published on the channel) ──────
     GENERIC = "generic"
@@ -144,9 +144,7 @@ async def enable_keyspace_events(db: Any, flags: str) -> bool:
     explicitly when finished if you don't want to affect other clients
     on the same server.
     """
-    await db.execute_command(
-        "CONFIG", "SET", "notify-keyspace-events", flags
-    )
+    await db.execute_command("CONFIG", "SET", "notify-keyspace-events", flags)
     return True
 
 

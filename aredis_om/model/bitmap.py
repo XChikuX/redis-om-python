@@ -49,11 +49,7 @@ class BitmapOps:
         Useful for set-difference over co-indexed bitmaps
         (e.g. "users in segment A who are not in segment B").
         """
-        return int(
-            await self._db.execute_command(
-                "BITOP", "DIFF", dest, src1, src2
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "DIFF", dest, src1, src2))
 
     async def diff1(self, dest: str, src1: str, src2: str) -> int:
         """``BITOP DIFF1`` — ``dest := src2 AND NOT src1``.
@@ -62,11 +58,7 @@ class BitmapOps:
         so callers do not need to swap argument order or compute NOT
         separately.
         """
-        return int(
-            await self._db.execute_command(
-                "BITOP", "DIFF1", dest, src1, src2
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "DIFF1", dest, src1, src2))
 
     async def andor(self, dest: str, src1: str, *others: str) -> int:
         """``BITOP ANDOR`` — ``dest := src1 AND (others[0] OR others[1] OR ...)``.
@@ -80,9 +72,7 @@ class BitmapOps:
         if not others:
             raise ValueError("andor() requires at least two source keys")
         return int(
-            await self._db.execute_command(
-                "BITOP", "ANDOR", dest, src1, *others
-            )
+            await self._db.execute_command("BITOP", "ANDOR", dest, src1, *others)
         )
 
     async def one(self, dest: str, *sources: str) -> int:
@@ -95,48 +85,29 @@ class BitmapOps:
         """
         if len(sources) < 2:
             raise ValueError("one() requires at least two source keys")
-        return int(
-            await self._db.execute_command(
-                "BITOP", "ONE", dest, *sources
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "ONE", dest, *sources))
 
     # ── legacy passthroughs (for completeness) ─────────────────────────
 
     async def and_(self, dest: str, *sources: str) -> int:
         """``BITOP AND`` — intersection of all sources."""
-        return int(
-            await self._db.execute_command(
-                "BITOP", "AND", dest, *sources
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "AND", dest, *sources))
 
     async def or_(self, dest: str, *sources: str) -> int:
         """``BITOP OR`` — union of all sources."""
-        return int(
-            await self._db.execute_command(
-                "BITOP", "OR", dest, *sources
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "OR", dest, *sources))
 
     async def xor(self, dest: str, *sources: str) -> int:
         """``BITOP XOR`` — symmetric difference of all sources."""
-        return int(
-            await self._db.execute_command(
-                "BITOP", "XOR", dest, *sources
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "XOR", dest, *sources))
 
     async def not_(self, dest: str, source: str) -> int:
         """``BITOP NOT`` — bitwise complement of ``source``."""
-        return int(
-            await self._db.execute_command(
-                "BITOP", "NOT", dest, source
-            )
-        )
+        return int(await self._db.execute_command("BITOP", "NOT", dest, source))
 
 
 # ── capability probe ────────────────────────────────────────────────────
+
 
 async def has_bitmap_ops(db: Any) -> bool:
     """Return ``True`` if the server supports ``BITOP DIFF`` (Redis 8.2+).

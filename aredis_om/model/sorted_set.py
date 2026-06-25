@@ -51,9 +51,7 @@ class SortedSetOps:
 
     # ── ZUNIONSTORE destination key [key ...] AGGREGATE COUNT ───────────
 
-    async def zunionstore_count(
-        self, dest: str, *sources: str
-    ) -> int:
+    async def zunionstore_count(self, dest: str, *sources: str) -> int:
         """``ZUNIONSTORE dest numkeys key... AGGREGATE COUNT`` — write.
 
         Stores the per-element **count** of input sets that contain each
@@ -61,16 +59,18 @@ class SortedSetOps:
         """
         return int(
             await self._db.execute_command(
-                "ZUNIONSTORE", dest, len(sources), *sources,
-                "AGGREGATE", "COUNT",
+                "ZUNIONSTORE",
+                dest,
+                len(sources),
+                *sources,
+                "AGGREGATE",
+                "COUNT",
             )
         )
 
     # ── ZINTERSTORE destination key [key ...] AGGREGATE COUNT ───────────
 
-    async def zinterstore_count(
-        self, dest: str, *sources: str
-    ) -> int:
+    async def zinterstore_count(self, dest: str, *sources: str) -> int:
         """``ZINTERSTORE dest numkeys key... AGGREGATE COUNT`` — write.
 
         Stores the per-element count of input sets containing each
@@ -80,8 +80,12 @@ class SortedSetOps:
         """
         return int(
             await self._db.execute_command(
-                "ZINTERSTORE", dest, len(sources), *sources,
-                "AGGREGATE", "COUNT",
+                "ZINTERSTORE",
+                dest,
+                len(sources),
+                *sources,
+                "AGGREGATE",
+                "COUNT",
             )
         )
 
@@ -101,17 +105,19 @@ class SortedSetOps:
         Use the ``with_scores`` keyword argument to switch.
         """
         return await self._aggregate_count(
-            "ZUNION", sources, with_scores=False,
+            "ZUNION",
+            sources,
+            with_scores=False,
         )
 
-    async def zunion_count_with_scores(
-        self, *sources: str
-    ) -> list[Tuple[str, int]]:
+    async def zunion_count_with_scores(self, *sources: str) -> list[Tuple[str, int]]:
         """``ZUNION ... AGGREGATE COUNT WITHSCORES`` — convenience for
         tuple-form results.
         """
         return await self._aggregate_count(
-            "ZUNION", sources, with_scores=True,
+            "ZUNION",
+            sources,
+            with_scores=True,
         )
 
     # ── ZINTER numkeys key [key ...] AGGREGATE COUNT ────────────────────
@@ -126,15 +132,17 @@ class SortedSetOps:
         equal to ``len(sources)`` for this command.
         """
         return await self._aggregate_count(
-            "ZINTER", sources, with_scores=False,
+            "ZINTER",
+            sources,
+            with_scores=False,
         )
 
-    async def zinter_count_with_scores(
-        self, *sources: str
-    ) -> list[Tuple[str, int]]:
+    async def zinter_count_with_scores(self, *sources: str) -> list[Tuple[str, int]]:
         """``ZINTER ... AGGREGATE COUNT WITHSCORES``."""
         return await self._aggregate_count(
-            "ZINTER", sources, with_scores=True,
+            "ZINTER",
+            sources,
+            with_scores=True,
         )
 
     # ── internal ────────────────────────────────────────────────────────
@@ -156,6 +164,7 @@ class SortedSetOps:
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
+
 
 def _parse_zresult(
     raw: Any, with_scores: bool
@@ -206,6 +215,7 @@ def _num(x: Any) -> int:
 
 
 # ── capability probe ────────────────────────────────────────────────────
+
 
 async def has_aggregate_count(db: Any) -> bool:
     """Return ``True`` if ``ZUNION ... AGGREGATE COUNT`` is supported (8.8+)."""

@@ -101,6 +101,7 @@ def _num(x: Any) -> int:
 
 # ── low-level commands ──────────────────────────────────────────────────
 
+
 async def hotkeys_start(
     db: Any,
     *,
@@ -131,9 +132,7 @@ async def hotkeys_start(
     metrics = [m.upper() for m in metrics]
     for m in metrics:
         if m not in (_METRIC_CPU, _METRIC_NET):
-            raise ValueError(
-                f"metrics entries must be 'CPU' or 'NET'; got {m!r}"
-            )
+            raise ValueError(f"metrics entries must be 'CPU' or 'NET'; got {m!r}")
     if not metrics:
         raise ValueError("at least one metric must be requested")
 
@@ -167,6 +166,7 @@ async def hotkeys_get(db: Any) -> HotKeysSnapshot:
 
 
 # ── high-level convenience ──────────────────────────────────────────────
+
 
 async def hotkeys_snapshot(
     db: Any,
@@ -251,6 +251,7 @@ async def has_hotkeys(db: Any) -> bool:
 
 
 # ── parsing ─────────────────────────────────────────────────────────────
+
 
 def _parse_snapshot(raw: Any) -> HotKeysSnapshot:
     """Normalise a HOTKEYS GET reply into a :class:`HotKeysSnapshot`."""

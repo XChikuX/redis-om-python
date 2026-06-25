@@ -126,9 +126,7 @@ class AtomicString:
             ``True`` if the key was deleted, ``False`` if the value did
             not match.
         """
-        result = await self._db.execute_command(
-            "DELEX", self._key, "IFEQ", expected
-        )
+        result = await self._db.execute_command("DELEX", self._key, "IFEQ", expected)
         return bool(result)
 
     # ── digest ─────────────────────────────────────────────────────

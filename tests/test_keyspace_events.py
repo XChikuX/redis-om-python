@@ -57,9 +57,9 @@ class TestBuildFlags:
         assert flags == "g"
 
     def test_accepts_pre_joined_string(self):
-            flags = build_flags("KE", "g", "KEx")
-            # KEK, Eg, EKgx... deduplicated: K, E, g, x
-            assert "".join(sorted(flags)) == "EKgx"
+        flags = build_flags("KE", "g", "KEx")
+        # KEK, Eg, EKgx... deduplicated: K, E, g, x
+        assert "".join(sorted(flags)) == "EKgx"
 
     def test_empty(self):
         assert build_flags() == ""

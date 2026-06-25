@@ -198,9 +198,7 @@ class TestSimilar:
         await vs.add([1.0, 2.0], "doc2")
         await vs.set_attribute("doc1", {"color": "red"})
         # FILTER matches doc1.
-        results = await vs.similar(
-            [1.0, 2.0], filter_expr='.color == "red"'
-        )
+        results = await vs.similar([1.0, 2.0], filter_expr='.color == "red"')
         assert results == ["doc1"]
 
     @py_test_mark_asyncio
@@ -211,9 +209,7 @@ class TestSimilar:
         await vs.add([1.0, 2.0], "doc2")
         await vs.set_attribute("doc1", {"color": "red"})
         # FILTER that doesn't match anything.
-        results = await vs.similar(
-            [1.0, 2.0], filter_expr='.color == "blue"'
-        )
+        results = await vs.similar([1.0, 2.0], filter_expr='.color == "blue"')
         assert results == []
 
     @py_test_mark_asyncio
@@ -235,9 +231,7 @@ class TestSimilar:
         # NOQUANT so the self-similarity score is exactly 1.0.
         await vs.add([1.0, 2.0], "doc1", quant="NOQUANT")
         await vs.set_attribute("doc1", {"color": "red"})
-        results = await vs.similar(
-            [1.0, 2.0], with_scores=True, with_attributes=True
-        )
+        results = await vs.similar([1.0, 2.0], with_scores=True, with_attributes=True)
         name, score, attrs = results[0]
         assert name == "doc1"
         assert abs(score - 1.0) < 1e-6
@@ -416,9 +410,7 @@ class TestEndToEnd:
         assert scores[tiger_idx] > scores[dog_idx]
         assert abs(scores[cat_idx] - 1.0) < 1e-6
         # Filter by attribute.
-        felines = await vs.similar(
-            [1.0, 0.0], filter_expr='.kind == "feline"'
-        )
+        felines = await vs.similar([1.0, 0.0], filter_expr='.kind == "feline"')
         assert set(felines) == {"cat", "tiger"}
         # Remove tiger and verify card drops.
         assert await vs.remove("tiger") is True

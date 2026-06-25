@@ -158,9 +158,7 @@ class TestStreamAckAndDelete:
         await stream.add({"task": "a"}, id="1-0")
         await stream.create_group("workers", id="0", mkstream=True)
         entries = await stream.read_group("workers", "w1", count=10)
-        n = await stream.ack_and_delete(
-            "workers", entries[0].id, strategy="delref"
-        )
+        n = await stream.ack_and_delete("workers", entries[0].id, strategy="delref")
         assert n >= 0
 
 
