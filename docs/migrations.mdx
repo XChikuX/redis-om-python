@@ -1,0 +1,198 @@
+---
+title: Migrations
+description: Schema management with Migrator, the migrate CLI, drop-and-recreate semantics, dry-runs, history, and cluster mode.
+---
+
+# Migrations
+
+The `Migrator` and the `migrate` CLI manage RediSearch indexes for
+your Redis OM models. They detect new or changed models, create
+indexes when needed, drop and recreate them when the schema changes,
+and write a JSON history to a Redis list for audit purposes.
+
+## When do you need to migrate?
+
+Run the migrator **once after you change a model definition** (or
+after adding a new indexed model). The migrator is idempotent — running
+it again with no changes is a no-op.
+
+```python
+from aredis_om import Migrator
+
+await Migrator().run()
+```
+
+> **Sync vs async:** This page shows the async API. Import from
+> `redis_om` (the generated sync mirror) and drop `await` for the
+> sync equivalents.
+
+## What the migrator does
+
+1. Walks `model_registry` and calls `Model.redisearch_schema()` for
+   every model that defines one.
+2. Computes a `sha1` hash of each schema string.
+3. Compares the hash against the one stored in Redis at
+   `<index_name>:hash`.
+4. Plans migrations:
+   - **No index, no stored hash** → `CREATE`
+   - **Index exists, hash matches** → no-op
+   - **Index exists, hash differs** → `DROP` + `CREATE` (data preserved
+     during the drop — the index is dropped but the underlying hashes /
+     JSON docs are kept and re-indexed by the new index)
+
+## Detect vs. run
+
+`detect_migrations()` populates `Migrator.migrations` without applying
+anything. `run()` applies them.
+
+```python
+migrator = Migrator()
+await migrator.detect_migrations()
+
+print(f"pending: {len(migrator.migrations)}")
+for migration in migrator.migrations:
+    print(migration.summary())
+```
+
+A migration summary looks like:
+
+```
+CREATE __main__.Widget index=:__main__.Widget:index to=8257846f43decf424603b4acb169b2f0992b9383
+```
+
+## Dry run
+
+Pass `dry_run=True` to print the planned migrations without applying
+them:
+
+```python
+await Migrator().run(dry_run=True)
+```
+
+Output:
+
+```
+Dry run: 1 migration(s) planned:
+  - CREATE __main__.Widget index=:__main__.Widget:index to=8257846f43decf424603b4acb169b2f9383
+```
+
+## The `migrate` CLI
+
+The `migrate` CLI tool does the same thing as `Migrator().run()` but
+runs once and exits:
+
+```bash
+migrate
+# or, to point at a specific module that contains your models
+migrate --module myapp.models
+# or, to see what migrations would run without applying them
+migrate --dry-run
+```
+
+The CLI auto-detects indexed models in the given module (default:
+`aredis_om`), prints the planned migrations, and prompts for
+confirmation before running them.
+
+## History
+
+Each applied migration is appended to a Redis list at
+`redis_om:migration_history`:
+
+```python
+import redis.asyncio as redis
+
+client = redis.from_url("redis://localhost:6379")
+history = await client.lrange("redis_om:migration_history", 0, -1)
+
+import json
+for record in history:
+    print(json.loads(record))
+```
+
+Output:
+
+```json
+{
+  "timestamp": "2026-06-25T19:42:01.234567+00:00",
+  "model": "__main__.Widget",
+  "index": ":__main__.Widget:index",
+  "action": "CREATE",
+  "hash": "8257846f43decf424603b4acb169b2f0992b9383",
+  "previous_hash": null
+}
+```
+
+Set `record_history=False` on `run()` to skip history writes — useful
+for tests that don't want to leave audit trails:
+
+```python
+await Migrator().run(record_history=False)
+```
+
+History writes are best-effort: a failure to write the audit record
+never aborts the migration itself.
+
+## Index health warnings
+
+After `FT.CREATE`, the migrator (and `FindQuery.execute`) call
+`check_index_health()` on each affected model. If `FT.INFO` reports
+indexing failures, a warning is logged:
+
+```
+Hash indexing failures at __main__.Widget:index: 3 (last error: ...")
+```
+
+This catches the scenario where documents were written to keys the
+index doesn't recognize (e.g. wrong prefix or schema mismatch). See
+[`tests/test_regressions.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_regressions.py) for the regression coverage.
+
+## Cluster mode
+
+The migrator works on Redis Cluster too. Indexes are cluster-aware on
+Redis 8+ (sent to a random node, which propagates them to all shards)
+and on older Redis Cluster builds the migrator sends `FT.CREATE` to
+each primary individually, tolerating `Index already exists` from
+nodes that received the index via replication.
+
+The migrator also **waits** for asynchronous indexing to complete on
+Redis 8.8+ before returning. Without this wait, tests that create an
+index and immediately search it can see empty or partial results
+because `FT.CREATE` returns before background scanning finishes.
+`percent_indexed` is polled from `FT.INFO` until it reaches `1`.
+
+## Default TTL during migrations
+
+`Migrator` does not change TTLs. If a model has `Meta.default_ttl`,
+each individual `save()` / `add()` call applies it. Drop-and-recreate
+migrations do not re-apply TTLs — existing records keep whatever TTL
+they had.
+
+## Custom `index_name`
+
+By default the index name is `"{global_key_prefix}:{model_key_prefix}:index"`.
+Override it via the model's `Meta.index_name`:
+
+```python
+class Widget(HashModel):
+    name: str = Field(index=True)
+
+    class Meta:
+        index_name = "widget-search-v2"
+```
+
+The migrator detects the override and creates the index under the new
+name. Drop-and-recreate logic uses the *current* `index_name`, so
+renaming an index leaves the old one orphaned unless you also drop it.
+
+## Embedded models and migration
+
+Embedded models (`EmbeddedJsonModel`, or a `HashModel` with
+`class Meta: embedded = True`) are **not** registered with the
+migrator. Their indexed fields are appended to the parent model's
+index instead. See [Models and Fields](/models#embedded-json-models) for
+how to define an embedded model.
+
+## Reference
+
+- Source: [`aredis_om/model/migrations/migrator.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/migrations/migrator.py)
+- Tests: [`tests/test_migrations.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_migrations.py), [`tests/test_regressions.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_regressions.py)

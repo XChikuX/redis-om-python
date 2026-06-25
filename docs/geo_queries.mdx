@@ -1,0 +1,297 @@
+---
+title: Geospatial Queries
+description: Coordinates fields, GeoFilter queries, GEO+TAG+sort combinations, and raw GEO commands via execute_command pipelines.
+---
+
+# Geospatial Queries
+
+Redis OM has two complementary GEO features:
+
+1. **`Coordinates` field + `GeoFilter` query** — model-level GEO with full
+   Pydantic validation, RediSearch indexing, and composition with TAG /
+   NUMERIC / TEXT filters.
+2. **Raw `GEO*` commands via `Model.db().execute_command(...)`** —
+   direct access to Redis's native `GEOADD`, `GEORADIUS`,
+   `GEORADIUSBYMEMBER`, `GEOSEARCH`, and `GEOSEARCHSTORE` for sorted-set
+   based geospatial lookups.
+
+Both work side by side, and both can be combined inside a single
+pipeline round trip.
+
+> **Why `execute_command`?** redis-om doesn't ship high-level bindings for
+> every redis-py method. We deliberately bypass redis-py's argument
+> validators and call `execute_command("GEOADD", ...)` directly. This is
+> **faster** (no per-call dispatch), **more predictable** (argument
+> coercion rules match the Redis CLI exactly), and **works on any
+> redis-py version** even when its high-level bindings have a bug. See
+> [Why `execute_command`?](#why-execute-command) at the bottom for the
+> full rationale.
+
+## Coordinates fields
+
+`Coordinates` is a small Pydantic-validated pair stored as
+`"longitude,latitude"` for Redis's GEO commands. You can construct one
+from a tuple, a list, two kwargs, or a string:
+
+```python
+from aredis_om import Coordinates, HashModel, Field
+
+
+class Store(HashModel):
+    name: str = Field(index=True)
+    coordinates: Coordinates = Field(index=True)
+    category: str = Field(index=True)
+
+
+# Tuple form: (latitude, longitude) — note the order matches geographic
+# convention, NOT the Redis wire format. We swap it internally.
+s1 = Store(name="Times Square Starbucks",
+           coordinates=(40.7589, -73.9851),
+           category="Coffee")
+
+# Two-arg form (also lat, lon for symmetry with the tuple)
+s2 = Store(name="Herald Square Whole Foods",
+           coordinates=Coordinates(latitude=40.7505, longitude=-73.9934),
+           category="Grocery")
+
+# String form: "lon,lat" — the on-the-wire Redis GEO format
+s3 = Store(name="Joe's Pizza",
+           coordinates="-73.9857,40.7484",
+           category="Pizza")
+```
+
+Coordinates are stored as a GEO field in RediSearch (for `find()` queries)
+and round-trip cleanly through both `HashModel` and `JsonModel`.
+
+## `GeoFilter` queries
+
+`GeoFilter` is the operator for querying a `Coordinates` field:
+
+```python
+from aredis_om import GeoFilter
+
+
+times_square = (40.7589, -73.9851)
+
+nearby = await Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=times_square[1],
+        latitude=times_square[0],
+        radius=1,
+        unit="mi",
+    )
+).all()
+```
+
+`radius` is a float; `unit` is one of `"mi"`, `"km"`, `"m"`, or `"ft"`.
+
+The GEO field renders to RediSearch as `@coordinates:[lon lat radius unit]`.
+
+## Combined GEO + TAG + sort
+
+GEO queries compose with everything else RediSearch supports — TAG,
+NUMERIC, TEXT filters, sorting, pagination, cursors, and even KNN:
+
+```python
+from aredis_om import Coordinates, GeoFilter, Field, HashModel, Migrator
+
+
+class Store(HashModel):
+    name: str = Field(index=True, sortable=True)
+    coordinates: Coordinates = Field(index=True)
+    category: str = Field(index=True, sortable=True)
+    rating: float = Field(index=True, sortable=True)
+
+
+await Migrator().run()
+await Store.add([
+    Store(name="Starbucks Times Square", coordinates=(40.7589, -73.9851),
+          category="Coffee", rating=4.2),
+    Store(name="Whole Foods Herald",    coordinates=(40.7505, -73.9934),
+          category="Grocery", rating=4.5),
+    Store(name="Joe's Pizza",           coordinates=(40.7484, -73.9857),
+          category="Pizza",  rating=4.7),
+    Store(name="Sushi Yasaka",          coordinates=(40.7282, -74.0776),
+          category="Sushi",  rating=4.8),
+    Store(name="Brooklyn Roastery",     coordinates=(40.6892, -73.9737),
+          category="Coffee", rating=4.6),
+])
+
+# Coffee shops within 2 miles of Times Square
+coffee_nearby = await Store.find(
+    (Store.coordinates == GeoFilter(
+        longitude=-73.9851, latitude=40.7589, radius=2, unit="mi",
+    )) & (Store.category == "Coffee")
+).all()
+
+# All stores within 10 miles, alphabetical
+alphabetical = await Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=-73.9851, latitude=40.7589, radius=10, unit="mi",
+    )
+).sort_by("name").all()
+
+# Page 2 of nearby stores, sorted by rating desc
+page2 = await Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=-73.9851, latitude=40.7589, radius=10, unit="mi",
+    )
+).sort_by("-rating").page(offset=2, limit=2)
+
+# Cursor-paginated GEO query
+cursor = await Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=-73.9851, latitude=40.7589, radius=10, unit="mi",
+    )
+).sort_by("name").iter_cursor(count=100)
+async for store in cursor:
+    print(store.name, store.coordinates)
+```
+
+## Pipelines: combining GEO with raw Redis commands
+
+You can compose a model-level GEO query with raw Redis commands inside
+a single pipeline. The example below runs three GEOADDs, a metrics
+increment, and a GEORADIUSBYMEMBER in one round trip:
+
+```python
+pipe = Store.db().pipeline(transaction=False)
+pipe.incr("metrics:geo_searches")
+pipe.execute_command("GEOADD", "NYC:landmarks", -73.9851, 40.7589, "times_square")
+pipe.execute_command("GEOADD", "NYC:landmarks", -73.9934, 40.7505, "herald_square")
+pipe.execute_command("GEOADD", "NYC:landmarks", -73.9857, 40.7484, "greenwich_village")
+pipe.execute_command(
+    "GEORADIUSBYMEMBER", "NYC:landmarks", "times_square", "1", "mi",
+    "WITHCOORD", "WITHDIST",
+)
+results = await pipe.execute()
+
+counter = results[0]                                  # metrics:geo_searches
+landmark_hits = results[-1]                           # list of [name, dist, [lon, lat]]
+print(f"queried {counter} times; {len(landmark_hits)} landmarks within 1mi")
+```
+
+Sample output from the `redis:8-alpine` test container:
+
+```
+[  # results[-1]
+  ['greenwich_village', '0.7265', [-73.98570209741592, 40.748399145634416]],
+  ['herald_square',     '0.7251', [-73.99340003728867, 40.750500429475515]],
+  ['times_square',      '0.0000', [-73.98510128259659, 40.75890049539756]],
+]
+```
+
+## Mixing model + raw commands
+
+You can interleave a RediSearch query against one model with raw
+commands against any other key in the same pipeline:
+
+```python
+async def nearby_with_weather(user_lat: float, user_lon: float):
+    pipe = Store.db().pipeline(transaction=False)
+    # 1) Raw: warm the weather cache with a GEOADD
+    pipe.execute_command("GEOADD", "weather:stations", -73.99, 40.75, "manhattan")
+    # 2) Raw: lookup the nearest station
+    pipe.execute_command("GEOSEARCH", "weather:stations",
+                         "FROMLONLAT", user_lon, user_lat,
+                         "BYRADIUS", "5", "mi",
+                         "ASC", "COUNT", "1", "WITHCOORD", "WITHDIST")
+    # 3) Model: list nearby stores in the same round trip
+    Store.get_many([s.pk for s in nearby_stores], pipeline=pipe)
+    results = await pipe.execute()
+    return {"weather": results[1], "stores": results[-1]}
+```
+
+This collapses three logical operations into one network round trip.
+
+## Modern Redis GEO commands
+
+| Command | Use it for |
+| --- | --- |
+| `GEOADD key lon lat member [lon lat member ...]` | Add members with coordinates to a GEO sorted set. |
+| `GEOPOS key member [member ...]` | Get the coordinates of one or more members. |
+| `GEODIST key m1 m2 [unit]` | Distance between two members. |
+| `GEORADIUS key lon lat radius unit [opts]` | Find members within radius (deprecated in Redis 6.2+, use `GEOSEARCH`). |
+| `GEORADIUSBYMEMBER key member radius unit [opts]` | Find members within radius of an existing member (deprecated). |
+| `GEOSEARCH key FROMLONLAT lon lat BYRADIUS ...` | Find members near a coordinate (Redis 6.2+). |
+| `GEOSEARCHSTORE dest src FROMLONLAT ... BYRADIUS ...` | Same as `GEOSEARCH` but store results in a sorted set for further `ZRANGE` queries. |
+| `GEOHASH key member [member ...]` | Geohash string for one or more members. |
+
+### Example: `GEOSEARCH` with `COUNT` and `ASC`
+
+```python
+pipe = Store.db().pipeline(transaction=False)
+pipe.execute_command("GEOADD", "NYC:landmarks", -73.9851, 40.7589, "times_square")
+pipe.execute_command("GEOADD", "NYC:landmarks", -73.9934, 40.7505, "herald_square")
+pipe.execute_command(
+    "GEOSEARCH", "NYC:landmarks",
+    "FROMLONLAT", -73.9851, 40.7589,
+    "BYRADIUS", "5", "mi",
+    "ASC",                       # nearest first
+    "COUNT", "3",                # at most 3 results
+    "WITHCOORD", "WITHDIST",
+)
+results = await pipe.execute()
+print(results[-1])
+```
+
+### Example: `GEOSEARCHSTORE` for follow-up `ZRANGE`
+
+`GEOSEARCHSTORE` writes the results into a sorted set. The scores are
+geohash values (not raw distances), so `ASC` ordering by score is not
+strictly distance-sorted — but the set contains exactly the members
+that matched the radius, and you can sort yourself afterwards:
+
+```python
+pipe = Store.db().pipeline(transaction=False)
+pipe.execute_command(
+    "GEOSEARCHSTORE", "NYC:closest_to_user", "NYC:landmarks",
+    "FROMLONLAT", -73.9851, 40.7589,
+    "BYRADIUS", "5", "mi",
+)
+# List every matching member
+pipe.execute_command("ZRANGE", "NYC:closest_to_user", "0", "-1")
+results = await pipe.execute()
+print(f"matching members: {results[-1]}")
+# > ['greenwich_village', 'herald_square', 'times_square']
+```
+
+If you need true distance-sorted output, prefer `GEOSEARCH` with `ASC`
+and `COUNT` directly — it returns the members already in distance order
+with the distance attached.
+
+## `execute_command` reference for GEO
+
+Always pass `execute_command` raw tokens (strings / numbers), in the
+exact order the Redis CLI uses:
+
+```python
+# Equivalent to: GEOADD NYC:landmarks -73.9851 40.7589 "times_square"
+await db.execute_command("GEOADD", "NYC:landmarks", -73.9851, 40.7589, "times_square")
+```
+
+redis-py's higher-level `db.geoadd(...)` performs argument coercion; if
+it misbehaves (some redis-py versions had bugs around `NX`/`XX`
+flags), `execute_command` is the safe fallback.
+
+## Why `execute_command`?
+
+Redis OM deliberately uses `db.execute_command(...)` for many of its
+operations rather than redis-py's typed high-level bindings:
+
+| Reason | What it means in practice |
+| --- | --- |
+| **Faster** | No per-call method dispatch or argument coercion; the command name and args go straight to the socket. |
+| **Predictable** | Argument order matches the [Redis command reference](https://redis.io/commands/) exactly. No redis-py version surprises. |
+| **Universal** | Works for new Redis commands (like `INCREX`, `AR*`) that redis-py hasn't bound yet, or commands where redis-py's binding is broken (`GEOADD NX/XX` in some 5.x versions). |
+| **Cluster-safe** | The same call works on `redis.Redis` and `redis.RedisCluster` with no API differences. |
+
+The cost is that you, the caller, are responsible for getting the
+argument order right. The [Redis command reference](https://redis.io/commands/)
+is authoritative.
+
+## Reference
+
+- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py) (`GeoFilter`, `Coordinates`, query resolver)
+- Types: [`aredis_om/model/types.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/types.py)
+- Tests: [`tests/test_pipeline_geo.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_pipeline_geo.py), [`tests/test_hash_model.py::test_can_search_on_coordinates`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_hash_model.py)

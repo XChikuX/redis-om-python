@@ -1,0 +1,319 @@
+---
+title: Pipelines and `execute_command`
+description: Combine RediSearch queries, bulk fetches, raw Redis commands, and metrics increments in a single round trip.
+---
+
+# Pipelines and `execute_command`
+
+Redis OM is designed to be **composable at the wire level**. Almost
+every public API accepts an optional `pipeline=` argument so you can
+batch Redis OM operations with raw Redis commands inside a single
+network round trip.
+
+This is the single biggest performance lever in the library. Use it
+whenever you find yourself calling Redis more than once for the same
+user request.
+
+> **Why `execute_command`?** Redis OM deliberately uses
+> `db.execute_command("FT.SEARCH", ...)` instead of redis-py's
+> high-level bindings (`db.ft(...).search(...)`) for hot paths like
+> RediSearch, `INCREX`, and the `AR*` array commands. See
+> [Why `execute_command`?](#why-execute-command) at the bottom of this
+> page for the rationale — short version: faster, more predictable,
+> universal across redis-py versions, and cluster-safe.
+
+## Pipeline basics
+
+A redis-py pipeline batches commands and sends them in a single
+socket write:
+
+```python
+from aredis_om import HashModel
+
+
+class Customer(HashModel):
+    first_name: str
+    last_name: str
+
+
+pipe = Customer.db().pipeline(transaction=False)
+pipe.set("hello", "world")
+pipe.incr("counter")
+results = await pipe.execute()  # [True, 1]
+```
+
+`transaction=False` means fire-and-forget (no `MULTI`/`EXEC` wrapper).
+For atomic semantics, omit the argument or pass `transaction=True`.
+
+## Pattern: bulk save + counter
+
+`Model.add()` is an async method, so you can't queue it onto an
+existing pipeline — instead, give it your pipeline and let it queue
+its own commands, then execute yourself:
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+pipe.incr("metrics:signups")
+await Customer.add(new_customers, pipeline=pipe)
+results = await pipe.execute()
+signups = results[0]
+saved_count = len(results) - 1
+```
+
+If you don't pass `pipeline=`, `Model.add()` opens its own internal
+pipeline and executes it for you. Pass one when you want to compose
+with other commands in the same round trip.
+
+## Pattern: bulk fetch + secondary key lookup
+
+When you pass `pipeline=` to `get_many()`, it queues `HGETALL` calls
+onto your pipeline and returns `[]` — you're responsible for executing
+the pipeline and parsing results. The pipeline position of the
+`get_many` calls is `[start:start+len(pks)]`:
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+start = 0  # nothing queued yet
+Customer.get_many(pks, pipeline=pipe)  # queues len(pks) HGETALL calls
+end = start + len(pks)
+pipe.mget([f"customer:{pk}:last_seen" for pk in pks])
+results = await pipe.execute()
+customer_docs = results[start:end]   # raw HGETALL dicts
+last_seen = results[end:][0]          # MGET result
+```
+
+This is more verbose than calling `get_many()` directly, but it saves
+one round trip. If the parsing burden isn't worth it, just call
+`await Customer.get_many(pks)` separately.
+
+## Pattern: bulk delete + cleanup of secondary indexes
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+await Customer.delete_many(to_delete, pipeline=pipe)
+for pk in [m.pk for m in to_delete]:
+    pipe.delete(f"customer:{pk}:cache")
+await pipe.execute()
+```
+
+## Pattern: query + raw command in one round trip
+
+Run a model query, then feed the primary keys into a raw command:
+
+```python
+# Find VIPs, then look up their GEO positions in a single round trip
+nearby_vips = await Customer.find(Customer.tags << "vip").all()
+
+pipe = Customer.db().pipeline(transaction=False)
+pipe.execute_command("GEOADD", "vip:locations", -73.9851, 40.7589, "user_1")
+pipe.execute_command("GEOADD", "vip:locations", -73.9934, 40.7505, "user_2")
+pipe.execute_command(
+    "GEORADIUSBYMEMBER", "vip:locations", "user_1", "10", "mi",
+    "WITHCOORD", "WITHDIST",
+)
+results = await pipe.execute()
+nearby_users = results[-1]
+```
+
+## Pattern: GEO model query + raw GEO store
+
+Run a `Coordinates` / `GeoFilter` query against a model and also populate
+a separate GEO sorted set for follow-up `GEOSEARCH` queries:
+
+```python
+from aredis_om import Coordinates, GeoFilter, HashModel, Field
+
+
+class Store(HashModel):
+    name: str = Field(index=True)
+    coordinates: Coordinates = Field(index=True)
+
+
+# 1) Find nearby stores via RediSearch GEO field
+nearby = await Store.find(
+    Store.coordinates == GeoFilter(
+        longitude=-73.9851, latitude=40.7589, radius=2, unit="mi",
+    )
+).all()
+
+# 2) Update a separate GEO sorted set in the same round trip
+pipe = Store.db().pipeline(transaction=False)
+for s in nearby:
+    # Coordinates stores as "lon,lat" — split for GEOADD's lon,lat,member order
+    lon, lat = str(s.coordinates).split(",")
+    pipe.execute_command("GEOADD", "nearby:cache", lon, lat, s.pk)
+pipe.execute_command(
+    "GEOSEARCH", "nearby:cache",
+    "FROMLONLAT", -73.9851, 40.7589,
+    "BYRADIUS", "5", "mi", "ASC", "COUNT", "5",
+)
+results = await pipe.execute()
+closest_5 = results[-1]
+```
+
+## Pattern: KNN + filter + raw stream publish
+
+For an AI assistant that streams a chat completion:
+
+```python
+import struct
+from aredis_om import KNNExpression, JsonModel, Field
+
+
+class Doc(JsonModel):
+    text: str = Field(index=True)
+    embedding: list[float] = Field(index=True)
+
+
+async def answer(query_vec: list[float], user_id: str) -> str:
+    knn = KNNExpression(
+        k=5,
+        vector_field=Doc.embedding,
+        reference_vector=struct.pack(f"<{len(query_vec)}f", *query_vec),
+    )
+
+    # Pipeline: KNN search + log the query + publish to a stream
+    pipe = Doc.db().pipeline(transaction=False)
+    pipe.xadd("queries:log", {"user": user_id, "ts": time.time()})
+    pipe.execute_command(
+        "FT.SEARCH", Doc.Meta.index_name,
+        str(knn), "LIMIT", "0", "5",
+    )
+    results = await pipe.execute()
+    log_id, search_result = results
+    docs = Doc._from_search_results(search_result)
+    return await llm_complete([d.text for d in docs])
+```
+
+## Pattern: rate limit + write
+
+Combine `AtomicCounter` with a model save:
+
+```python
+from aredis_om import AtomicCounter
+
+
+async def save_with_rate_limit(model, user_id):
+    rl = AtomicCounter(model.db(), f"ratelimit:write:{user_id}")
+    new_val, applied = await rl.incr(expire=60, bounds=(0, 100), enx=True)
+    if applied == 0:
+        raise RateLimitExceeded()
+
+    await model.save()
+```
+
+For full atomicity, queue both the `INCREX` and the save in a single
+pipeline:
+
+```python
+pipe = model.db().pipeline(transaction=False)
+pipe.execute_command(
+    "INCREX", rl.key,
+    "BYINT", "1", "UBOUND", "100", "EX", "60", "ENX",
+)
+model.save(pipeline=pipe)
+results = await pipe.execute()
+new_val, applied = results[0][0], results[0][1]
+```
+
+## Pattern: cursor + checkpoint
+
+Page through a cursor and checkpoint progress to a Redis hash:
+
+```python
+cursor = await Customer.find().sort_by("-age").iter_cursor(count=100)
+batch_id = 0
+while not cursor.exhausted:
+    page = await cursor.read()
+    if not page:
+        break
+    pipe = Customer.db().pipeline(transaction=False)
+    pipe.hset(
+        f"export:checkpoint:{batch_id}",
+        mapping={
+            "cursor_id": cursor.cursor_id,
+            "count": len(page),
+            "first_pk": page[0].pk,
+            "last_pk": page[-1].pk,
+        },
+    )
+    pipe.sadd("export:batches", str(batch_id))
+    await pipe.execute()
+    batch_id += 1
+```
+
+## Pattern: hash tag contention avoidance
+
+For workloads that write to many keys but need atomicity per-shard, use
+hash tags (`{...}`) so related keys hash to the same cluster slot:
+
+```python
+def make_order_pipeline(order_id: str, customer_id: str):
+    shard = f"{{customer:{customer_id}}}"
+    pipe = Customer.db().pipeline(transaction=False)
+    pipe.hset(f"{shard}:order:{order_id}", mapping={...})
+    pipe.sadd(f"{shard}:customer:{customer_id}:orders", order_id)
+    pipe.incr(f"{shard}:customer:{customer_id}:order_count")
+    return pipe
+```
+
+This keeps the writes inside one slot so the pipeline can run as a
+single `MULTI`/`EXEC` on a cluster.
+
+## Why `execute_command`?
+
+Redis OM uses `db.execute_command("FT.SEARCH", ...)` for many hot
+paths instead of redis-py's high-level bindings. Here's why:
+
+### Faster
+
+redis-py's typed bindings (`db.ft(idx).search(...)`,
+`db.geoadd(...)`, etc.) walk a method-resolution chain, validate
+arguments, and sometimes build intermediate objects before serializing
+the command. `execute_command` skips all of that: it serializes the
+command name and args directly to the socket buffer.
+
+For RediSearch, redis-om's `FindQuery` already knows the exact query
+string it wants to send — there's no benefit to redis-py rebuilding it.
+
+### More predictable
+
+redis-py's argument coercion is version-specific. For example:
+
+- `db.geoadd(key, lon, lat, member, nx=True, xx=True)` raises in
+  redis-py 5.x because it can't tell which flag wins. The Redis CLI
+  just rejects the call server-side.
+- `db.ft(idx).aggregate(...)` had a bug where `LIMIT` was applied
+  incorrectly in some 4.x versions.
+
+When you use `execute_command("GEOADD", key, lon, lat, member)` the
+arguments go to Redis in exactly the order you wrote them, and the
+server's error message (if any) is exactly what the [Redis command
+reference](https://redis.io/commands/) documents.
+
+### Universal
+
+redis-py doesn't always have bindings for new commands. `INCREX`
+(Redis 8.8+), the entire `AR*` family (Redis 8.8+ preview), and
+`FT.AGGREGATE WITHCURSOR` options have all lagged behind the server.
+`execute_command` works the moment Redis ships a command, without
+waiting for redis-py to ship a binding.
+
+### Cluster-safe
+
+The exact same `execute_command` call works on `redis.Redis` and
+`redis.RedisCluster` with no API differences. redis-om's pipeline code
+detects cluster pipelines and adjusts queueing automatically
+([`_is_cluster_pipeline`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py)).
+
+### When *not* to use `execute_command`
+
+- You don't know the exact Redis command syntax. Use the typed
+  binding for IDE autocomplete and argument validation.
+- You're doing a one-off script where developer time matters more than
+  per-call microseconds.
+
+## Reference
+
+- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py) (`FindQuery.execute`, `_is_cluster_pipeline`, `Model.add`, `Model.get_many`, `Model.delete_many`)
+- Tests: [`tests/test_pipeline.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_pipeline.py), [`tests/test_pipeline_geo.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_pipeline_geo.py)

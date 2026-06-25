@@ -1,0 +1,499 @@
+---
+title: Queries and Vector Search
+description: Expression syntax, dynamic queries, KNN, sorting, pagination, cursor-based results, and embedded model queries.
+---
+
+# Queries and Vector Search
+
+Redis OM's query layer lets you find models with Python expressions. The
+expression language is inspired by Django ORM / SQLAlchemy and is built
+on top of RediSearch.
+
+```python
+from typing import Optional
+import datetime
+
+from redis_om import Field, HashModel, Migrator
+
+
+class Customer(HashModel):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+    email: str
+    join_date: datetime.date
+    age: int = Field(index=True, sortable=True)
+    city: Optional[str] = Field(index=True)
+
+
+Migrator().run()
+
+# All customers named "Brookins" over 35.
+Customer.find(
+    (Customer.last_name == "Brookins") & (Customer.age >= 35)
+).all()
+```
+
+> **Sync vs async:** This page shows the sync API for brevity. Import
+> from `aredis_om` and `await` the same calls for the async API.
+
+## Quick reference
+
+| Expression | Maps to |
+| --- | --- |
+| `field == value` | TAG equality / NUMERIC equality |
+| `field != value` | TAG / NUMERIC inequality |
+| `field < value`, `field <= value`, `field > value`, `field >= value` | NUMERIC range |
+| `field << [v1, v2, ...]` | `IN` (TAG or NUMERIC) |
+| `~(field << [v1, ...])` | `NOT IN` |
+| `field.startswith("Sm")` | TAG prefix match |
+| `field % "term"` | Full-text search (`%` is the operator) |
+| `~(expr)` | NOT |
+| `expr & expr` | AND |
+| `expr \| expr` | OR |
+
+## Equality, inequality, and range
+
+```python
+# Equal
+last_names = await Customer.find(Customer.last_name == "Brookins").all()
+
+# Not equal
+others = await Customer.find(Customer.last_name != "Brookins").all()
+
+# Range — bound the age between 30 and 50
+adults = await Customer.find(
+    (Customer.age >= 30) & (Customer.age <= 50)
+).all()
+```
+
+Range queries work on `int`, `float`, `decimal.Decimal`, `datetime.date`,
+and `datetime.datetime`. Pydantic coerces input values automatically.
+
+## Sorting
+
+Mark a field as `sortable=True` and pass the field name (or `"-field"`
+for descending) to `sort_by()`:
+
+```python
+oldest_first = await Customer.find().sort_by("join_date").all()
+youngest_first = await Customer.find().sort_by("-age").all()
+```
+
+For multiple sort keys:
+
+```python
+# Sort by last_name ascending, then age descending.
+results = await Customer.find().sort_by("last_name", "-age").all()
+```
+
+## Limiting and pagination
+
+`.all()` returns everything (paginated transparently under the hood).
+For explicit offsets, use `.page(offset, limit)`:
+
+```python
+# Skip the first 10 customers, take the next 5
+page = await Customer.find(Customer.last_name == "Brookins").page(
+    offset=10, limit=5
+)
+```
+
+For large result sets, use cursor pagination — see
+[Cursor pagination](#cursor-pagination) below.
+
+## `IN` and `NOT IN`
+
+Use the `<<` (left shift) operator to express membership in a list:
+
+```python
+from aredis_om import JsonModel, Field
+
+
+class Customer(JsonModel):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+    age: int = Field(index=True)
+
+
+# last_name IN ("Brookins", "Smith")
+results = await Customer.find(
+    Customer.last_name << ["Brookins", "Smith"]
+).all()
+
+# last_name NOT IN ("Brookins")
+results = await Customer.find(
+    ~(Customer.last_name << ["Brookins"])
+).all()
+```
+
+`IN` works on both TAG and NUMERIC fields.
+
+## Prefix matches
+
+Use `field.startswith(value)` for TAG-prefix searches. The library
+internally uses RediSearch's `@field:value*` syntax and properly escapes
+the value. Pair the field with `case_sensitive=True` if the stored
+values contain mixed case and you want prefix matches to honour the
+original case:
+
+```python
+class Customer(HashModel):
+    last_name: str = Field(index=True, case_sensitive=True)
+
+
+smiths = await Customer.find(Customer.last_name.startswith("Sm")).all()
+```
+
+`endswith()` and `contains()` work the same way for suffix and substring
+matches.
+
+## Full-text search
+
+Mark a field with `full_text_search=True` and use the `%` operator:
+
+```python
+class Member(HashModel):
+    name: str = Field(index=True)
+    bio: str = Field(index=True, full_text_search=True, default="")
+
+
+# Find members whose bio contains "developer"
+results = await Member.find(Member.bio % "developer").all()
+```
+
+The `%` operator stems the term; searching for `"programming"` will
+match documents containing `"program"`, `"programs"`, etc.
+
+## Negation, AND, OR
+
+```python
+# NOT first_name == "Andrew"
+not_andrew = await Customer.find(~(Customer.first_name == "Andrew")).all()
+
+# last_name == "Brookins" OR first_name == "Kim"
+or_results = await Customer.find(
+    (Customer.last_name == "Brookins") | (Customer.first_name == "Kim")
+).all()
+
+# last_name == "Brookins" AND age >= 35
+and_results = await Customer.find(
+    (Customer.last_name == "Brookins") & (Customer.age >= 35)
+).all()
+```
+
+`&` binds tighter than `|`. Use parentheses for complex expressions:
+
+```python
+# (first_name == "Andrew" AND last_name == "Brookins")
+# OR (first_name == "Kim")
+results = await Customer.find(
+    ((Customer.first_name == "Andrew") & (Customer.last_name == "Brookins"))
+    | (Customer.first_name == "Kim")
+).all()
+```
+
+## Composing dynamic queries
+
+A common pattern is to build a list of expressions and splat them into
+`find()`. Conditions are ANDed together; anything left out is simply
+not included:
+
+```python
+from typing import Optional, Sequence
+
+
+def search_customers(
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
+    city: Optional[str] = None,
+    name_prefix: Optional[str] = None,
+) -> Sequence[Customer]:
+    conditions = []
+    if min_age is not None:
+        conditions.append(Customer.age >= min_age)
+    if max_age is not None:
+        conditions.append(Customer.age <= max_age)
+    if city:
+        conditions.append(Customer.city == city)
+    if name_prefix:
+        conditions.append(Customer.last_name.startswith(name_prefix))
+
+    return Customer.find(*conditions).sort_by("-age").all()
+```
+
+For OR groups inside a dynamic query, compose the OR expression as a
+single value:
+
+```python
+def search_smith_or_jones(min_age: Optional[int] = None):
+    conditions = []
+    if min_age is not None:
+        conditions.append(Customer.age >= min_age)
+
+    # OR group becomes a single appended expression
+    or_group = (Customer.last_name == "Smith") | (Customer.last_name == "Jones")
+    conditions.append(or_group)
+
+    return Customer.find(*conditions).all()
+```
+
+## Embedded models
+
+`JsonModel` can have embedded `EmbeddedJsonModel` fields. Queries descend
+into them with dotted path syntax:
+
+```python
+class Address(EmbeddedJsonModel):
+    city: str = Field(index=True)
+    state: str = Field(index=True)
+
+
+class Customer(JsonModel):
+    name: str = Field(index=True)
+    address: Address
+
+
+# Find customers in San Antonio, TX
+results = await Customer.find(
+    Customer.address.city == "San Antonio",
+    Customer.address.state == "TX",
+).all()
+```
+
+Sorting on embedded fields works too. See
+[Sorting embedded fields](#sorting-embedded-fields).
+
+## Embedded list containment (`<<` on a list field)
+
+For `List[T]` fields on `JsonModel`, use the same `<<` operator with a
+single value to test for membership:
+
+```python
+from typing import List
+
+
+class Workspace(JsonModel):
+    name: str = Field(index=True)
+    members: List[str] = Field(index=True)
+
+
+# Find workspaces containing "alice"
+results = await Workspace.find(Workspace.members << "alice").all()
+```
+
+For a structured list of embedded models, pass a model instance instead
+of a string — Redis OM translates this into a RediSearch `INTERSECT`
+against the embedded fields:
+
+```python
+class User(EmbeddedJsonModel):
+    name: str = Field(index=True)
+    type: str = Field(index=True)
+
+
+class Workspace(JsonModel):
+    name: str = Field(index=True)
+    users: List[User] = Field(index=True)
+
+
+# Resolve to: @users:(@name:John @type:registered)
+results = await Workspace.find(
+    Workspace.users << User(name="John", type="registered")
+).all()
+```
+
+## Sorting embedded fields
+
+For `JsonModel`, sort on dotted or double-underscore paths:
+
+```python
+class Metrics(EmbeddedJsonModel):
+    score: int
+
+
+class Book(JsonModel):
+    title: str = Field(index=True)
+    metrics: Metrics
+
+
+# Pass either form — they are equivalent
+results = await Book.find().sort_by("metrics.score").all()
+results = await Book.find().sort_by("metrics__score").all()
+```
+
+## Cursor pagination
+
+For large result sets where `.page(offset, limit)` is too expensive,
+use `FindQuery.iter_cursor()`. It uses RediSearch's
+`FT.AGGREGATE WITHCURSOR` to stream results without skipping work:
+
+```python
+cursor = await Customer.find().sort_by("age").iter_cursor(count=100)
+while not cursor.exhausted:
+    page = await cursor.read()
+    for c in page:
+        print(c.pk, c.first_name)
+```
+
+`count` is the page size. The cursor object supports `await cursor.read()`,
+`await cursor.all()` (drain into a list), `await cursor.close()`,
+and async iteration via `async for customer in cursor:`.
+
+### Token handoff for web apps
+
+`FindQueryCursor.token(secret=...)` serializes cursor state into a
+URL-safe token. Pass it through a query string and restore it on the
+next request with `FindQueryCursor.from_token(model, token, secret=...)`.
+
+Signed tokens (with `secret=...`) prevent clients from tampering with
+the cursor id. Unsigned tokens are intended for trusted server-side
+use only.
+
+```python
+# Server: produce a signed token
+cursor = await Customer.find().sort_by("-age").iter_cursor(count=20)
+token = cursor.token(secret=os.environ["CURSOR_SECRET"])
+return {"next_page_token": token, "results": await cursor.read()}
+
+# Client: restore and continue
+restored = FindQueryCursor.from_token(Customer, token, secret=SECRET)
+next_page = await restored.read()
+```
+
+A wrong secret raises `ValueError("Cursor token signature is invalid.")`.
+
+## Count, first, aggregate count
+
+```python
+# Total matching count, no document data fetched
+n = await Customer.find(Customer.age > 30).count()
+
+# Aggregate count — works correctly with OR/duplicate matches
+n = await Customer.find(Customer.last_name == "Brookins").aggregate_ct()
+
+# First match (raises NotFoundError if no match)
+first = await Customer.find(Customer.age >= 35).first()  # sync
+first = await Customer.find(Customer.age >= 35).first()  # async, await it
+```
+
+> **NOTE:** `aggregate_ct()` double-counts records that match multiple
+> OR branches. Prefer `.count()` for simple AND queries.
+
+## Inspect the raw query
+
+For debugging, inspect the rendered RediSearch query string and
+parameters:
+
+```python
+query = Customer.find(Customer.last_name == "Brookins")
+print(query.query)
+# > @last_name:{Brookins}
+
+print(query.query_params)
+# > []   (no parameters)
+```
+
+KNN queries populate `query_params` with the reference vector:
+
+```python
+import struct
+knn = KNNExpression(
+    k=3,
+    vector_field=Document.embedding,
+    score_field=Document.embedding_score,
+    reference_vector=struct.pack("<4f", 0.1, 0.2, 0.3, 0.4),
+)
+query = Document.find(knn=knn)
+print(query.query)
+# > KNN 3 @embedding $knn_ref_vector AS embedding_score
+print(query.query_params)
+# > ['knn_ref_vector', b'\xcd\xcc\xcc\x3d...']
+```
+
+## Vector similarity search (KNN)
+
+KNN works with both `HashModel` and `JsonModel`. Define a vector field
+with `VectorFieldOptions`:
+
+```python
+from redis_om import JsonModel, Field, KNNExpression, VectorFieldOptions
+
+vector_options = VectorFieldOptions.flat(
+    type=VectorFieldOptions.TYPE.FLOAT32,
+    dimension=384,                              # match your embedding model
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+)
+
+
+class Document(JsonModel, index=True):
+    title: str = Field(index=True)
+    embedding: list[float] = Field(vector_options=vector_options)
+    embedding_score: float = 0.0
+
+
+# Save an embedding
+await Document(title="How to train your dragon",
+                embedding=[0.1, 0.2, 0.3, 0.4]).save()
+
+# Find the K nearest neighbors
+knn = KNNExpression(
+    k=3,
+    vector_field=Document.embedding,
+    score_field=Document.embedding_score,
+    reference_vector=struct.pack("<4f", 0.1, 0.2, 0.3, 0.4),
+)
+results = await Document.find(knn=knn).all()
+for doc in results:
+    print(doc.title, doc.embedding_score)  # distance/similarity
+```
+
+### Hybrid: KNN + filters
+
+```python
+results = await Document.find(
+    Document.category == "tutorial",
+    knn=KNNExpression(k=10, vector_field=Document.embedding, ...),
+).all()
+```
+
+OR expressions are wrapped in parentheses automatically so the KNN
+clause applies to the whole filter, not just the last term.
+
+## Boolean values
+
+`HashModel` cannot store boolean fields, but `JsonModel` can. Store
+them as `TAG` and query with `==`:
+
+```python
+class Demo(JsonModel):
+    active: bool = Field(index=True)
+
+
+Migrator().run()
+await Demo(active=True).save()
+results = await Demo.find(Demo.active == True).all()  # noqa: E712
+```
+
+## Recap: FindQuery API
+
+```python
+FindQuery(
+    *expressions,                       # ANDed together
+    model=Model,
+    knn=KNNExpression(...),             # optional
+).sort_by("field", "-other")           # optional
+ .page(offset=0, limit=10)             # single page, returns list
+ .all(batch_size=...)                  # all results, transparently paged
+ .first()                              # one match (raises NotFoundError)
+ .count()                              # total matching
+ .aggregate_ct()                       # accurate count for complex queries
+ .iter_cursor(count=100)               # cursor pagination
+ .update(**fields)                     # bulk update matching records
+ .delete()                             # bulk delete matching records
+ .execute()                            # raw execution, returns list
+```
+
+## Reference
+
+- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py)
+- Tests: [`tests/test_find_query.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_find_query.py), [`tests/test_knn_expression.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_knn_expression.py)

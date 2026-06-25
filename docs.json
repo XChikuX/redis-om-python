@@ -1,13 +1,54 @@
 {
     "$schema": "https://docs.page/schema.json",
     "name": "pyredis-om",
-    "description": "pyredis-om documentation — async-first Redis object mapper built on Pydantic v2",
+    "description": "pyredis-om — async-first Redis object mapper built on Pydantic v2",
+    "logo": {
+        "light": "/images/logo.svg"
+    },
+    "favicon": "/images/logo.svg",
+    "theme": {
+        "primary": "#DC382D",
+        "primaryLight": "#B8281F"
+    },
+    "header": {
+        "showName": true,
+        "showThemeToggle": true,
+        "showGitHubCard": true,
+        "links": [
+            {
+                "title": "GitHub",
+                "href": "https://github.com/XChikuX/redis-om-python"
+            },
+            {
+                "title": "PyPI",
+                "href": "https://pypi.org/project/pyredis-om/"
+            }
+        ]
+    },
+    "social": {
+        "github": "XChikuX/redis-om-python"
+    },
+    "content": {
+        "headerDepth": 4,
+        "showPageTitle": true,
+        "showPageImage": true,
+        "automaticallyInferNextPrevious": true,
+        "zoomImages": true
+    },
+    "tabs": [
+        {
+            "id": "docs",
+            "title": "Documentation",
+            "href": "/"
+        }
+    ],
     "sidebar": [
         {
+            "tab": "docs",
             "group": "Getting Started",
             "pages": [
                 {
-                    "title": "Introduction",
+                    "title": "Overview",
                     "href": "/",
                     "icon": "rocket"
                 },
@@ -24,12 +65,18 @@
             ]
         },
         {
-            "group": "Core Features",
+            "tab": "docs",
+            "group": "Models and Queries",
             "pages": [
                 {
                     "title": "Models and Fields",
                     "href": "/models",
                     "icon": "database"
+                },
+                {
+                    "title": "Queries and Vector Search",
+                    "href": "/queries",
+                    "icon": "magnifying-glass"
                 },
                 {
                     "title": "Validation",
@@ -44,12 +91,29 @@
             ]
         },
         {
+            "tab": "docs",
+            "group": "Operations",
+            "pages": [
+                {
+                    "title": "Bulk Operations",
+                    "href": "/bulk_operations",
+                    "icon": "layer-group"
+                },
+                {
+                    "title": "Migrations",
+                    "href": "/migrations",
+                    "icon": "arrows-rotate"
+                }
+            ]
+        },
+        {
+            "tab": "docs",
             "group": "Redis 8.8+ Features",
             "pages": [
                 {
                     "title": "AtomicCounter (INCREX)",
                     "href": "/atomic_counter",
-                    "icon": "zap"
+                    "icon": "bolt"
                 },
                 {
                     "title": "Redis Arrays",
@@ -59,13 +123,35 @@
                 {
                     "title": "OpenTelemetry Observability",
                     "href": "/observability",
-                    "icon": "activity"
+                    "icon": "chart-line"
                 }
             ]
         },
         {
-            "group": "Integrations",
+            "tab": "docs",
+            "group": "Deployment",
             "pages": [
+                {
+                    "title": "Redis Cluster",
+                    "href": "/cluster",
+                    "icon": "network-wired"
+                },
+                {
+                    "title": "Protocol Selection",
+                    "href": "/protocol",
+                    "icon": "signal"
+                }
+            ]
+        },
+        {
+            "tab": "docs",
+            "group": "Reference",
+            "pages": [
+                {
+                    "title": "Upstream Issues Fixed",
+                    "href": "/upstream_fixes",
+                    "icon": "wrench"
+                },
                 {
                     "title": "FastAPI Integration",
                     "href": "/fastapi_integration",
@@ -74,7 +160,7 @@
                 {
                     "title": "Redis Modules",
                     "href": "/redis_modules",
-                    "icon": "package"
+                    "icon": "puzzle-piece"
                 }
             ]
         }

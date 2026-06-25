@@ -1,3 +1,8 @@
+---
+title: Getting Started
+description: Install Redis OM, define your first model, and save and query data.
+---
+
 # Getting Started With Redis OM
 
 ## Introduction
@@ -978,19 +983,25 @@ The current release of redis-om-python also ships three top-level helpers
 that take direct advantage of Redis 8.8+. Each one is documented and
 tested independently:
 
-- **[AtomicCounter](atomic_counter.md)** — atomic increment with bounds,
+- **[AtomicCounter](/atomic_counter)** — atomic increment with bounds,
   saturation, expiration, and `ENX`. Drop-in for rate limiters and capped
   counters.
-- **[RedisArray](redis_arrays.md)** — sparse, index-addressable arrays with
+- **[RedisArray](/redis_arrays)** — sparse, index-addressable arrays with
   ring buffers, `AROP` aggregates, and `ARGREP` text search.
-- **[OpenTelemetry Observability](observability.md)** — opt-in metrics via
+- **[OpenTelemetry Observability](/observability)** — opt-in metrics via
   redis-py 8.0 instrumentation.
+
+## Reference
+
+- [Queries and Vector Search](/queries) — full expression syntax, KNN, pagination, and cursors.
+- [Bulk Operations](/bulk_operations) — `add()`, `get_many()`, `delete_many()`.
+- [Migrations](/migrations) — schema management and the `migrate` CLI.
 
 ## Next Steps
 
 Now that you know the basics of working with Redis OM, start playing around with it in your project!
 
-If you're a FastAPI user, check out [how to integrate Redis OM with FastAPI](fastapi_integration.md).
+If you're a FastAPI user, check out [how to integrate Redis OM with FastAPI](/fastapi_integration).
 
 <!-- Links -->
 

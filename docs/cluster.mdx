@@ -1,0 +1,129 @@
+---
+title: Redis Cluster
+description: Configure cluster connections, run cluster-safe bulk operations, and use the migrator on Redis Cluster.
+---
+
+# Redis Cluster
+
+Redis OM works on Redis Cluster with the same model classes and
+queries you use for single-node Redis. You opt in by passing
+`cluster=True` or `cluster=true` as a URL query parameter; everything
+else is transparent.
+
+```python
+from aredis_om import HashModel, get_redis_connection
+
+
+cluster = get_redis_connection(
+    url="redis://localhost:7001?decode_responses=True&cluster=true",
+)
+
+
+class Customer(HashModel):
+    first_name: str = Field(index=True)
+
+    class Meta:
+        database = cluster
+```
+
+## Connection options
+
+| Form | Example |
+| --- | --- |
+| URL query parameter | `redis://node1:7001,node2:7002,node3:7003?cluster=true` |
+| Keyword argument | `get_redis_connection(host="node1", port=7001, cluster=True)` |
+
+`get_redis_connection()` strips the `cluster=true` query parameter
+before handing the URL to redis-py, so the URL you pass to redis-py is
+valid even if you also pass `protocol=...` or other query parameters.
+
+For local cluster development, this repository includes a 6-node
+Redis Cluster Compose file:
+
+```bash
+docker compose -f docker-compose.cluster.yml up -d
+docker compose exec redis-cluster-7001 redis-cli cluster meet 127.0.0.1 7002
+docker compose exec redis-cluster-7001 redis-cli cluster meet 127.0.0.1 7003
+# ...etc
+docker compose exec redis-cluster-7001 redis-cli cluster addslots $(seq 0 5461)
+# ...etc
+```
+
+## What's supported
+
+| Feature | Cluster-safe? | Notes |
+| --- | --- | --- |
+| `HashModel` CRUD | ✅ | `save()` / `get()` / `update()` / `delete()` |
+| `JsonModel` CRUD | ✅ | Same as `HashModel`. |
+| `add()` (bulk save) | ✅ | Pipeline batches per shard. |
+| `get_many()` | ✅ | Pipeline batches per shard. |
+| `delete_many()` | ✅ | Pipeline batches per shard. |
+| RediSearch queries | ✅ | Single-node queries via FT.SEARCH route to the right shard. |
+| KNN / vector search | ✅ | `KNNExpression` is cluster-safe on Redis 8+. |
+| Embedded JSON queries | ✅ | Dotted paths resolve to per-shard field references. |
+| GEO queries | ✅ | `GeoFilter` resolves to per-shard queries. |
+| `Migrator().run()` | ✅ | Sends FT.CREATE to one node (Redis 8+); iterates per-shard on older builds. |
+
+## Cluster pipelines
+
+`redis.asyncio.cluster.ClusterPipeline` requires a slightly different
+command-queueing pattern than `redis.asyncio.Pipeline`. The library
+detects cluster pipelines automatically and avoids awaiting individual
+command results during queueing — see
+[`_is_cluster_pipeline`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py) in the source.
+
+You can mix Redis OM operations with raw commands inside a cluster
+pipeline:
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+pipe.incr("metrics:customer_creations")
+Customer.add(customers, pipeline=pipe)
+pipe.execute_command("GEORADIUSBYMEMBER", "Users:geo", "pk1", 100, "km", "COUNT", 100)
+results = await pipe.execute()
+```
+
+## Cluster-specific pitfalls
+
+### Cross-shlot operations
+
+`MGET` / `JSON.MGET` / `KEYS` over multiple keys must hit the same
+slot. `get_many()` works because each call is a pipeline of single-key
+fetches, which redis-py routes per slot. **Avoid `KEYS` on a cluster**
+— use `SCAN` instead, or query through `all_pks()` (which calls
+`SCAN_ITER` with hash-type filtering on the async client).
+
+### Embedded sort field aliases
+
+`FindQuery.sort_by("embedded.field")` is rewritten to
+`embedded_field` before the query goes to RediSearch, so the alias
+collision across shards is handled at the query layer. See
+[Queries and Vector Search](/queries#sorting-embedded-fields).
+
+### `Meta.database` assignment at runtime
+
+`Meta.database` accepts both a connection and a callable. For
+multi-tenant deployments where each tenant gets its own cluster
+connection:
+
+```python
+class Document(HashModel):
+    title: str
+
+    class Meta:
+        database = lambda: get_cluster_for_tenant(current_tenant())
+```
+
+The connection is resolved lazily on the first query.
+
+### TTLs and per-key expiration
+
+`Meta.default_ttl` issues a single `EXPIRE` per key after each save.
+On a cluster the call is routed to the key's owning shard, so the
+EXPIRE call is automatically correct.
+
+## Cluster reference
+
+- Source: [`aredis_om/connections.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/connections.py), [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py)
+- Tests: [`tests/test_cluster_operations.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_cluster_operations.py), [`tests/test_connections.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_connections.py)
+- Compose file: [`docker-compose.cluster.yml`](https://github.com/XChikuX/redis-om-python/blob/main/docker-compose.cluster.yml)

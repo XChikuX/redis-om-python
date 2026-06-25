@@ -1,0 +1,122 @@
+---
+title: Protocol Selection
+description: RESP2 vs RESP3 negotiation, pinning the protocol explicitly, and protocol-agnostic application code.
+---
+
+# Protocol Selection
+
+Redis OM works against either RESP2 or RESP3 wire protocols. redis-py
+8.0+ negotiates the protocol with the server on connect, so most users
+won't need to think about it — Redis 6+ defaults to RESP3, and older
+servers fall back to RESP2 transparently.
+
+This page covers:
+
+- [When to pin the protocol](#when-to-pin-the-protocol)
+- [How to pin it](#how-to-pin-it)
+- [Inspecting the negotiated protocol](#inspecting-the-negotiated-protocol)
+- [Protocol-agnostic application code](#protocol-agnostic-application-code)
+
+## When to pin the protocol
+
+Default behavior (auto-negotiation) is fine for almost every app. Pin
+explicitly when:
+
+- **Reproducing a production issue locally.** The same Redis 8.8
+  build can produce slightly different RediSearch response shapes in
+  RESP2 vs RESP3 (see below). Pin to match what production uses.
+- **Reproducing CI vs local divergence.** CI typically uses RESP3
+  (Redis 8 default). If a developer runs an older Redis 6 or 7
+  locally, they may see RESP2.
+- **Benchmarking.** RESP3 has slightly lower per-command overhead
+  for large batches, so benchmarks should pin the protocol to make
+  results comparable across runs.
+
+## How to pin it
+
+Pass `protocol=` as either a URL query parameter or a keyword argument
+to `get_redis_connection()`:
+
+```python
+from aredis_om import get_redis_connection
+
+
+# Via URL
+resp3 = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True&protocol=3"
+)
+
+# Via keyword argument
+resp2 = get_redis_connection(
+    url="redis://localhost:6379?decode_responses=True",
+    protocol=2,
+)
+```
+
+Valid values are `2` and `3`. Any other value is forwarded to redis-py,
+which raises its own error.
+
+## Inspecting the negotiated protocol
+
+Use `aredis_om.connections.protocol_version()` to read the negotiated
+protocol from any active client:
+
+```python
+from aredis_om import get_redis_connection, protocol_version
+
+
+conn = get_redis_connection()
+print(protocol_version(conn))
+# > 3  (or 2 on older servers)
+```
+
+This is useful for log lines, metrics labels, and tests that should
+exercise both protocols.
+
+## Protocol-agnostic application code
+
+The biggest RESP2-vs-RESP3 difference for redis-om users is the shape
+of `FT.SEARCH` / `FT.AGGREGATE` / `FT.AGGREGATE WITHCURSOR` responses:
+
+| Command | RESP2 | RESP3 |
+| --- | --- | --- |
+| `FT.SEARCH` | `[count, doc1_id, doc1_fields, doc2_id, ...]` | `{"total_results": ..., "results": [{...}, ...]}` |
+| `FT.AGGREGATE` | `[count, row1_fields, row2_fields, ...]` | `{"results": [{...}, ...]}` |
+| `FT.AGGREGATE WITHCURSOR` | `[inner_aggregate, cursor_id]` | `{"results": [...], "cursor_id": ...}` |
+
+The library **normalises both shapes** internally so you do not need
+to branch on the protocol. `FindQuery.execute`, `FindQuery.count`,
+`FindQuery.iter_cursor`, and `FindQueryCursor.read` all work
+identically against RESP2 and RESP3 servers.
+
+If you call redis-py directly (via `Model.db().execute_command(...)`)
+you'll get the raw protocol-specific shape. Use
+`split_search_response` / `split_cursor_response` from
+`aredis_om.model.resp3_shim` if you want to normalise the response:
+
+```python
+from aredis_om.model.resp3_shim import split_search_response
+from aredis_om.connections import protocol_version
+
+
+raw = await Model.db().execute_command(
+    "FT.SEARCH", Model.Meta.index_name, "*", "LIMIT", "0", "10"
+)
+protocol = protocol_version(Model.db())
+total, rows = split_search_response(raw, protocol=protocol)
+print(f"total: {total}, rows: {len(rows)}")
+```
+
+## Tests that exercise both protocols
+
+`tests/test_protocol_compat.py` and
+`tests/test_protocol_negotiation.py` run the same model CRUD and query
+flows against both RESP2 and RESP3 clients and verify identical
+results. `tests/test_protocol_benchmark.py` records per-command
+latency for each protocol. Use them as templates if you need to add
+protocol-specific coverage for your own code paths.
+
+## Reference
+
+- Source: [`aredis_om/connections.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/connections.py), [`aredis_om/model/resp3_shim.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/resp3_shim.py)
+- Tests: [`tests/test_protocol_compat.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_protocol_compat.py), [`tests/test_protocol_negotiation.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_protocol_negotiation.py), [`tests/test_protocol_benchmark.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_protocol_benchmark.py)

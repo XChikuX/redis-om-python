@@ -1,0 +1,218 @@
+---
+title: Bulk Operations
+description: Save, fetch, and delete many models in a single round trip with add(), get_many(), and delete_many().
+---
+
+# Bulk Operations
+
+Redis OM provides three pipelined helpers for working with many models
+at once: `add()`, `get_many()`, and `delete_many()`. They are
+significantly faster than looping over individual `save()` / `get()` /
+`delete()` calls because they collapse many Redis commands into a
+single network round trip.
+
+> **Sync vs async:** This page shows the async API. Import from
+> `redis_om` (the generated sync mirror) and drop `await` for the
+> sync equivalents — the signatures are otherwise identical.
+
+## `Model.add()` — save many models
+
+`Model.add()` saves a sequence of models with a single pipeline:
+
+```python
+from aredis_om import JsonModel, Field, Migrator
+
+
+class Customer(JsonModel):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+    age: int = Field(index=True)
+
+
+Migrator().run()
+
+customers = [
+    Customer(first_name="Andrew", last_name="Brookins",  age=38),
+    Customer(first_name="Kim",    last_name="Brookins",  age=34),
+    Customer(first_name="Simon",  last_name="Prickett",  age=99),
+]
+await Customer.add(customers)
+```
+
+`add()` returns the input list of models (with `pk` populated on each
+instance if you didn't supply one). The whole batch is committed
+atomically — a failure in any save rolls back the pipeline if
+`transaction=True` (the default), or applies what's already in flight
+otherwise.
+
+### `Meta.default_ttl`
+
+If the model defines `class Meta: default_ttl = N`, every save (including
+those inside `add()`) applies the TTL automatically:
+
+```python
+class Session(JsonModel):
+    user_id: str
+    token: str
+
+    class Meta:
+        default_ttl = 60 * 60  # 1 hour
+
+
+# Each saved session expires after 1 hour
+await Session.add([Session(user_id="alice", token="..."), Session(...)])
+```
+
+### Compose with another pipeline
+
+If you already have a pipeline object, pass it in and `add()` will
+queue its commands without executing:
+
+```python
+async with Customer.db().pipeline(transaction=False) as pipe:
+    Customer.add(customers, pipeline=pipe)
+    pipe.incr("metrics:customer_creations")
+    results = await pipe.execute()
+```
+
+This is useful for keeping unrelated Redis operations inside a single
+network round trip.
+
+## `Model.get_many()` — fetch many by primary key
+
+`get_many()` issues `HGETALL` (or `JSON.GET`) calls in a single pipeline
+and returns the results in the same order as the input pks:
+
+```python
+pks = [c.pk for c in customers]
+reloaded = await Customer.get_many(pks)
+assert [c.pk for c in reloaded] == pks
+```
+
+Missing keys are silently skipped — `get_many()` does **not** raise
+`NotFoundError` for individual misses. The returned list is the same
+length as the input, with `None` placeholders for missing keys.
+
+### Compose with another pipeline
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+pipe.incr("metrics:bulk_fetches")
+Customer.get_many(pks, pipeline=pipe)
+results = await pipe.execute()
+counter, customers = results
+```
+
+## `Model.delete_many()` — delete many models
+
+```python
+to_delete = await Customer.find(Customer.last_name == "Brookins").all()
+deleted = await Customer.delete_many(to_delete)
+print(deleted)
+# > 2
+```
+
+Internally, `delete_many()` chunks the input into batches of 100 with
+`more_itertools.ichunked` and runs each batch in a single pipeline,
+so the throughput scales with batch size.
+
+`delete_many()` accepts the same `pipeline=` parameter as the other
+bulk helpers.
+
+## Bulk delete by query
+
+To delete all records matching a query, use `FindQuery.delete()`:
+
+```python
+deleted = await Customer.find(Customer.age >= 100).delete()
+print(deleted)
+# > 1
+```
+
+`FindQuery.delete()` loads the matching records first to compute their
+keys, then issues a single `DEL` for the whole batch.
+
+## Bulk fetch by query
+
+`FindQuery.all()` already batches internally. For explicit tuning:
+
+```python
+# Page size is the second positional arg to .all()
+results = await Customer.find(Customer.age > 30).all(batch_size=500)
+```
+
+To stream every primary key without loading documents, use
+`all_pks()` which returns an async generator (after a single `await`)
+that issues a type-filtered `SCAN`:
+
+```python
+# all_pks is an async coroutine that resolves to an async generator
+generator = await Customer.all_pks(count=500)
+async for pk in generator:
+    customer = await Customer.get(pk)
+    await notify(customer)
+```
+
+The optional `count=` argument is passed to `SCAN`'s `COUNT` hint.
+
+## Bulk fetch by query
+
+`FindQuery.all()` already batches internally. For explicit tuning:
+
+```python
+# Page size is the second positional arg to .all()
+results = await Customer.find(Customer.age > 30).all(batch_size=500)
+```
+
+## Performance notes
+
+- `add()`, `get_many()`, and `delete_many()` are typically 10–100×
+  faster than calling `save()` / `get()` / `delete()` in a loop,
+  because they amortize the per-command round trip cost.
+- For very large batches, chunk the input yourself. `more_itertools`
+  is already a dependency:
+
+  ```python
+  from more_itertools import ichunked
+  for chunk in ichunked(customers, 500):
+      await Customer.add(chunk)
+  ```
+
+- `add()` opens an internal `transaction=False` pipeline by default.
+  Pass `transaction=True` only if you need atomic semantics — the
+  performance cost is modest but non-zero.
+
+## API reference
+
+### `await Model.add(models, pipeline=None)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `models` | `Sequence[Model]` | The models to save. |
+| `pipeline` | `redis.asyncio.Pipeline` or `None` | An existing pipeline to compose with. If `None`, an internal pipeline is created. |
+
+Returns: the input list (with `pk` populated for any model that
+didn't have one).
+
+### `await Model.get_many(pks, pipeline=None)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `pks` | `Sequence[Any]` | Primary keys in any order. |
+| `pipeline` | `redis.asyncio.Pipeline` or `None` | Optional existing pipeline. |
+
+Returns: list with one entry per input `pk`. Missing keys become `None`.
+
+### `await Model.delete_many(models, pipeline=None)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `models` | `Sequence[Model]` | Models to delete. |
+| `pipeline` | `redis.asyncio.Pipeline` or `None` | Optional existing pipeline. |
+
+Returns: count of models passed in.
+
+## Reference
+
+- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py) (`RedisModel.add`, `RedisModel.get_many`, `RedisModel.delete_many`)
+- Tests: [`tests/test_pipeline.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_pipeline.py)

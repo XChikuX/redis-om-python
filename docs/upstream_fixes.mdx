@@ -1,0 +1,351 @@
+---
+title: Upstream Issues Fixed
+description: Upstream issues from redis/redis-om-python that are resolved in this fork, with code examples.
+---
+
+# Upstream Issues Fixed in This Fork
+
+This fork tracks upstream
+[`redis/redis-om-python`](https://github.com/redis/redis-om-python/issues)
+issues and lands fixes ahead of upstream. This page covers every
+upstream issue that's resolved here, with a small code example for each
+and pointers to the regression tests.
+
+## Query and schema fixes
+
+### [#108](https://github.com/redis/redis-om-python/issues/108) — Enum numeric values in `JsonModel.find`
+
+`Enum` subclasses of `int` were being rendered as their string name
+instead of their numeric value in query expressions, breaking
+`find(EnumMember.X == 1)`. Fixed by converting enum numeric values
+before interpolation.
+
+```python
+import enum
+from redis_om import JsonModel, Field
+
+
+class Status(enum.IntEnum):
+    ACTIVE = 1
+    INACTIVE = 2
+
+
+class Order(JsonModel):
+    status: Status = Field(index=True)
+
+
+Order.find(Order.status == Status.ACTIVE).all()  # now works
+```
+
+### [#195](https://github.com/redis/redis-om-python/issues/195) — Search-term escaping
+
+The query layer now escapes RediSearch special characters in TAG and
+TEXT values via `aredis_om.model.token_escaper.TokenEscaper`. 100% test
+coverage in `tests/test_token_escaper.py`.
+
+```python
+# Wildcard-bearing values no longer break queries
+Member.find(Member.bio == "*.py").all()
+```
+
+### [#441](https://github.com/redis/redis-om-python/issues/441) — Intentional wildcards
+
+When you really do want a wildcard, escape it via `token_escaper()`:
+
+```python
+from aredis_om.model.token_escaper import token_escaper
+
+# Generate "@name:Sm*" explicitly
+prefix = token_escaper("Sm*")
+```
+
+### [#431](https://github.com/redis/redis-om-python/issues/431) — Sort on embedded JSON fields
+
+`FindQuery.sort_by()` resolves embedded JSON field paths and supports
+both dotted and double-underscore syntax:
+
+```python
+class Metrics(EmbeddedJsonModel):
+    score: int
+
+
+class Book(JsonModel):
+    title: str = Field(index=True)
+    metrics: Metrics
+
+
+Book.find().sort_by("metrics.score").all()        # ✓
+Book.find().sort_by("metrics__score").all()       # ✓
+```
+
+### [#448](https://github.com/redis/redis-om-python/issues/448) — Cursors for search results
+
+`FindQuery.iter_cursor()` uses `FT.AGGREGATE WITHCURSOR` for
+cursor-based pagination, including signed/unsigned URL-safe tokens
+for web handoff:
+
+```python
+cursor = await Customer.find().sort_by("-age").iter_cursor(count=100)
+token = cursor.token(secret=os.environ["CURSOR_SECRET"])
+
+# Later, in another request:
+restored = FindQueryCursor.from_token(Customer, token, secret=SECRET)
+page = await restored.read()
+```
+
+### [#499](https://github.com/redis/redis-om-python/issues/499) — `IN` / `NOT_IN` on numeric fields
+
+Numeric `IN` queries previously raised `QueryNotSupportedError`. Now
+they round-trip through RediSearch's numeric range syntax:
+
+```python
+Customer.find(Customer.age << [21, 30, 40]).all()          # IN
+Customer.find(~(Customer.age << [21, 30])).all()           # NOT IN
+```
+
+### [#480](https://github.com/redis/redis-om-python/issues/480) — Embedded list containment
+
+List fields containing embedded models are queryable with the `<<`
+operator using either a string (for `List[str]`) or an embedded model
+instance (for `List[EmbeddedJsonModel]`):
+
+```python
+class User(EmbeddedJsonModel):
+    name: str = Field(index=True)
+    type: str = Field(index=True)
+
+
+class Workspace(JsonModel):
+    name: str = Field(index=True)
+    users: List[User] = Field(index=True)
+
+
+# Resolve to: @users:(@name:John @type:registered)
+Workspace.find(
+    Workspace.users << User(name="John", type="registered")
+).all()
+```
+
+### [#244](https://github.com/redis/redis-om-python/issues/244) — Lists of embedded models
+
+`List[EmbeddedJsonModel]` fields are now indexed and queryable end to
+end — schema generation, save, get, and queries all work.
+
+### Boolean field round-tripping
+
+`HashModel` cannot store booleans (hashes don't have a boolean type),
+but `JsonModel` can. Storing and querying them works:
+
+```python
+class Demo(JsonModel):
+    active: bool = Field(index=True)
+
+
+await Demo(active=True).save()
+Demo.find(Demo.active == True).all()  # noqa: E712
+```
+
+## Migration and runtime fixes
+
+### [#204](https://github.com/redis/redis-om-python/issues/204) — Indexing issue visibility
+
+`check_index_health()` runs before each query and inspects `FT.INFO`.
+If `hash_indexing_failures` is non-zero, a `logging.warning` is
+emitted with the failure count and last error:
+
+```
+WARNING  aredis_om.model.model:... Hash indexing failures at __main__.Widget:index: 3 (last error: ...")
+```
+
+The migrator also polls `percent_indexed` on Redis 8.8+ before
+returning so that an index with asynchronously-scanned background data
+is fully ready before the next test or query runs.
+
+### [#254](https://github.com/redis/redis-om-python/issues/254) — Optional field round-tripping on `HashModel`
+
+When an optional field is missing from a Redis hash, the hash has no
+key for it. Previously, `HashModel.get()` would return an empty string
+which Pydantic would reject for `Optional[str]` types. The hash
+loader now converts empty-string values back to `None` for optional
+fields:
+
+```python
+class Customer(HashModel):
+    name: str
+    bio: Optional[str]
+
+
+await Customer(name="Andrew").save()
+reloaded = await Customer.get(customer.pk)
+assert reloaded.bio is None  # not ""
+```
+
+### [#519](https://github.com/redis/redis-om-python/issues/519) — Runtime `Meta.database` assignment
+
+`Meta.database` is resolved lazily. It accepts a connection object, a
+callable that returns one, or `None` (which falls back to
+`get_redis_connection()`). You can also reassign it at runtime:
+
+```python
+import os
+from aredis_om import get_redis_connection
+
+
+class Session(HashModel):
+    user_id: str
+
+    class Meta:
+        database = lambda: get_redis_connection(
+            url=os.environ["SESSION_REDIS_URL"]
+        )
+
+
+# Per-tenant override at runtime
+Session.Meta.database = get_redis_connection(url="redis://tenant-1:6379")
+```
+
+### [#529](https://github.com/redis/redis-om-python/issues/529) — Default model TTLs
+
+```python
+class Session(HashModel):
+    user_id: str
+    token: str
+
+    class Meta:
+        default_ttl = 60 * 60  # 1 hour
+
+
+await Session(user_id="alice", token="...").save()
+# Redis applies EXPIRE 3600 automatically.
+```
+
+### [#523](https://github.com/redis/redis-om-python/issues/523) — Pipeline-backed bulk fetch
+### `#523` — Pipeline-backed bulk fetch
+
+`get_many()` issues `HGETALL` (or `JSON.GET`) calls in a single
+pipeline. Accepts an explicit `pipeline=` argument for composition:
+
+```python
+pipe = Customer.db().pipeline(transaction=False)
+pipe.incr("metrics:bulk_fetches")
+Customer.get_many(pks, pipeline=pipe)
+counter, customers = await pipe.execute()
+```
+### [#776](https://github.com/redis/redis-om-python/issues/776) — Test coverage
+
+Overall coverage raised from 54% to ~88%; core modules at 86–100%.
+`tests/test_performance_benchmark.py` records 51 timing benchmarks
+that print at the end of the run for regression review.
+
+## Other fixes
+
+### `FindQuery.copy()` doesn't re-validate embedded sort aliases
+
+When `FindQuery.execute()` paginates internally, it calls
+`copy()` on the existing query. Previously, `copy()` re-ran
+`validate_sort_fields()`, which re-resolved `metrics.score` → 
+`metrics_score` and could raise `QueryNotSupportedError` on
+already-resolved sort fields. The validator now skips
+already-resolved aliases.
+
+### Embedded model OR-query prefix isolation
+
+When an embedded model is queried inside an OR group, its field
+prefix is rewritten to avoid collision with the parent's tags. The
+tests in `tests/test_json_model.py` cover this.
+
+### Binary `bytes` field round-tripping
+
+`bytes` fields round-trip correctly through both `HashModel` and
+`JsonModel`. The library uses base64 encoding internally for hash
+storage and leaves `JSON.SET`/`JSON.GET` to handle the binary
+transport:
+
+```python
+class Attachment(HashModel):
+    name: str
+    payload: bytes
+
+
+await Attachment(name="hello.txt", payload=b"hello world").save()
+reloaded = await Attachment.get(a.pk)
+assert reloaded.payload == b"hello world"
+```
+
+### Custom TAG field separators
+
+```python
+class Tag(HashModel):
+    name: str = Field(index=True, separator=";")
+
+
+await Tag(name="a;b;c").save()  # stores 3 distinct tags
+```
+
+### Embedded list containment queries
+
+Beyond the `<<` operator for `List[EmbeddedJsonModel]`, plain
+`List[str]` fields also support the same operator:
+
+```python
+class Workspace(JsonModel):
+    members: List[str] = Field(index=True)
+
+
+Workspace.find(Workspace.members << "alice").all()
+```
+
+### JsonModel `Annotated[...]` and PEP 604 union types
+
+Pydantic v2-style annotations are preserved through query
+resolution:
+
+```python
+from typing import Annotated, Optional
+
+
+class Customer(JsonModel):
+    # Annotated wraps the type without breaking field introspection
+    email: Annotated[EmailStr, Field(index=True)] = Field(index=True)
+
+    # PEP 604 unions are recognized by the schema generator
+    role: str | None = Field(index=True, default=None)
+```
+
+### ExpressionProxy isolation for `EmbeddedJsonModel`
+
+`model_validate()` no longer raises when an `ExpressionProxy` flows in
+where an `Optional[str]` is expected (the embedded `pk` field).
+
+### Missing pk backfill on reload
+
+If a stored model's `pk` field is missing from Redis, the model's
+identity is preserved via backfill:
+
+```python
+# Manually scrubbed model in Redis
+await Customer.db().hdel(customer.key(), "pk")
+reloaded = await Customer.get(customer.pk)
+assert reloaded.pk == customer.pk
+```
+
+### `JsonModel.get_value(pk, path)` — sub-document fetches
+
+`JsonModel.get_value(pk, "address__city")` fetches a single (possibly
+nested) field via `JSON.GET key <jsonpath>` without loading the whole
+document, with full type conversion. See [Models and
+Fields](/models#retrieving-sub-values-of-a-jsonmodel).
+
+### `all_pks(count=...)` scan tuning
+
+```python
+# Scan with a smaller COUNT hint for lower latency per item
+for pk in await Customer.all_pks(count=100):
+    ...
+```
+
+## Reference
+
+- Repository: <https://github.com/XChikuX/redis-om-python>
+- Upstream: <https://github.com/redis/redis-om-python/issues>
+- Test coverage: see [`tests/`](https://github.com/XChikuX/redis-om-python/tree/main/tests) for individual regression tests.

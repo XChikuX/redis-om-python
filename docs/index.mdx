@@ -1,0 +1,49 @@
+---
+title: Redis OM for Python
+description: A declarative, async-first object mapper for Redis built on Pydantic v2.
+---
+
+Welcome! This is the documentation for redis-om-python.
+
+A declarative, async-first object mapper for Redis built on [Pydantic v2](https://docs.pydantic.dev/),
+with support for rich queries via RediSearch, JSON-backed embedded models,
+vector similarity search (KNN), bulk operations, atomic counters
+(`INCREX`), sparse Redis Arrays, and OpenTelemetry observability.
+
+## Getting Started
+
+- [Getting Started tutorial](/getting_started) — install Redis OM, define a model, save and query data.
+- [Connecting to Redis](/connections) — URL configuration, clusters, RESP2/RESP3.
+
+## Core features
+
+- [Models and Fields](/models) — `HashModel`, `JsonModel`, `EmbeddedJsonModel`, `Field`, the `Meta` object, and vector fields.
+- [Queries and Vector Search](/queries) — expression syntax, dynamic queries, KNN, sort, pagination, cursors.
+- [Bulk Operations](/bulk_operations) — `add()`, `get_many()`, `delete_many()`, pipelines.
+- [Migrations](/migrations) — `Migrator`, the `migrate` CLI, drop/recreate, dry-run, history, cluster mode.
+- [Validation](/validation) — Pydantic-backed validation, strict types, custom validators.
+- [Error Messages](/errors) — common errors and how to fix them.
+
+## Redis 8.8+ features
+
+- [AtomicCounter (`INCREX`)](/atomic_counter) — atomic increment with bounds, saturation, expiration, and `ENX`. Useful for rate limiters and capped counters.
+- [Redis Arrays](/redis_arrays) — sparse, index-addressable arrays with ring-buffer, aggregate (`AROP`), and inline grep (`ARGREP`) operations.
+- [OpenTelemetry Observability](/observability) — opt-in OTel metrics via redis-py 8.0 instrumentation.
+
+## Deployment
+
+- [Redis Cluster](/cluster) — `cluster=True`, cluster-safe bulk writes, and pipelines.
+- [Protocol Selection](/protocol) — RESP2 vs RESP3, `protocol_version()`, and protocol-agnostic application code.
+
+## Reference
+
+- [Upstream Issues Fixed in This Fork](/upstream_fixes) — every upstream issue resolved here, with examples.
+
+## Redis Modules
+
+Read how to get the RediSearch and RedisJSON modules at [Redis Modules](/redis_modules).
+
+## FastAPI Integration
+
+Redis OM is designed to integrate with the FastAPI web framework. See how this
+works at [FastAPI Integration](/fastapi_integration).
