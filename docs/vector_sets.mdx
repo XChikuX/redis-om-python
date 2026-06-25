@@ -1,0 +1,319 @@
+---
+title: Vector Sets (VADD, VSIM, VSETATTR)
+description: High-dimensional similarity search over a first-class HNSW data structure for Redis 8.8+.
+---
+
+# Vector Sets (Redis 8.8+)
+
+Redis 8.8 ships a new preview module (`@vectorset`) that adds a first-class
+**vector set** data structure — an HNSW-backed key that stores named
+floating-point vectors and serves approximate nearest-neighbour (ANN)
+queries directly via `VSIM`.
+
+Unlike RediSearch vector fields (`FT.CREATE ... VECTOR`), vector sets:
+
+- are a **data structure**, not an index — no separate index lifecycle;
+- accept **raw query vectors** in `VSIM` (no `PARAMS`/prepared statements);
+- let each element carry **per-element JSON attributes** (`VSETATTR`)
+  filterable at query time via JSONPath expressions.
+
+> **Server requirement**: Redis 8.8+ with the `@vectorset` module loaded.
+> The `VectorSet` wrapper probes the server and raises a Redis
+> `ResponseError` on older builds; use `has_vector_sets(db)` to guard
+> caller code. The wrapper is otherwise redis-py version-agnostic.
+
+```python
+import asyncio
+from aredis_om import VectorSet, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    vs = VectorSet(db, "vset:docs")
+
+    await vs.add([1.0, 2.0, 3.0], "doc1")
+    await vs.add([4.0, 5.0, 6.0], "doc2")
+
+    results = await vs.similar([1.0, 2.0, 3.0], count=10, with_scores=True)
+    print(results)
+    # > [("doc1", 1.0), ("doc2", 0.9879...)]
+
+
+asyncio.run(main())
+```
+
+The class is also available from the sync mirror (`from redis_om import
+VectorSet`) — drop `await` and the API is identical.
+
+## Why vector sets?
+
+If you already use `VectorFieldOptions` with `JsonModel`/`HashModel`, when
+should you reach for `VectorSet` instead?
+
+| Need | Use |
+| --- | --- |
+| Embed vectors inside a Redis-OM model + filter on other model fields | `VectorFieldOptions` + `FindQuery` (RediSearch) |
+| Stand-alone vector collection, no relational schema | `VectorSet` |
+| Per-element attributes that change frequently | `VectorSet` (`VSETATTR`) |
+| Pure k-NN without a secondary index | `VectorSet` |
+| Hybrid (BM25 + vector) ranking | RediSearch `FT.HYBRID` (planned via RedisVL) |
+
+## Installation
+
+`VectorSet` ships with pyredis-om; nothing extra to install.
+
+## Adding vectors (`VADD`)
+
+`add()` stores a named vector in the set. On the first call the set is
+created with the chosen quantization; subsequent adds must use a vector of
+the same dimensionality.
+
+```python
+import asyncio
+from aredis_om import VectorSet, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    vs = VectorSet(db, "demo:vs")
+
+    # Basic add.
+    added = await vs.add([1.0, 2.0, 3.0], "doc1")
+    print(f"added new: {added}")
+    # > added new: True
+
+    # Adding the same element again is a no-op (returns False).
+    added = await vs.add([1.0, 2.0, 3.0], "doc1")
+    print(f"added dup: {added}")
+    # > added dup: False
+
+    # cas=True replaces the stored vector for an existing element.
+    replaced = await vs.add([9.0, 9.0, 9.0], "doc1", cas=True)
+    print(f"replaced: {replaced}, embedding: {await vs.embedding('doc1')}")
+    # > replaced: False, embedding: [9.0, 9.0, 9.0]
+
+    await db.delete("demo:vs")
+
+
+asyncio.run(main())
+```
+
+### Quantization
+
+Set quantization at creation time via the `quant` argument:
+
+| Value | Server flag | Stored as | Notes |
+| --- | --- | --- | --- |
+| `"Q8"` (default) | `Q8` | 8-bit int | Best balance of speed and recall. |
+| `"BIN"` | `BIN` | 1-bit | Smallest memory footprint; lowest recall. |
+| `"NOQUANT"` | `NOQUANT` | full FP32 | Highest recall; largest memory. |
+
+```python
+await vs.add([1.0, 2.0], "doc1", quant="NOQUANT")
+info = await vs.info()
+assert info["quant-type"] == "f32"
+```
+
+### Dimensionality reduction (`REDUCE`)
+
+For very high-dimensional input vectors, `reduce_to_dim` projects the
+input down to a smaller stored dimensionality using a random projection:
+
+```python
+# 4-dim input, 2-dim stored.
+await vs.add([1.0, 2.0, 3.0, 4.0], "doc1", reduce_to_dim=2)
+assert await vs.dim() == 2
+```
+
+### Build-time exploration factor (`EF`)
+
+`ef` controls the HNSW exploration factor at insert time. Higher values
+improve graph quality at the cost of slower inserts:
+
+```python
+await vs.add([1.0, 2.0], "doc1", ef=200)
+```
+
+## Similarity queries (`VSIM`)
+
+`similar()` runs a k-NN query against the set using a query vector:
+
+```python
+import asyncio
+from aredis_om import VectorSet, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    vs = VectorSet(db, "demo:sim")
+
+    # Load some vectors.
+    await vs.add([1.0, 0.0], "cat", quant="NOQUANT")
+    await vs.add([0.0, 1.0], "dog", quant="NOQUANT")
+    await vs.add([0.95, 0.05], "tiger", quant="NOQUANT")
+
+    # Pure names.
+    names = await vs.similar([1.0, 0.0], count=3)
+    print(names)
+    # > ['cat', 'tiger', 'dog']
+
+    # Names + scores.
+    scored = await vs.similar([1.0, 0.0], count=3, with_scores=True)
+    print(scored)
+    # > [('cat', 1.0), ('tiger', 0.998...), ('dog', 0.0)]
+
+    await db.delete("demo:sim")
+
+
+asyncio.run(main())
+```
+
+### Result shapes
+
+The return type of `similar()` depends on which flags are set:
+
+| Flags | Return type |
+| --- | --- |
+| none | `list[str]` — element names |
+| `with_scores=True` | `list[tuple[str, float]]` — `(name, score)` |
+| `with_attributes=True` | `list[tuple[str, dict]]` — `(name, attrs)` |
+| both | `list[tuple[str, float, dict]]` — `(name, score, attrs)` |
+
+### Query-time tuning
+
+| Argument | Server flag | Effect |
+| --- | --- | --- |
+| `count=N` | `COUNT N` | Cap on number of results (default 10). |
+| `ef=N` | `EF N` | Exploration factor at query time (higher = better recall). |
+| `epsilon=X` | `EPSILON X` | Relax graph traversal for faster but less precise search. |
+
+### Attribute filters (`FILTER`)
+
+Each element may carry a JSON attribute blob set via `set_attribute()`. At
+query time, pass a JSONPath-style boolean expression to `filter_expr` to
+restrict candidates:
+
+```python
+import asyncio
+from aredis_om import VectorSet, get_redis_connection
+
+
+async def main():
+    db = get_redis_connection()
+    vs = VectorSet(db, "demo:filter")
+
+    await vs.add([1.0, 1.0], "a")
+    await vs.add([1.0, 1.0], "b")
+    await vs.set_attribute("a", {"color": "red"})
+    await vs.set_attribute("b", {"color": "blue"})
+
+    # Only red candidates.
+    red = await vs.similar([1.0, 1.0], filter_expr='.color == "red"')
+    print(red)
+    # > ['a']
+
+    await db.delete("demo:filter")
+
+
+asyncio.run(main())
+```
+
+The filter expression uses JSONPath predicate syntax (e.g.
+`.color == "red"`, `.year >= 2020`, `.tags startsWith "prod"`).
+
+## Per-element attributes
+
+`set_attribute()` / `get_attribute()` manage the JSON blob attached to an
+element. Pass any JSON-serialisable mapping; pass an empty dict to clear.
+
+```python
+await vs.set_attribute("doc1", {"color": "red", "year": 2024})
+attrs = await vs.get_attribute("doc1")
+assert attrs == {"color": "red", "year": 2024}
+
+# Missing element or unset attribute → None.
+assert await vs.get_attribute("nonexistent") is None
+```
+
+## Introspection
+
+```python
+info = await vs.info()
+# {
+#   "quant-type": "int8",
+#   "hnsw-m": 16,
+#   "vector-dim": 3,
+#   "projection-input-dim": 0,
+#   "size": 2,
+#   "max-level": 1,
+#   "attributes-count": 0,
+#   "vset-uid": 43,
+#   "hnsw-max-node-uid": 2,
+# }
+
+await vs.card()       # → 2 (number of elements)
+await vs.dim()        # → 3 (stored dimensionality)
+await vs.embedding("doc1")  # → [1.0, 2.0, 3.0] (quantized form)
+await vs.links("doc1")      # → [["doc2"], [...], ...] (per-level HNSW neighbours)
+await vs.random_member()    # → "doc1" (or count=N for a list)
+```
+
+## Removing elements
+
+```python
+removed = await vs.remove("doc1")
+# → True if the element existed, False otherwise.
+```
+
+## Capability probing
+
+`has_vector_sets(db)` returns `True` when the server supports `VADD`. Use
+it to branch caller code at runtime:
+
+```python
+from aredis_om import has_vector_sets
+
+if await has_vector_sets(db):
+    vs = VectorSet(db, "vset:embeddings")
+    ...
+else:
+    # Fallback path (e.g. RediSearch VECTOR field, or skip).
+    ...
+```
+
+## API reference
+
+### `VectorSet(db, key)`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `db` | `redis.asyncio.Redis` (or sync) | Active Redis client. |
+| `key` | `str` | The Redis key of the vector set. |
+
+| Method | Returns | Command |
+| --- | --- | --- |
+| `await vs.add(vector, element, *, reduce_to_dim=None, cas=False, quant=None, ef=None)` | `bool` | `VADD` |
+| `await vs.remove(element)` | `bool` | `VREM` |
+| `await vs.similar(vector, *, count=None, ef=None, filter_expr=None, epsilon=None, with_scores=False, with_attributes=False)` | `list` | `VSIM` |
+| `await vs.set_attribute(element, attributes)` | `bool` | `VSETATTR` |
+| `await vs.get_attribute(element)` | `dict` or `None` | `VGETATTR` |
+| `await vs.card()` | `int` | `VCARD` |
+| `await vs.dim()` | `int` | `VDIM` |
+| `await vs.info()` | `dict` | `VINFO` |
+| `await vs.embedding(element)` | `list[float]` | `VEMB` |
+| `await vs.links(element)` | `list[list[str]]` | `VLINKS` |
+| `await vs.random_member(count=None)` | `str` or `list[str]` | `VRANDMEMBER` |
+| `vs.key` | `str` | The configured Redis key. |
+
+### `has_vector_sets(db)` → `bool`
+
+Returns `True` if the server has the `VADD` command (Redis 8.8+ with
+`@vectorset`).
+
+## Full source
+
+See [`aredis_om/model/vector_set.py`][source] for the implementation and
+[`tests/test_vector_set.py`][tests] for the full test suite (36 tests).
+
+[source]: https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/vector_set.py
+[tests]: https://github.com/XChikuX/redis-om-python/blob/main/tests/test_vector_set.py
