@@ -48,7 +48,32 @@ POST_SYNC_FIXES = {
         "task = asyncio.create_task(gen_load())": "gen_load()",
         "        task\n": "",
     },
+    # py_test_mark_asyncio becomes py_test_mark_sync in the mirror; its
+    # body ``return pytest.mark.asyncio(f)`` must become ``return f`` so
+    # sync test functions stay non-asyncio (unasync does not rewrite the
+    # decorator inside the function body).
+    "tests_sync/conftest.py": {
+        "return pytest.mark.asyncio(f)": "return f",
+        # The async docstring says "Returns pytest.mark.asyncio(f)"; in the
+        # sync mirror that's no longer accurate.
+        '    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""\n':
+            '    """No-op marker for sync tests (mirrors py_test_mark_asyncio)."""\n',
+    },
 }
+
+# Deduplicate `import pytest` lines that unasync may produce when
+# `pytest_asyncio` → `pytest` replacement overlaps with existing imports.
+_DUPLICATE_IMPORT_PYTEST = "\nimport pytest\nimport pytest\n"
+_DEDUPED_IMPORT_PYTEST = "\nimport pytest\n"
+
+
+def _dedupe_import_pytest(content: str) -> str:
+    """Remove consecutive duplicate `import pytest` lines from generated files."""
+    while _DUPLICATE_IMPORT_PYTEST in content:
+        content = content.replace(
+            _DUPLICATE_IMPORT_PYTEST, _DEDUPED_IMPORT_PYTEST
+        )
+    return content
 
 
 def apply_post_sync_fixes(repo_root: Path):
@@ -64,6 +89,17 @@ def apply_post_sync_fixes(repo_root: Path):
 
         if updated != content:
             file_path.write_text(updated)
+
+    # Global dedupe of duplicate `import pytest` in generated sync files.
+    for prefix in ("redis_om", "tests_sync"):
+        target_dir = repo_root / prefix
+        if not target_dir.exists():
+            continue
+        for file_path in target_dir.rglob("*.py"):
+            content = file_path.read_text()
+            updated = _dedupe_import_pytest(content)
+            if updated != content:
+                file_path.write_text(updated)
 
 
 def main():
