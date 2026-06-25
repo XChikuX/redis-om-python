@@ -1722,6 +1722,6 @@ async def test_zzz_performance_comparison():
                 f"{name}\t{data['elapsed_s']}\t{data['ops']}\t{data['ops_per_sec']}\n"
             )
 
-    assert (
-        len(CLUSTER_BENCHMARKS) >= 15
-    ), f"Expected at least 15 cluster benchmarks, got {len(CLUSTER_BENCHMARKS)}"
+    assert len(CLUSTER_BENCHMARKS) >= 15, (
+        f"Expected at least 15 cluster benchmarks, got {len(CLUSTER_BENCHMARKS)}"
+    )

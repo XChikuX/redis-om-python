@@ -61,7 +61,7 @@ from .resp3_shim import (
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
 
-model_registry = {}
+model_registry: dict[type, type] = {}
 _T = TypeVar("_T")
 Model = TypeVar("Model", bound="RedisModel")
 log = logging.getLogger(__name__)
@@ -664,7 +664,9 @@ def convert_timestamp_to_datetime(obj, model_fields):
                     # T | None), get the non-None type
                     args = get_args(field_type)
                     non_none_types = [
-                        arg for arg in args if arg is not type(None)  # noqa: E721
+                        arg
+                        for arg in args
+                        if arg is not type(None)  # noqa: E721
                     ]
                     if len(non_none_types) == 1:
                         field_type = non_none_types[0]
@@ -847,7 +849,9 @@ def convert_base64_to_bytes(obj, model_fields):
             if _is_union_type(field_type):
                 args = get_args(field_type)
                 non_none_types = [
-                    arg for arg in args if arg is not type(None)  # noqa: E721
+                    arg
+                    for arg in args
+                    if arg is not type(None)  # noqa: E721
                 ]
                 if len(non_none_types) == 1:
                     field_type = non_none_types[0]
@@ -1370,8 +1374,7 @@ class FindQuery:
             return "|".join([escaper.escape(str(v)) for v in value])
         except TypeError:
             log.debug(
-                "Escaping single non-iterable value used for an IN or "
-                "NOT_IN query: %s",
+                "Escaping single non-iterable value used for an IN or NOT_IN query: %s",
                 value,
             )
         return escaper.escape(str(value))
@@ -3533,8 +3536,7 @@ class HashModel(RedisModel, abc.ABC):
                         (
                             arg
                             for arg in type_args
-                            if isinstance(arg, type)
-                            and arg is not type(None)  # noqa: E721
+                            if isinstance(arg, type) and arg is not type(None)  # noqa: E721
                         ),
                         str,
                     )
@@ -3611,9 +3613,7 @@ class HashModel(RedisModel, abc.ABC):
                 field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
             )
             if getattr(field_info, "full_text_search", False) is True:
-                schema = (
-                    f"{name} TAG SEPARATOR {separator} " f"{name} AS {name}_fts TEXT"
-                )
+                schema = f"{name} TAG SEPARATOR {separator} {name} AS {name}_fts TEXT"
             else:
                 schema = f"{name} TAG SEPARATOR {separator}"
         elif isinstance(typ, type) and issubclass(typ, RedisModel):

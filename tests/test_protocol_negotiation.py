@@ -110,8 +110,7 @@ class TestConnectionProtocolPassthrough:
         )
         conn = get_redis_connection(
             url=(
-                "redis://localhost:7001/0?decode_responses=True"
-                "&protocol=3&cluster=true"
+                "redis://localhost:7001/0?decode_responses=True&protocol=3&cluster=true"
             )
         )
         assert conn is mock.sentinel.cluster_conn

@@ -1,143 +1,141 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - '[0-9].[0-9]+'  # matches to backport branches, e.g. 3.6
-    tags: [ 'v*' ]
-  pull_request:
-    branches:
-      - main
-      - '[0-9].[0-9]+'
-      - 'update/pre-commit-autoupdate'
-  schedule:
-    - cron: '0 6 * * *'  # Daily 6AM UTC build
+    push:
+        branches:
+            - main
+            - "[0-9].[0-9]+" # matches to backport branches, e.g. 3.6
+        tags: ["v*"]
+    pull_request:
+        branches:
+            - main
+            - "[0-9].[0-9]+"
+            - "update/pre-commit-autoupdate"
+    schedule:
+        - cron: "0 6 * * *" # Daily 6AM UTC build
 
 env:
-  pythonversion: 3.12
-
+    pythonversion: 3.12
 
 jobs:
+    lint:
+        name: Linter
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+            - name: Setup Python 3.10+
+              uses: actions/setup-python@v6.3.0
+              with:
+                  python-version: ${{env.pythonversion}}
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+              #----------------------------------------------
+              #       load cached venv if cache exists
+              #----------------------------------------------
+            - name: Load cached venv
+              id: cached-venv
+              uses: actions/cache@v6.0.0
+              with:
+                  path: .venv
+                  key: venv-${{ runner.os }}-${{ env.pythonversion }}-${{ hashFiles('uv.lock') }}
+            - name: Make sync version of library (redis_om)
+              run: make sync
+              #----------------------------------------------
+              # install dependencies if cache does not exist
+              #----------------------------------------------
+            - name: Install dependencies
+              if: steps.cached-venv.outputs.cache-hit != 'true'
+              run: uv sync --extra dev
+              #----------------------------------------------
+              # install your root project, if required
+              #----------------------------------------------
+            - name: Install library
+              run: uv sync --extra dev
+              #----------------------------------------------
+              #              run test suite
+              #----------------------------------------------
+            - name: Run linter
+              run: make lint
+              env:
+                  UV_PROJECT_ENVIRONMENT: .venv
 
-  lint:
-    name: Linter
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6.3.0
-        with:
-          python-version: ${{env.pythonversion}}
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-        #----------------------------------------------
-        #       load cached venv if cache exists
-        #----------------------------------------------
-      - name: Load cached venv
-        id: cached-venv
-        uses: actions/cache@v6.0.0
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.pythonversion }}-${{ hashFiles('uv.lock') }}
-      - name: Make sync version of library (redis_om)
-        run: make sync
-        #----------------------------------------------
-        # install dependencies if cache does not exist
-        #----------------------------------------------
-      - name: Install dependencies
-        if: steps.cached-venv.outputs.cache-hit != 'true'
-        run: uv sync --extra dev
-        #----------------------------------------------
-        # install your root project, if required
-        #----------------------------------------------
-      - name: Install library
-        run: uv sync --extra dev
-        #----------------------------------------------
-        #              run test suite
-        #----------------------------------------------
-      - name: Run linter
-        run: |
-          make dist
-          make lint
-
-  test-unix:
-    name: Test Unix
-    needs: lint
-    strategy:
-      matrix:
-        os: [ ubuntu-latest ]
-        pyver: ["3.10", "3.11", "3.12", "3.13"]
-      fail-fast: false
-    services:
-      redis:
-        image: redis:8-alpine
-        ports:
-          # Maps port 6379 on service container to the host
-          - 6379:6379
-        # Set health checks to wait until redis has started
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      OS: ${{ matrix.os }}
-      INSTALL_DIR: ${{ github.workspace }}/redis
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Python ${{ matrix.pyver }}
-        uses: actions/setup-python@v6.3.0
-        with:
-          python-version: ${{ matrix.pyver }}
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-        #----------------------------------------------
-        #       load cached venv if cache exists
-        #----------------------------------------------
-      - name: Load cached venv
-        id: cached-venv
-        uses: actions/cache@v6.0.0
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ matrix.pyver }}-${{ hashFiles('uv.lock') }}
-        #----------------------------------------------
-        # Make sync version of library (redis_om)
-        #----------------------------------------------
-      - name: Make sync version of library (redis_om)
-        run: make sync
-        #----------------------------------------------
-        # install dependencies if cache does not exist
-        #----------------------------------------------
-      - name: Install dependencies
-        if: steps.cached-venv.outputs.cache-hit != 'true'
-        run: uv sync --extra dev
-        #----------------------------------------------
-        # install your root project, if required
-        #----------------------------------------------
-      - name: Install library
-        run: uv sync --extra dev
-      - name: Run unittests (redis:8-alpine, ${{ matrix.os }})
+    test-unix:
+        name: Test Unix
+        needs: lint
+        strategy:
+            matrix:
+                os: [ubuntu-latest]
+                pyver: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+            fail-fast: false
+        services:
+            redis:
+                image: redis:8-alpine
+                ports:
+                    # Maps port 6379 on service container to the host
+                    - 6379:6379
+                # Set health checks to wait until redis has started
+                options: >-
+                    --health-cmd "redis-cli ping"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 15
         env:
-          REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
-        run: |
-          make test
-          uv run coverage xml
-      - name: Upload coverage
-        uses: codecov/codecov-action@v7
-        with:
-          file: ./coverage.xml
-          flags: unit
-          env_vars: OS
-          fail_ci_if_error: false
+            OS: ${{ matrix.os }}
+            INSTALL_DIR: ${{ github.workspace }}/redis
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+            - name: Setup Python ${{ matrix.pyver }}
+              uses: actions/setup-python@v6.3.0
+              with:
+                  python-version: ${{ matrix.pyver }}
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+              #----------------------------------------------
+              #       load cached venv if cache exists
+              #----------------------------------------------
+            - name: Load cached venv
+              id: cached-venv
+              uses: actions/cache@v6.0.0
+              with:
+                  path: .venv
+                  key: venv-${{ runner.os }}-${{ matrix.pyver }}-${{ hashFiles('uv.lock') }}
+              #----------------------------------------------
+              # Make sync version of library (redis_om)
+              #----------------------------------------------
+            - name: Make sync version of library (redis_om)
+              run: make sync
+              #----------------------------------------------
+              # install dependencies if cache does not exist
+              #----------------------------------------------
+            - name: Install dependencies
+              if: steps.cached-venv.outputs.cache-hit != 'true'
+              run: uv sync --extra dev
+              #----------------------------------------------
+              # install your root project, if required
+              #----------------------------------------------
+            - name: Install library
+              run: uv sync --extra dev
+            - name: Run unittests (redis:8-alpine, ${{ matrix.os }})
+              env:
+                  REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
+              run: |
+                  make test
+                  uv run coverage xml
+            - name: Upload coverage
+              uses: codecov/codecov-action@v7
+              with:
+                  file: ./coverage.xml
+                  flags: unit
+                  env_vars: OS
+                  fail_ci_if_error: false

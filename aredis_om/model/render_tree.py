@@ -35,7 +35,7 @@ def render_tree(
 
     if up is not None:
         next_last = "up"
-        next_indent = f'{indent}{" " if "up" in last else "|"}{" " * len(str(name(current_node)))}'
+        next_indent = f"{indent}{' ' if 'up' in last else '|'}{' ' * len(str(name(current_node)))}"
         render_tree(
             up, nameattr, left_child, right_child, next_indent, next_last, buffer
         )
@@ -66,7 +66,7 @@ def render_tree(
     if down is not None:
         next_last = "down"
         next_indent = (
-            f'{indent}{" " if "down" in last else "|"}{len(str(name(current_node)))}'
+            f"{indent}{' ' if 'down' in last else '|'}{len(str(name(current_node)))}"
         )
         render_tree(
             down, nameattr, left_child, right_child, next_indent, next_last, buffer

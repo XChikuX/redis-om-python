@@ -1082,6 +1082,6 @@ async def test_zzz_print_benchmark_results(key_prefix, redis):
     print(f"\nResults saved to {results_file}")
 
     # Basic sanity: we should have recorded many benchmarks
-    assert (
-        len(BENCHMARK_RESULTS) >= 30
-    ), f"Expected at least 30 benchmark results, got {len(BENCHMARK_RESULTS)}"
+    assert len(BENCHMARK_RESULTS) >= 30, (
+        f"Expected at least 30 benchmark results, got {len(BENCHMARK_RESULTS)}"
+    )

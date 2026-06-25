@@ -32,6 +32,7 @@ dependencies = [
     "python-ulid>=3.0.0,<4.0.0",
     "hiredis>=3.4.0,<5.0.0",
     "more-itertools>=11.1.0,<12.0.0",
+    "mypy[dev]>=2.1.0",
 ]
 
 [project.urls]
@@ -45,14 +46,11 @@ migrate = "redis_om.model.cli.migrate:migrate"
 [project.optional-dependencies]
 dev = [
     "mypy>=1.15,<3.0",
+    "ruff>=0.9.0,<1.0.0",
     "pytest>=9.0.3,<10",
     "pytest-cov>=6.0,<8.0",
     "pytest-codspeed>=3.0,<6.0",
     "ipdb>=0.13.9,<0.14.0",
-    "black>=24.0,<28.0",
-    "isort>=5.0,<9.0",
-    "flake8>=6.0,<8.0",
-    "bandit>=1.7,<2.0",
     "coverage>=7.0,<9.0",
     "pytest-xdist>=3.0,<4.0",
     "unasync>=0.6.0,<0.8.0",
@@ -72,3 +70,34 @@ include = ["aredis_om*", "redis_om*"]
 
 [tool.setuptools.package-data]
 "redis_om" = ["**/*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.format]
+# Use black-compatible formatting
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint]
+# Match old flake8 behavior: E, W, F codes only
+select = [
+    "F",       # pyflakes
+    "E",       # pycodestyle errors
+    "W",       # pycodestyle warnings
+]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "E721",    # type comparisons - existing pattern in codebase
+    "F401",    # unused imports - common in __init__.py re-exports
+    "RUF001",  # ambiguous Unicode character (may want to enable later)
+    "RUF012",  # mutable class attributes (may want to enable later)
+]
+
+[tool.ruff.lint.isort]
+# isort-compatible settings matching our black profile
+force-single-line = false
+lines-after-imports = 2

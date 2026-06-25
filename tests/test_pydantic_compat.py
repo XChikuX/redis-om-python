@@ -310,9 +310,9 @@ def test_json_schema_generation_does_not_leak_pydantic_undefined():
         extra = getattr(field_info, "json_schema_extra", None) or {}
         redis_om_meta = extra.get(REDIS_OM_METADATA_KEY, {})
         for attr, value in redis_om_meta.items():
-            assert (
-                value is not PydanticUndefined
-            ), f"{field_name}.{attr} leaked PydanticUndefined into json_schema_extra"
+            assert value is not PydanticUndefined, (
+                f"{field_name}.{attr} leaked PydanticUndefined into json_schema_extra"
+            )
 
 
 def test_field_attribute_defaults_are_json_serializable():

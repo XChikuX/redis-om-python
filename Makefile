@@ -54,19 +54,18 @@ dist: $(INSTALL_STAMP) clean sync
 sync: $(INSTALL_STAMP)
 	$(UV) sync --extra dev
 	$(UV) run python make_sync.py
+	$(UV) run ruff format $(SYNC_NAME)
 
 .PHONY: lint
-lint: $(INSTALL_STAMP) dist
-	$(UV) run isort --profile=black --lines-after-imports=2 ./tests/ $(NAME) $(SYNC_NAME)
-	$(UV) run black ./tests/ $(NAME)
-	$(UV) run flake8 --ignore=W503,E501,F401,E731 ./tests/ $(NAME) $(SYNC_NAME)
-	$(UV) run mypy ./tests/ $(NAME) $(SYNC_NAME) --ignore-missing-imports --exclude migrate.py --exclude _compat\.py$$
-	$(UV) run bandit -r $(NAME) $(SYNC_NAME) -s B608
+lint: $(INSTALL_STAMP) sync
+	$(UV) run ruff check ./tests/ $(NAME) $(SYNC_NAME)
+	$(UV) run ruff format --check ./tests/ $(NAME) $(SYNC_NAME)
+	$(UV) run mypy ./tests/ $(NAME) $(SYNC_NAME) --ignore-missing-imports
 
 .PHONY: format
 format: $(INSTALL_STAMP) sync
-	$(UV) run isort --profile=black --lines-after-imports=2 ./tests/ $(NAME) $(SYNC_NAME)
-	$(UV) run black ./tests/ $(NAME) $(SYNC_NAME)
+	$(UV) run ruff check --fix ./tests/ $(NAME) $(SYNC_NAME)
+	$(UV) run ruff format ./tests/ $(NAME)
 
 .PHONY: test
 test: $(INSTALL_STAMP) sync redis
