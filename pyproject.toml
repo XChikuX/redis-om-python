@@ -1,6 +1,6 @@
 [project]
 name = "pyredis-om"
-version = "0.8.4"
+version = "0.8.5"
 description = "A drop-in replacement for `redis-om`, built out of frustration."
 authors = [
     { name = "Redis OSS", email = "oss@redis.com" },

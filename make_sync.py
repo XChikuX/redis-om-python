@@ -13,11 +13,10 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
-    # unasync strips `await` from asyncio.sleep as well, leaving a bare
-    # call that returns a coroutine (mypy flags it, and runtime would
-    # crash on NameError since `asyncio` is never imported in the
-    # generated sync mirror). Rewrite to time.sleep explicitly.
-    "asyncio.sleep(": "time.sleep(",
+    # NOTE: unasync strips `await` from any expression, so transforming
+    # ``asyncio.sleep(`` here is undone when unasync removes the
+    # ``await`` keyword and re-emits the call. The actual replacement
+    # is done in ``POST_SYNC_FIXES`` below.
 }
 
 
@@ -76,6 +75,33 @@ def _dedupe_import_pytest(content: str) -> str:
     return content
 
 
+def _fix_asyncio_sleep(content: str) -> str:
+    """Convert bare ``asyncio.sleep(...)`` to ``time.sleep(...)`` in sync mirrors.
+
+    unasync strips ``await`` from any expression, so a source-side
+    ``await asyncio.sleep(x)`` becomes a bare ``asyncio.sleep(x)`` in the
+    sync mirror. ``asyncio.sleep`` returns a coroutine object in Python
+    3.12+, which raises ``RuntimeWarning: coroutine 'sleep' was never
+    awaited`` (and breaks when ``asyncio`` is no longer imported).
+    """
+    if "asyncio.sleep(" in content:
+        content = content.replace("asyncio.sleep(", "time.sleep(")
+
+    # Drop ``import asyncio`` once no ``asyncio.*`` call remains. We scan
+    # every line so occurrences in docstrings/comments don't count.
+    still_used = False
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+            continue
+        if "asyncio." in line:
+            still_used = True
+            break
+    if not still_used and "import asyncio\n" in content:
+        content = content.replace("import asyncio\n", "")
+    return content
+
+
 def apply_post_sync_fixes(repo_root: Path):
     for relative_path, replacements in POST_SYNC_FIXES.items():
         file_path = repo_root / relative_path
@@ -90,7 +116,8 @@ def apply_post_sync_fixes(repo_root: Path):
         if updated != content:
             file_path.write_text(updated)
 
-    # Global dedupe of duplicate `import pytest` in generated sync files.
+    # Global dedupe of duplicate `import pytest` and asyncio.sleep
+    # normalisation across all generated sync files.
     for prefix in ("redis_om", "tests_sync"):
         target_dir = repo_root / prefix
         if not target_dir.exists():
@@ -98,6 +125,7 @@ def apply_post_sync_fixes(repo_root: Path):
         for file_path in target_dir.rglob("*.py"):
             content = file_path.read_text()
             updated = _dedupe_import_pytest(content)
+            updated = _fix_asyncio_sleep(updated)
             if updated != content:
                 file_path.write_text(updated)
 

@@ -241,7 +241,7 @@ Redis OM uses the [MIT license][license-url].
 
 [version-svg]: https://img.shields.io/pypi/v/pyredis-om?style=flat-square
 [package-url]: https://pypi.org/project/pyredis-om/
-[ci-svg]: https://img.shields.io/github/actions/workflow/status/XChikuX/redis-om-python/main.yml?branch=main&style=flat-square
+[ci-svg]: https://img.shields.io/github/actions/workflow/status/XChikuX/redis-om-python/ci.yml?branch=main&style=flat-square
 [ci-url]: https://github.com/XChikuX/redis-om-python/actions
 [license-image]: https://img.shields.io/github/license/XChikuX/redis-om-python?style=flat-square
 [license-url]: LICENSE
