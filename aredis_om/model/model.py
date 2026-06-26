@@ -55,6 +55,7 @@ from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .resp3_shim import (
     extract_key_from_row,
+    is_resp3_search_response,
     split_cursor_response,
     split_search_response,
 )
@@ -3011,7 +3012,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         if (
             isinstance(res, dict)
             and "results" in res
-            and (protocol == 3 or protocol is None)
+            and (protocol == 3 or protocol is None or is_resp3_search_response(res))
         ):
             # RESP3 path: structured dict from FT.SEARCH.  Walk the ``results``
             # entries and reuse the same fields-handling logic as the RESP2
