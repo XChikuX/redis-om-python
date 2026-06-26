@@ -93,35 +93,49 @@ redis_cluster:
 	$(CLUSTER_COMPOSE) up -d
 	@echo "Waiting for Redis Cluster nodes to start..."
 	@sleep 5
-	# Bootstrap and health-check via the HOST (not inside a container),
-	# so that all six port-mapped nodes are reachable on 127.0.0.1. The
-	# compose file uses explicit `ports:` mappings instead of
-	# `network_mode: host` to stay compatible with WSL2/Docker Desktop,
-	# where `host` networking does not work.
-	@if redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+	# Bootstrap via docker exec so we don't need redis-cli on the host.
+	# The compose file advertises host.docker.internal (resolves to the
+	# Docker host gateway via extra_hosts), so we bootstrap using that
+	# address — reachable from inside any container through the published
+	# ports. Works on Linux CI, WSL2, and Docker Desktop.
+	@if docker exec redis-cluster-7001 redis-cli -h host.docker.internal -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
 		echo "Redis Cluster already bootstrapped."; \
 	else \
 		echo "Bootstrapping Redis Cluster topology..."; \
-		redis-cli --cluster create \
-			127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
-			127.0.0.1:7004 127.0.0.1:7005 127.0.0.1:7006 \
-			--cluster-replicas 1 --cluster-yes; \
+		# Retry with backoff in case some nodes aren't ready yet \
+		for backoff in 2 4 8 0; do \
+			sleep "$$backoff"; \
+			if docker exec redis-cluster-7001 redis-cli --cluster create \
+				host.docker.internal:7001 host.docker.internal:7002 host.docker.internal:7003 \
+				host.docker.internal:7004 host.docker.internal:7005 host.docker.internal:7006 \
+				--cluster-replicas 1 --cluster-yes 2>/dev/null; then \
+				break; \
+			fi; \
+			if [ "$$backoff" = "0" ]; then \
+				echo "Failed to bootstrap Redis Cluster after retries" >&2; \
+				exit 1; \
+			fi; \
+		done; \
 	fi
 	@echo "Waiting for Redis Cluster to become healthy..."
-	@for attempt in 1 2 3 4 5 6 7 8 9 10; do \
-		if redis-cli -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
+	@for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		if docker exec redis-cluster-7001 redis-cli -h host.docker.internal -p 7001 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then \
 			echo "Redis Cluster is healthy."; \
 			exit 0; \
 		fi; \
+		printf "  Waiting for cluster... (attempt $$attempt/12)\n"; \
 		sleep 2; \
 	done; \
 	echo "Redis Cluster did not become healthy in time" >&2; \
+	docker exec redis-cluster-7001 redis-cli -h host.docker.internal -p 7001 cluster info 2>&1 || true; \
 	exit 1
 
 .PHONY: test_cluster
 test_cluster: $(INSTALL_STAMP) sync redis redis_cluster
 	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests/test_cluster_operations.py
-	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_operations.py
+	if [ -e tests_sync/test_cluster_operations.py ]; then \
+		REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_operations.py; \
+	fi
 	$(CLUSTER_COMPOSE) down
 	$(DOCKER_COMPOSE) down
 

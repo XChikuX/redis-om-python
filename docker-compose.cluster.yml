@@ -1,8 +1,20 @@
 services:
     redis-cluster-7001:
+        container_name: redis-cluster-7001
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        # ``host.docker.internal`` resolves to the host's Docker port-mapping
+        # gateway on Docker Desktop / WSL2. On Linux CI runners it does not
+        # exist by default, so we add it via ``extra_hosts`` (the special
+        # ``host-gateway`` keyword is expanded by Docker to the host IP).
+        # Advertising this IP (rather than 127.0.0.1) lets cluster gossip
+        # traffic route between containers via the published ports, which
+        # works on both WSL2/Docker Desktop and plain Linux.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7001:7001"
+            - "17001:17001"
         command: >
             redis-server
             --port 7001
@@ -13,14 +25,19 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7001.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7001
             --cluster-announce-bus-port 17001
 
     redis-cluster-7002:
+        container_name: redis-cluster-7002
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7002:7002"
+            - "17002:17002"
         command: >
             redis-server
             --port 7002
@@ -31,14 +48,19 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7002.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7002
             --cluster-announce-bus-port 17002
 
     redis-cluster-7003:
+        container_name: redis-cluster-7003
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7003:7003"
+            - "17003:17003"
         command: >
             redis-server
             --port 7003
@@ -49,14 +71,19 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7003.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7003
             --cluster-announce-bus-port 17003
 
     redis-cluster-7004:
+        container_name: redis-cluster-7004
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7004:7004"
+            - "17004:17004"
         command: >
             redis-server
             --port 7004
@@ -67,14 +94,19 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7004.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7004
             --cluster-announce-bus-port 17004
 
     redis-cluster-7005:
+        container_name: redis-cluster-7005
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7005:7005"
+            - "17005:17005"
         command: >
             redis-server
             --port 7005
@@ -85,14 +117,19 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7005.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7005
             --cluster-announce-bus-port 17005
 
     redis-cluster-7006:
+        container_name: redis-cluster-7006
         image: "redis:8-alpine"
         restart: always
-        network_mode: host
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - "7006:7006"
+            - "17006:17006"
         command: >
             redis-server
             --port 7006
@@ -103,6 +140,6 @@ services:
             --cluster-enabled yes
             --cluster-config-file nodes-7006.conf
             --cluster-node-timeout 5000
-            --cluster-announce-ip 127.0.0.1
+            --cluster-announce-ip host.docker.internal
             --cluster-announce-port 7006
             --cluster-announce-bus-port 17006

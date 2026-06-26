@@ -143,17 +143,21 @@ jobs:
     test-cluster:
         name: Test Cluster
         needs: lint
+        strategy:
+            matrix:
+                pyver: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+            fail-fast: false
         runs-on: ubuntu-latest
-        timeout-minutes: 20
+        timeout-minutes: 25
         env:
             REDIS_OM_URL: "redis://localhost:6380?decode_responses=True"
         steps:
             - name: Checkout
               uses: actions/checkout@v7
-            - name: Setup Python 3.12
+            - name: Setup Python ${{ matrix.pyver }}
               uses: actions/setup-python@v6.3.0
               with:
-                  python-version: "3.12"
+                  python-version: ${{ matrix.pyver }}
             - name: Setup uv
               uses: astral-sh/setup-uv@v7
               with:
@@ -164,13 +168,28 @@ jobs:
               uses: actions/cache@v6.0.0
               with:
                   path: .venv
-                  key: venv-${{ runner.os }}-3.12-${{ hashFiles('uv.lock') }}
-            - name: Make sync version of library (redis_om)
-              run: make sync
+                  key: venv-${{ runner.os }}-${{ matrix.pyver }}-${{ hashFiles('uv.lock') }}
             - name: Install dependencies
               if: steps.cached-venv.outputs.cache-hit != 'true'
               run: uv sync --extra dev
             - name: Install library
               run: uv sync --extra dev
+            - name: Make sync version of library (redis_om)
+              run: make sync
+            - name: Ensure host.docker.internal resolves on host
+              # The cluster compose advertises host.docker.internal, which
+              # is resolvable inside containers via extra_hosts/host-gateway.
+              # On Linux runners the host itself needs the entry too, so
+              # the test client can follow cluster MOVED/ASK redirects.
+              run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
             - name: Run cluster tests
-              run: make test_cluster
+              run: |
+                  make test_cluster
+                  uv run coverage xml
+            - name: Upload coverage
+              uses: codecov/codecov-action@v7
+              with:
+                  file: ./coverage.xml
+                  flags: cluster
+                  env_vars: OS
+                  fail_ci_if_error: false
