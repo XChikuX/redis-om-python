@@ -1,0 +1,484 @@
+---
+title: E-commerce Catalog API
+description: A full FastAPI app that combines JsonModel, embedded models, vector KNN search, hash field TTL, bulk operations, pipelines, and the migrate CLI.
+---
+
+# E-commerce Catalog API
+
+A self-contained FastAPI application that models a real product catalog with
+search, recommendations, and short-lived sessions. It exercises a wide slice of
+pyredis-om in a single, copy-paste-runnable file.
+
+## Features showcased
+
+- `JsonModel` with **embedded** `EmbeddedJsonModel` (`Product.specs`,
+  `Product.reviews`)
+- **Vector KNN search** (`KNNExpression` + `VectorFieldOptions`)
+- **Full-text search** (`full_text_search=True` on `Product.description`)
+- **Range queries**, **TAG IN**, **negation**, **dynamic query composition**
+- **Cursor pagination** for large result sets
+- **Bulk save** via `add()` with a pipeline
+- **Hash field TTL** on a session model (`HEXPIRE`, Redis 7.4+)
+- **`Migrator().run()`** invoked both programmatically and via the `migrate` CLI
+- **Transactions** for `INCR` + hash update on view counters
+
+## Step 1 — Start Redis and install dependencies
+
+```bash
+# A single Redis 8.x instance is enough.
+docker run -d --name redis -p 6379:6379 redis:8-alpine
+
+export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
+
+pip install pyredis-om fastapi 'uvicorn[standard]' httpx
+```
+
+## Step 2 — Save the application
+
+Save the following as `catalog_api.py`:
+
+```python
+"""
+E-commerce Catalog API — a single-file FastAPI app that uses pyredis-om.
+
+Run:
+    uvicorn catalog_api:app --reload
+
+Then exercise it:
+    curl -s http://localhost:8000/seed | jq
+    curl -s 'http://localhost:8000/search?q=graphene' | jq
+    curl -s 'http://localhost:8000/similar/01HXXX... | jq'  # use a real pk from /products
+    curl -s -X POST http://localhost:8000/session -d '{"user_id":"u1"}'
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import random
+import struct
+import time
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+
+from aredis_om import (
+    EmbeddedJsonModel,
+    Field,
+    JsonModel,
+    KNNExpression,
+    Migrator,
+    NotFoundError,
+    VectorFieldOptions,
+    get_redis_connection,
+)
+
+
+# ── Connection ─────────────────────────────────────────────────────────
+
+REDIS_URL = os.environ.get("REDIS_OM_URL", "redis://localhost:6379")
+db = get_redis_connection(url=REDIS_URL, decode_responses=True)
+
+
+# ── Models ─────────────────────────────────────────────────────────────
+
+class Specs(EmbeddedJsonModel):
+    """Technical specs nested inside each product."""
+    weight_g: int = Field(index=True)
+    color: str = Field(index=True)
+    warranty_months: int = Field(index=True, sortable=True)
+
+
+class Review(EmbeddedJsonModel):
+    """A single customer review."""
+    author: str = Field(index=True)
+    rating: int = Field(index=True)         # 1..5
+    body: str = Field(index=True, full_text_search=True)
+
+
+class Product(JsonModel):
+    """A product in the catalog."""
+    name: str = Field(index=True, full_text_search=True)
+    description: str = Field(index=True, full_text_search=True)
+    brand: str = Field(index=True)
+    category: str = Field(index=True)
+    price_cents: int = Field(index=True, sortable=True)
+    in_stock: bool = Field(index=True)
+    tags: List[str] = Field(index=True)
+    specs: Specs
+    reviews: List[Review] = Field(index=False)   # not searchable; just stored
+
+    # Vector field for "find similar products" recommendations.
+    _vector_opts = VectorFieldOptions.flat(
+        type=VectorFieldOptions.TYPE.FLOAT32,
+        dimension=8,
+        distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+    )
+    embedding: List[float] = Field(vector_options=_vector_opts)
+    embedding_score: float = 0.0                  # populated by KNN
+
+
+class Session(EmbeddedJsonModel):
+    """A short-lived user session. Stored as a Redis hash with field TTLs."""
+    user_id: str
+    cart_size: int = 0
+
+
+class SessionView(EmbeddedJsonModel):
+    """What we return to clients — keeps the hash layout hidden."""
+    user_id: str
+    cart_size: int
+    expires_in_s: int
+
+
+# ── Index setup ────────────────────────────────────────────────────────
+
+async def ensure_indexes() -> None:
+    """Create / update RediSearch indexes for all models in the registry."""
+    await Migrator().run()
+
+
+# ── Embeddings (a stand-in for a real model) ───────────────────────────
+
+def fake_embed(text: str, dim: int = 8) -> List[float]:
+    """
+    Deterministic 8-d embedding derived from the text. In production you'd
+    call a real embedding model (e.g. text-embedding-3-small via httpx).
+    The shape matches the VectorFieldOptions declared on Product.
+    """
+    seed = sum(ord(c) for c in text) or 1
+    rng = random.Random(seed)
+    return [rng.uniform(-1.0, 1.0) for _ in range(dim)]
+
+
+def as_packed_vector(vec: List[float]) -> bytes:
+    """Pack a Python list of floats into the little-endian bytes Redis expects."""
+    return struct.pack(f"<{len(vec)}f", *vec)
+
+
+# ── App ────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="pyredis-om Catalog API")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await ensure_indexes()
+
+
+# ── Seed / helpers ─────────────────────────────────────────────────────
+
+SAMPLE_PRODUCTS = [
+    ("Aurora Running Shoe", "Lightweight graphene-foam trainer for road runs.",
+     "Aurora",  "footwear", 12999, True,  ["running", "lightweight", "graphene"]),
+    ("Helios Trail Boot",  "Rugged waterproof boot for off-path hiking.",
+     "Helios",   "footwear", 17999, True,  ["hiking", "waterproof", "trail"]),
+    ("Lumen Headlamp",     "850-lumen rechargeable headlamp with 6h runtime.",
+     "Lumen",    "lighting",  4999, True,  ["camp", "rechargeable"]),
+    ("Nimbus Rain Shell",  "3-layer waterproof shell, packable to a softball.",
+     "Nimbus",   "apparel",   9999, True,  ["waterproof", "lightweight"]),
+    ("Orbit Camp Stove",   "218g canister stove, boils 0.5L in 2:50.",
+     "Orbit",    "cooking",   6499, False, ["camp", "lightweight"]),
+    ("Polaris Down Jacket","850-fill responsibly sourced down, 320g.",
+     "Polaris",  "apparel",  19999, True,  ["insulated", "camp"]),
+    ("Quartz Watch",       "Sapphire crystal, solar charging, 200m WR.",
+     "Quartz",   "accessories", 24999, True, ["waterproof", "durable"]),
+    ("Ridge Trekking Pole","Carbon Z-fold pole, 320g per pair.",
+     "Ridge",    "footwear",   8999, True,  ["hiking", "lightweight"]),
+]
+
+
+@app.post("/seed")
+async def seed(n: int = 8) -> dict:
+    """Wipe and re-seed the catalog with `n` products."""
+    # UNLINK is the async variant of DEL — one round trip regardless of size.
+    pks = [pk async for pk in await Product.all_pks()]
+    if pks:
+        await db.unlink(*[Product.make_primary_key(pk) for pk in pks])
+
+    products = []
+    for name, desc, brand, cat, price, in_stock, tags in SAMPLE_PRODUCTS[:n]:
+        p = Product(
+            name=name,
+            description=desc,
+            brand=brand,
+            category=cat,
+            price_cents=price,
+            in_stock=in_stock,
+            tags=tags,
+            specs=Specs(weight_g=random.randint(120, 950),
+                        color=random.choice(["black", "green", "blue", "orange"]),
+                        warranty_months=random.choice([12, 24, 36])),
+            reviews=[
+                Review(author=f"u{i}", rating=random.randint(3, 5),
+                       body=f"I've used this product for {random.randint(1, 6)} months and it's great.")
+                for i in range(3)
+            ],
+            embedding=fake_embed(name + " " + desc),
+        )
+        products.append(p)
+
+    # Bulk save with a pipeline — one round trip for the whole batch.
+    await Product.add(products)
+
+    return {"seeded": len(products)}
+
+
+# ── List / get ─────────────────────────────────────────────────────────
+
+@app.get("/products")
+async def list_products(
+    category: Optional[str] = None,
+    brand: Optional[str] = None,
+    max_price_cents: Optional[int] = None,
+    in_stock: Optional[bool] = None,
+    tag: Optional[List[str]] = Query(None),
+    limit: int = 25,
+    offset: int = 0,
+) -> dict:
+    """Dynamic AND query — each filter is appended only when supplied."""
+    conditions = []
+    if category:
+        conditions.append(Product.category == category)
+    if brand:
+        conditions.append(Product.brand == brand)
+    if max_price_cents is not None:
+        conditions.append(Product.price_cents <= max_price_cents)
+    if in_stock is not None:
+        conditions.append(Product.in_stock == in_stock)
+    if tag:
+        conditions.append(Product.tags << tag)   # TAG IN
+
+    results = await (
+        Product.find(*conditions)
+               .sort_by("price_cents")
+               .page(offset=offset, limit=limit)
+    )
+    total = await Product.find(*conditions).count()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "products": [p.model_dump() for p in results],
+    }
+
+
+@app.get("/products/{pk}")
+async def get_product(pk: str) -> dict:
+    try:
+        p = await Product.get(pk)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="product not found")
+    return p.model_dump()
+
+
+# ── Full-text + filter search ──────────────────────────────────────────
+
+@app.get("/search")
+async def search(
+    q: str,
+    category: Optional[str] = None,
+    in_stock: Optional[bool] = None,
+    limit: int = 10,
+) -> dict:
+    """Full-text search on name + description, optionally filtered."""
+    conditions = [(Product.name % q) | (Product.description % q)]
+    if category:
+        conditions.append(Product.category == category)
+    if in_stock is not None:
+        conditions.append(Product.in_stock == in_stock)
+
+    results = await Product.find(*conditions).page(offset=0, limit=limit)
+    return {
+        "query": q,
+        "results": [
+            {"pk": p.pk, "name": p.name, "score_hint": None}
+            for p in results
+        ],
+    }
+
+
+# ── Vector similarity (KNN) ───────────────────────────────────────────
+
+@app.get("/similar/{pk}")
+async def similar(pk: str, k: int = 3) -> dict:
+    """Find the k products most similar to the given one."""
+    try:
+        target = await Product.get(pk)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="product not found")
+
+    knn = KNNExpression(
+        k=k + 1,                                          # +1 to skip the query itself
+        vector_field=Product.embedding,
+        score_field=Product.embedding_score,
+        reference_vector=as_packed_vector(target.embedding),
+    )
+    results = await Product.find(knn=knn).all()
+    # Filter out the query product from its own neighbourhood.
+    neighbours = [p for p in results if p.pk != target.pk][:k]
+    return {
+        "query_pk": pk,
+        "neighbours": [
+            {"pk": p.pk, "name": p.name, "score": p.embedding_score}
+            for p in neighbours
+        ],
+    }
+
+
+# ── Sessions with per-field TTL (Redis 7.4+) ──────────────────────────
+
+SESSION_TTL_S = 900     # 15 minutes
+
+
+class CreateSessionIn(BaseModel):
+    user_id: str
+
+
+@app.post("/session", response_model=SessionView)
+async def create_session(body: CreateSessionIn) -> SessionView:
+    """Create a session hash with per-field TTLs."""
+    key = f"catalog:session:{body.user_id}"
+    # Set the field values and per-field expirations in one pipeline.
+    async with db.pipeline(transaction=True) as pipe:
+        pipe.hset(key, mapping={
+            "user_id": body.user_id,
+            "cart_size": "0",
+            "created_at": str(int(time.time())),
+        })
+        pipe.hexpire(key, SESSION_TTL_S, "user_id")
+        pipe.hexpire(key, SESSION_TTL_S, "cart_size")
+        pipe.hexpire(key, SESSION_TTL_S, "created_at")
+        await pipe.execute()
+
+    # Look up how much TTL is left on the user_id field.
+    remaining = await db.httl(key, "user_id")
+    expires_in = int(remaining[0]) if remaining and remaining[0] > 0 else 0
+    return SessionView(
+        user_id=body.user_id, cart_size=0, expires_in_s=expires_in,
+    )
+
+
+@app.patch("/session/{user_id}/cart")
+async def bump_cart(user_id: str, delta: int = 1) -> SessionView:
+    """Increment cart_size atomically, refreshing its TTL."""
+    key = f"catalog:session:{user_id}"
+
+    # Refresh TTL only if it isn't already set — prevents the cart from
+    # outliving the session.
+    await db.execute_command(
+        "HEXPIRE", key, SESSION_TTL_S, "NX", "FIELDS", 1, "cart_size",
+    )
+    new_size = await db.hincrby(key, "cart_size", delta)
+
+    remaining = await db.httl(key, "user_id")
+    expires_in = int(remaining[0]) if remaining and remaining[0] > 0 else 0
+    return SessionView(
+        user_id=user_id, cart_size=new_size, expires_in_s=expires_in,
+    )
+
+
+@app.get("/session/{user_id}", response_model=SessionView)
+async def get_session(user_id: str) -> SessionView:
+    key = f"catalog:session:{user_id}"
+    data = await db.hgetall(key)
+    if not data:
+        raise HTTPException(status_code=404, detail="session not found")
+    remaining = await db.httl(key, "user_id")
+    return SessionView(
+        user_id=user_id,
+        cart_size=int(data.get("cart_size", 0)),
+        expires_in_s=int(remaining[0]) if remaining and remaining[0] > 0 else 0,
+    )
+
+
+# ── Quick health check ────────────────────────────────────────────────
+
+@app.get("/health")
+async def health() -> dict:
+    info = await db.info("server")
+    return {
+        "redis_version": info.get("redis_version"),
+        "decode_responses": True,
+    }
+
+
+# ── Entrypoint ────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("catalog_api:app", host="0.0.0.0", port=8000, reload=True)
+```
+
+## Step 3 — Run
+
+In one terminal:
+
+```bash
+uvicorn catalog_api:app --reload
+```
+
+In another:
+
+```bash
+# Seed the catalog with 8 products.
+curl -s -X POST 'http://localhost:8000/seed?n=8' | jq
+# { "seeded": 8 }
+
+# List all products in the "footwear" category under $180.
+curl -s 'http://localhost:8000/products?category=footwear&max_price_cents=18000' | jq '.products | length'
+# 3
+
+# Full-text search for "graphene" in the name or description.
+curl -s 'http://localhost:8000/search?q=graphene' | jq
+# {
+#   "query": "graphene",
+#   "results": [
+#     { "pk": "01H...", "name": "Aurora Running Shoe", "score_hint": null }
+#   ]
+# }
+
+# Find 3 products similar to a given one (use a real pk from the seed response).
+PK=$(curl -s 'http://localhost:8000/products?limit=1' | jq -r '.products[0].pk')
+curl -s "http://localhost:8000/similar/$PK?k=3" | jq
+
+# Create a session with a 15-minute per-field TTL, bump its cart, and read it back.
+curl -s -X POST http://localhost:8000/session -H 'content-type: application/json' \
+     -d '{"user_id":"u1"}' | jq
+curl -s -X PATCH 'http://localhost:8000/session/u1/cart?delta=3' | jq
+curl -s http://localhost:8000/session/u1 | jq
+```
+
+## Step 4 — Migrate from the CLI
+
+The `migrate` CLI shipped with pyredis-om does the same thing as
+`Migrator().run()` but exits when done:
+
+```bash
+migrate --module catalog_api
+# or, to preview only:
+migrate --module catalog_api --dry-run
+```
+
+It will detect the models registered in `catalog_api` and create (or
+drop-and-recreate) their indexes as needed.
+
+## What you just built
+
+| File | pyredis-om feature |
+| --- | --- |
+| `Product` model | `JsonModel`, `EmbeddedJsonModel` (`Specs`, `Review`), `Field(index=True, sortable=True)`, `full_text_search=True`, vector field, list field |
+| `seed()` | bulk `add()`, bulk `unlink` via `all_pks()` |
+| `list_products()` | dynamic query composition, `sort_by()`, `page()`, `count()`, TAG `<<` IN |
+| `search()` | full-text `%` operator, AND of full-text + structured filters |
+| `similar()` | `KNNExpression`, `VectorFieldOptions.flat`, packed bytes via `struct.pack` |
+| `create_session()` / `bump_cart()` | `pipeline(transaction=True)`, `HEXPIRE`, `HINCRBY` |
+| `Migrator().run()` | called at startup, also available via the `migrate` CLI |
+
+## Reference
+
+- [Models and Fields](/models)
+- [Queries and Vector Search](/queries)
+- [Pipelines and `execute_command`](/pipelines)
+- [Migrations](/migrations)
+- [Hash Field Expiration](/hash_field_ttl)

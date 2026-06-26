@@ -1,0 +1,422 @@
+---
+title: Find My Coffee (Geo CLI)
+description: A CLI app that finds nearby coffee shops using HashModel + Coordinates + GeoFilter, with cursor pagination, sorted-set ranking, and JSON sub-value retrieval.
+---
+
+# Find My Coffee (Geo CLI)
+
+A small command-line app that asks Redis "where's the closest coffee shop?"
+and walks back a few of the top matches. It uses `HashModel` for the shop
+records, `Coordinates` + `GeoFilter` for the spatial query, `FindQueryCursor`
+for paging through large result sets, raw `ZUNIONSTORE` for cross-shop
+popularity rankings, and bulk `get_many()` for efficient multi-pk fetches.
+
+## Features showcased
+
+- `HashModel` with `Coordinates` field and `GeoFilter`
+- Bulk save via `pipeline` argument on `save()`
+- Bulk `get_many()` and bulk `delete_many()`
+- Cursor pagination with `FindQueryCursor.token()` / `.from_token()` (signed)
+- Raw `ZUNIONSTORE ... WEIGHTS ... AGGREGATE SUM` for cross-set ranking
+- A small `argparse` CLI
+
+## Step 1 — Start Redis and install dependencies
+
+```bash
+docker run -d --name redis -p 6379:6379 redis:8-alpine
+
+export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
+
+pip install pyredis-om
+```
+
+## Step 2 — Save the application
+
+Save the following as `find_coffee.py`:
+
+```python
+"""
+Find My Coffee — a CLI app that asks Redis "where's the closest coffee shop?".
+
+Run:
+    # Seed 200 shops around a few city centres.
+    python find_coffee.py seed
+
+    # Find the 5 closest shops to a given point, walking 10 km.
+    python find_coffee.py nearby --lon -73.9857 --lat 40.7484 --km 10 --k 5
+
+    # Show a single shop by pk, fetched without loading the full hash.
+    python find_coffee.py show 01HXXXXXXXXXXXXXXXXXXXXXX
+
+    # Page through every shop with cursor pagination.
+    python find_coffee.py page --count 25
+
+    # Rank shops by popularity (sum of two sorted-set sources).
+    python find_coffee.py trending --k 10
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import random
+import sys
+from typing import List, Optional
+
+from aredis_om import (
+    Coordinates,
+    Field,
+    GeoFilter,
+    HashModel,
+    Migrator,
+    NotFoundError,
+    get_redis_connection,
+)
+
+
+# ── Connection ─────────────────────────────────────────────────────────
+
+REDIS_URL = os.environ.get("REDIS_OM_URL", "redis://localhost:6379")
+db = get_redis_connection(url=REDIS_URL, decode_responses=True)
+
+
+# ── Model ──────────────────────────────────────────────────────────────
+
+class CoffeeShop(HashModel):
+    name: str = Field(index=True)
+    city: str = Field(index=True)
+    address: str
+    location: Coordinates                    # GEO field
+    rating: float = Field(index=True, sortable=True)
+    price_level: int = Field(index=True)     # 1..3
+    open_now: bool = Field(index=True)
+    tags: List[str] = Field(index=True)
+
+
+# ── Demo seed data ─────────────────────────────────────────────────────
+
+CITY_CENTRES = {
+    "nyc": (-73.9857, 40.7484),
+    "sf":  (-122.4194, 37.7749),
+    "lon": (-0.1276, 51.5074),
+    "tyo": (139.6917, 35.6895),
+}
+
+
+SHOP_NAMES = [
+    "Bean There", "Brewed Awakening", "The Daily Grind", "Espresso Yourself",
+    "Mocha Me Crazy", "Pour Decisions", "Grounds for Celebration",
+    "A Latte Love", "Caffeine Fix", "The Roasted Bean",
+    "Whole Latte Life", "Beans & Dreams", "Filter Fever", "Cup & Saucer",
+    "The Steeping Room", "Brew-ha-ha", "The Grindhouse", "Café Lumière",
+    "Steam & Stem", "Cold Brew Boulevard",
+]
+
+
+TAG_POOL = ["wifi", "outdoor", "quiet", "pet-friendly", "vegan", "pastries",
+            "roastery", "24h", "study-friendly", "kid-friendly"]
+
+
+def _make_shop(seed: int) -> CoffeeShop:
+    rng = random.Random(seed)
+    city, (cx, cy) = rng.choice(list(CITY_CENTRES.items()))
+    # Sprinkle within ±0.1° (~±11 km) of the city centre.
+    lon = cx + rng.uniform(-0.1, 0.1)
+    lat = cy + rng.uniform(-0.1, 0.1)
+    return CoffeeShop(
+        name=f"{rng.choice(SHOP_NAMES)} #{seed:03d}",
+        city=city,
+        address=f"{rng.randint(10, 9999)} {rng.choice(['Main', 'Oak', 'Maple', 'Pine', 'Cedar'])} St",
+        location=Coordinates(longitude=lon, latitude=lat),
+        rating=round(rng.uniform(3.5, 5.0), 1),
+        price_level=rng.randint(1, 3),
+        open_now=rng.random() > 0.2,
+        tags=rng.sample(TAG_POOL, k=rng.randint(2, 4)),
+    )
+
+
+# ── Commands ───────────────────────────────────────────────────────────
+
+async def cmd_seed(n: int) -> int:
+    await Migrator().run()
+
+    # Wipe any existing shops so the demo is reproducible by primary key.
+    existing_pks = [pk async for pk in CoffeeShop.all_pks()]
+    if existing_pks:
+        await db.unlink(*[CoffeeShop.make_primary_key(pk) for pk in existing_pks])
+
+    shops = [_make_shop(i) for i in range(n)]
+
+    # Bulk save: add() builds its own pipeline and chunks the writes.
+    await CoffeeShop.add(shops)
+
+    # Two sorted-set sources for the trending demo: "votes" and "stars".
+    votes_zset = "coffee:leaderboard:votes"
+    stars_zset = "coffee:leaderboard:stars"
+    async with db.pipeline(transaction=False) as pipe:
+        pipe.delete(votes_zset)
+        pipe.delete(stars_zset)
+        for s in shops:
+            pipe.zadd(votes_zset, {s.pk: random.randint(0, 500)})
+            pipe.zadd(stars_zset, {s.pk: float(s.rating)})
+        await pipe.execute()
+
+    print(f"seeded {len(shops)} shops across {len(CITY_CENTRES)} cities")
+    print(f"  votes leaderboard : {votes_zset}")
+    print(f"  stars leaderboard : {stars_zset}")
+    return 0
+
+
+async def cmd_nearby(lon: float, lat: float, km: float, k: int, open_only: bool) -> int:
+    """Find the k closest shops to (lon, lat) within km."""
+    point = Coordinates(longitude=lon, latitude=lat)
+
+    conditions = []
+    if open_only:
+        conditions.append(CoffeeShop.open_now == True)  # noqa: E712
+
+    # GeoFilter takes (longitude, latitude, radius, unit). It composes with
+    # the other conditions in find(...) — the spatial filter is AND-combined
+    # with the rest of the query.
+    geo = GeoFilter(
+        longitude=point.longitude,
+        latitude=point.latitude,
+        radius=km,
+        unit="km",
+    )
+    query = CoffeeShop.find(geo, *conditions).sort_by("rating").page(offset=0, limit=k)
+
+    results = await query
+    if not results:
+        print("no shops within range")
+        return 0
+
+    print(f"{len(results)} closest shops to ({lon:.4f}, {lat:.4f}) within {km} km:\n")
+    for shop in results:
+        # Haversine distance — quick estimate for printing. Not used for the
+        # query itself; RediSearch does the spatial filter.
+        d_km = _haversine_km(lon, lat, shop.location.longitude, shop.location.latitude)
+        print(f"  {shop.pk}")
+        print(f"    {shop.name}  ({shop.city})")
+        print(f"    rating {shop.rating}  ·  {'$' * shop.price_level}  ·  "
+              f"{'open' if shop.open_now else 'closed'}")
+        print(f"    {d_km:5.2f} km away · {shop.address}")
+        print()
+    return 0
+
+
+async def cmd_show(pk: str) -> int:
+    """Fetch a single shop's full record."""
+    try:
+        shop = await CoffeeShop.get(pk)
+    except NotFoundError:
+        print(f"shop {pk} not found", file=sys.stderr)
+        return 1
+
+    print(f"{shop.name}")
+    print(f"  pk        : {shop.pk}")
+    print(f"  city      : {shop.city}")
+    print(f"  address   : {shop.address}")
+    print(f"  location  : ({shop.location.longitude:.4f}, {shop.location.latitude:.4f})")
+    print(f"  rating    : {shop.rating}")
+    print(f"  price     : {'$' * shop.price_level}")
+    print(f"  open_now  : {shop.open_now}")
+    print(f"  tags      : {', '.join(shop.tags)}")
+    return 0
+
+
+async def cmd_page(count: int, cursor_token: Optional[str]) -> int:
+    """
+    Walk every shop using cursor pagination. If `cursor_token` is given,
+    resume from it; otherwise start from the beginning.
+    """
+    from aredis_om import FindQueryCursor
+
+    SECRET = "demo-cursor-secret"
+
+    if cursor_token:
+        cursor = FindQueryCursor.from_token(CoffeeShop, cursor_token, secret=SECRET)
+        print(f"resumed from cursor token")
+    else:
+        # Sort by rating so the page order is stable across runs.
+        find_query = CoffeeShop.find().sort_by("-rating")
+        cursor = await find_query.iter_cursor(count=count)
+
+    page_idx = 0
+    while not cursor.exhausted:
+        page = await cursor.read()
+        if not page:
+            break
+        page_idx += 1
+        print(f"\n── page {page_idx} ({len(page)} shops) ──")
+        for shop in page:
+            print(f"  {shop.pk}  rating={shop.rating}  {shop.name}  ({shop.city})")
+
+        token = cursor.token(secret=SECRET)
+        print(f"\n  next page token: {token[:24]}…")
+
+    # Best-effort cleanup of any leftover server-side cursor.
+    await cursor.close()
+    print(f"\ndone — {page_idx} pages")
+    return 0
+
+
+async def cmd_trending(k: int) -> int:
+    """Combine the votes + stars sorted sets via ZUNION and print the top k."""
+    votes_zset = "coffee:leaderboard:votes"
+    stars_zset = "coffee:leaderboard:stars"
+
+    # Raw ZUNION with weighted SUM aggregation across the two leaderboards.
+    # Each shop's composite score = 1.0 * votes + 50.0 * rating. We weight
+    # stars higher because ratings are denser (always 3.5–5.0).
+    union_key = "coffee:leaderboard:trending"
+    written = await db.execute_command(
+        "ZUNIONSTORE", union_key, 2, votes_zset, stars_zset,
+        "WEIGHTS", 1.0, 50.0, "AGGREGATE", "SUM",
+    )
+    print(f"zunion wrote {int(written)} entries to {union_key}")
+
+    # Pull the top k shops. We can do this with the model for niceness.
+    top_pks = await db.zrevrange(union_key, 0, k - 1, withscores=True)
+    if not top_pks:
+        print("no trending shops yet")
+        return 0
+
+    # Fetch full shop records in a single round trip via get_many().
+    pks = [pk for pk, _ in top_pks]
+    shops = await CoffeeShop.get_many(pks)
+
+    # Index by pk so we keep the rank order.
+    by_pk = {s.pk: s for s in shops}
+
+    print(f"\n── top {k} trending shops ──\n")
+    for rank, (pk, score) in enumerate(top_pks, start=1):
+        shop = by_pk.get(pk)
+        if shop is None:
+            print(f"  {rank:>3}. (missing) {pk}")
+            continue
+        print(f"  {rank:>3}. {shop.name}  ({shop.city})  rating={shop.rating}  score={score:.1f}")
+    return 0
+
+
+# ── Tiny haversine for pretty-printing ─────────────────────────────────
+
+def _haversine_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    R = 6371.0088
+    from math import radians, sin, cos, atan2, sqrt
+    dlon = radians(lon2 - lon1)
+    dlat = radians(lat2 - lat1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * R * atan2(sqrt(a), sqrt(1 - a))
+
+
+# ── CLI ────────────────────────────────────────────────────────────────
+
+async def main_async(args: argparse.Namespace) -> int:
+    if args.cmd == "seed":
+        return await cmd_seed(args.n)
+    if args.cmd == "nearby":
+        return await cmd_nearby(args.lon, args.lat, args.km, args.k, args.open_only)
+    if args.cmd == "show":
+        return await cmd_show(args.pk)
+    if args.cmd == "page":
+        return await cmd_page(args.count, args.cursor)
+    if args.cmd == "trending":
+        return await cmd_trending(args.k)
+    print(f"unknown command: {args.cmd}", file=sys.stderr)
+    return 2
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Find My Coffee — Redis OM demo")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_seed = sub.add_parser("seed", help="seed the database with demo shops")
+    p_seed.add_argument("--n", type=int, default=200)
+
+    p_near = sub.add_parser("nearby", help="find shops closest to a point")
+    p_near.add_argument("--lon", type=float, required=True)
+    p_near.add_argument("--lat", type=float, required=True)
+    p_near.add_argument("--km",  type=float, default=5.0)
+    p_near.add_argument("--k",   type=int,   default=5)
+    p_near.add_argument("--open-only", action="store_true")
+
+    p_show = sub.add_parser("show", help="show one shop by pk")
+    p_show.add_argument("pk")
+
+    p_page = sub.add_parser("page", help="cursor-paginate every shop")
+    p_page.add_argument("--count", type=int, default=10)
+    p_page.add_argument("--cursor", default=None,
+                        help="token from a previous run (signed)")
+
+    p_trend = sub.add_parser("trending", help="top-k trending shops")
+    p_trend.add_argument("--k", type=int, default=10)
+
+    return asyncio.run(main_async(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+## Step 3 — Run
+
+```bash
+# Seed 200 shops around NYC, SF, London, and Tokyo.
+python find_coffee.py seed --n 200
+# seeded 200 shops across 4 cities
+#   votes leaderboard : coffee:leaderboard:votes
+#   stars leaderboard : coffee:leaderboard:stars
+
+# Five closest coffee shops to Times Square (NYC), within 10 km.
+python find_coffee.py nearby --lon -73.9857 --lat 40.7484 --km 10 --k 5
+# 5 closest shops to (-73.9857, 40.7484) within 10.0 km:
+#
+#   01HXX...
+#     Brewed Awakening #042  (nyc)
+#     rating 4.8  ·  $$  ·  open
+#      0.43 km away · 132 Maple St
+#   ...
+
+# Show one shop in detail (paste a real pk from `nearby`).
+python find_coffee.py show 01HXXXXXXXXXXXXXXXXXXXXXX
+
+# Page through every shop with cursor pagination, sorted by rating desc.
+python find_coffee.py page --count 25
+
+# Top 10 trending — ZUNION of votes + 50×stars.
+python find_coffee.py trending --k 10
+# ── top 10 trending shops ──
+#
+#   1. Pour Decisions #188  (tyo)  rating=5.0  score=502.0
+#   2. ...
+```
+
+## Step 4 — Iterate
+
+Try the demo with different parameters to see how the features combine:
+
+```bash
+# Open-now filter, smaller radius.
+python find_coffee.py nearby --lon -122.4194 --lat 37.7749 --km 2 --k 3 --open-only
+
+# Bigger cursor pages.
+python find_coffee.py page --count 50
+```
+
+## What you just built
+
+| Command | pyredis-om feature |
+| --- | --- |
+| `seed` | `Migrator().run()`, bulk `add()`, raw `pipeline.zadd()` for sorted sets |
+| `nearby` | `Coordinates` field, `GeoFilter`, `sort_by()`, structured AND condition (`open_now`) |
+| `show` | `HashModel.get(pk)` |
+| `page` | `FindQueryCursor`, signed `cursor.token(secret=...)`, `from_token` round-trip |
+| `trending` | Raw `ZUNIONSTORE` with `WEIGHTS` and `AGGREGATE SUM`, `get_many(pks)`, raw `zrevrange` |
+
+## Reference
+
+- [Geospatial Queries](/geo_queries)
+- [Models and Fields](/models)
+- [Queries and Vector Search](/queries)
+- [Bulk Operations](/bulk_operations)

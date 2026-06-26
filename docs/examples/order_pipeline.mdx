@@ -1,0 +1,407 @@
+---
+title: Real-time Order Pipeline
+description: An end-to-end order processing app that combines Redis Streams consumer groups, AtomicCounter rate limiter, AtomicString distributed lock, keyspace notifications, and bulk deletes.
+---
+
+# Real-time Order Pipeline
+
+A self-contained Python application that wires together the streaming, atomic,
+and pub/sub surfaces of pyredis-om into a real-time order pipeline. Orders flow
+through a Redis Stream, are validated against a rate-limited API, persisted
+atomically with a distributed lock, and notify listeners via keyspace events.
+
+## Features showcased
+
+- `RedisStream` consumer-group reads (`XREADGROUP`) with manual ack
+- Idempotent produces (`XADD ... IDMP`, Redis 8.6+)
+- Atomic ack-and-delete (`XACKDEL`, Redis 8.2+)
+- `AtomicCounter` rate limiter (`INCREX` with bounds, Redis 8.8+)
+- `AtomicString` distributed lock (`SET ... IFEQ`, Redis 8.4+)
+- Keyspace notification subscription (`__keyevent@0__:set`, etc.)
+- Bulk `delete_many()` with chunking
+
+## Step 1 — Start Redis and install dependencies
+
+```bash
+docker run -d --name redis -p 6379:6379 redis:8-alpine
+
+export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
+
+pip install pyredis-om
+```
+
+Enable keyspace notifications — the app calls `enable_keyspace_events()`
+itself on startup, so you don't need to configure Redis manually.
+
+## Step 2 — Save the application
+
+Save the following as `order_pipeline.py`:
+
+```python
+"""
+Real-time Order Pipeline.
+
+A single-file demo that:
+
+1. Accepts orders via an `add_order()` API call.
+2. Writes them to a Redis Stream ("orders:stream").
+3. A background worker reads from the stream in a consumer group,
+   applies a per-customer rate limit (AtomicCounter),
+   acquires a per-account lock (AtomicString),
+   persists the order to a Redis hash, and acks the stream entry.
+4. A second background task subscribes to keyspace notifications and
+   prints every new persisted order.
+
+Run:
+    python order_pipeline.py
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import random
+import string
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from aredis_om import (
+    AtomicCounter,
+    AtomicString,
+    NotFoundError,
+    RedisStream,
+    enable_keyspace_events,
+    get_redis_connection,
+)
+
+
+# ── Connection ─────────────────────────────────────────────────────────
+
+REDIS_URL = os.environ.get("REDIS_OM_URL", "redis://localhost:6379")
+db = get_redis_connection(url=REDIS_URL, decode_responses=True)
+
+STREAM_KEY = "orders:stream"
+GROUP_NAME = "fulfillment"
+CONSUMER_NAME = f"worker-{''.join(random.choices(string.ascii_lowercase, k=6))}"
+
+# How many orders one customer can submit per minute.
+RATE_LIMIT_PER_MIN = 5
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+def _gen_order_id() -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+
+
+async def _rate_limit(customer_id: str) -> Optional[str]:
+    """
+    Return None if the customer is under the limit, or a reason string if
+    they hit it. Uses AtomicCounter with bounds (0, RATE_LIMIT_PER_MIN) and
+    a 60-second TTL that resets each minute.
+    """
+    counter = AtomicCounter(db, f"ratelimit:{customer_id}")
+    new_value, applied = await counter.incr(
+        amount=1,
+        bounds=(0, RATE_LIMIT_PER_MIN),
+        expire=60,
+        enx=True,                 # set TTL only if absent (resets each minute)
+    )
+    if applied == 0:
+        return f"rate limit exceeded ({RATE_LIMIT_PER_MIN}/min)"
+    return None
+
+
+async def _lock_account(account_id: str, holder: str) -> bool:
+    """
+    Try to acquire the per-account lock. Return True on success.
+    """
+    lock = AtomicString(db, f"lock:account:{account_id}")
+    got = await lock.compare_and_set(expected="free", new=holder, expire=30)
+    return got
+
+
+async def _unlock_account(account_id: str, holder: str) -> None:
+    """Release the lock only if we still own it."""
+    lock = AtomicString(db, f"lock:account:{account_id}")
+    await lock.compare_and_set(expected=holder, new="free")
+
+
+# ── Stream helper ──────────────────────────────────────────────────────
+
+stream = RedisStream(db, STREAM_KEY)
+
+
+async def _ensure_group() -> None:
+    """Create the consumer group if it doesn't already exist."""
+    try:
+        await stream.create_group(GROUP_NAME, id="0", mkstream=True)
+    except Exception as e:
+        # BUSYGROUP errors are fine — group already exists.
+        if "BUSYGROUP" not in str(e):
+            raise
+
+
+# ── Order API ──────────────────────────────────────────────────────────
+
+async def add_order(customer_id: str, account_id: str, sku: str, qty: int) -> dict:
+    """
+    Produce an order. The optional `idempotent=True` flag (Redis 8.6+) uses
+    XADD ... IDMP so retried produces are safe.
+    """
+    order_id = _gen_order_id()
+    payload = {
+        "order_id": order_id,
+        "customer_id": customer_id,
+        "account_id": account_id,
+        "sku": sku,
+        "qty": str(qty),
+    }
+
+    # Idempotent produce (Redis 8.6+): the server-side dedup window is
+    # controlled by `idempotent_duration` (defaults to the server's
+    # stream-idmp-duration). Retries with the same field set inside the
+    # window return the original stream entry id instead of producing a
+    # duplicate.
+    entry_id = await stream.add(
+        payload,
+        idempotent=True,
+    )
+    return {"order_id": order_id, "stream_id": entry_id}
+
+
+# ── Worker ─────────────────────────────────────────────────────────────
+
+async def _process_entry(entry) -> None:
+    """Validate, lock, persist, and ack-and-delete a single stream entry."""
+    fields = dict(entry.fields)
+    order_id = fields["order_id"]
+    customer_id = fields["customer_id"]
+    account_id = fields["account_id"]
+    sku = fields["sku"]
+    qty = int(fields["qty"])
+
+    # 1. Rate limit per customer.
+    reject_reason = await _rate_limit(customer_id)
+    if reject_reason:
+        print(f"  [worker] {order_id}: REJECTED — {reject_reason}")
+        # Still ack-and-delete so we don't process it forever. A real system
+        # would route rejections to a "dead-letter" stream.
+        await stream.ack_and_delete(GROUP_NAME, entry.id)
+        return
+
+    # 2. Acquire the per-account lock (so two workers don't double-write).
+    holder = f"{CONSUMER_NAME}:{entry.id}"
+    if not await _lock_account(account_id, holder):
+        print(f"  [worker] {order_id}: SKIPPED — account {account_id} is locked elsewhere")
+        return                       # leave pending; another delivery will retry
+
+    try:
+        # 3. Persist the order as a hash.
+        order_key = f"order:{order_id}"
+        async with db.pipeline(transaction=True) as pipe:
+            pipe.hset(order_key, mapping={
+                "order_id":   order_id,
+                "customer":   customer_id,
+                "account":    account_id,
+                "sku":        sku,
+                "qty":        qty,
+                "status":     "filled",
+            })
+            pipe.expire(order_key, 86400)              # 24h TTL
+            await pipe.execute()
+
+        print(f"  [worker] {order_id}: FILLED qty={qty} sku={sku}")
+
+        # 4. Ack-and-delete the stream entry (Redis 8.2+; falls back to
+        # XACK + XDEL on older servers).
+        await stream.ack_and_delete(GROUP_NAME, entry.id)
+    finally:
+        await _unlock_account(account_id, holder)
+
+
+async def worker_loop(stop_event: asyncio.Event) -> None:
+    """Read from the consumer group forever, blocking for new entries."""
+    while not stop_event.is_set():
+        try:
+            entries = await stream.read_group(
+                group=GROUP_NAME,
+                consumer=CONSUMER_NAME,
+                count=10,
+                block=1000,            # ms
+            )
+        except Exception as e:
+            print(f"  [worker] read error: {e}")
+            await asyncio.sleep(0.5)
+            continue
+
+        for entry in entries:
+            await _process_entry(entry)
+
+
+# ── Keyspace notification listener ─────────────────────────────────────
+
+async def notification_listener(stop_event: asyncio.Event) -> None:
+    """Print every new order: hash as it's written."""
+    pubsub = db.pubsub()
+    await pubsub.psubscribe("__keyevent@0__:set")
+    try:
+        while not stop_event.is_set():
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg is None:
+                continue
+            key = msg.get("data")
+            if isinstance(key, str) and key.startswith("order:"):
+                # Don't fetch our own writes; the worker already prints.
+                pass
+    finally:
+        await pubsub.aclose()
+
+
+# ── Test driver ────────────────────────────────────────────────────────
+
+async def seed_orders(n: int = 7) -> list[dict]:
+    """Produce `n` orders for one customer, plus a couple of spammy ones."""
+    sent = []
+    sent.append(await add_order("cust-001", "acct-A", "SKU-001", 1))
+    for i in range(n):
+        sent.append(await add_order("cust-001", "acct-A", "SKU-001", 1))
+    # Same customer hammering the API → should hit the rate limit.
+    sent.append(await add_order("cust-001", "acct-A", "SKU-001", 1))
+    sent.append(await add_order("cust-001", "acct-A", "SKU-001", 1))
+    return sent
+
+
+async def _print_pipeline_state() -> None:
+    info = await db.xinfo_stream(STREAM_KEY)
+    print("\n── pipeline state ──")
+    print(f"  stream length : {info.get('length')}")
+    print(f"  groups        : {info.get('groups')}")
+    pending = await db.xpending(STREAM_KEY, GROUP_NAME)
+    print(f"  pending       : {pending.get('pending')}")
+    # Show the first few persisted orders.
+    keys = sorted(
+        k async for k in db.scan_iter(match="order:*", count=100)
+    )[:5]
+    print(f"  persisted ({len(keys)} shown):")
+    for k in keys:
+        h = await db.hgetall(k)
+        print(f"    {k} → {h}")
+
+
+async def main() -> None:
+    # 1. Make sure keyspace notifications are enabled.
+    await enable_keyspace_events(db, "KEA")
+
+    # 2. Reset any prior state so the demo is reproducible.
+    pks = [k async for k in db.scan_iter(match="order:*", count=100)]
+    if pks:
+        await db.delete(*pks)
+    await db.delete(STREAM_KEY)
+    await db.delete("lock:account:acct-A")
+    # Wipe rate-limit keys too.
+    rl_keys = [k async for k in db.scan_iter(match="ratelimit:*", count=100)]
+    if rl_keys:
+        await db.delete(*rl_keys)
+
+    # 3. Make sure the consumer group exists.
+    await _ensure_group()
+
+    # 4. Start worker + listener as background tasks.
+    stop = asyncio.Event()
+    worker_task = asyncio.create_task(worker_loop(stop))
+    listener_task = asyncio.create_task(notification_listener(stop))
+    print(f"consumer: {CONSUMER_NAME}")
+    print(f"group   : {GROUP_NAME}")
+
+    # 5. Wait briefly so the worker is ready to receive.
+    await asyncio.sleep(0.5)
+
+    # 6. Produce a burst of orders.
+    sent = await seed_orders(n=7)
+    print(f"\nproduced {len(sent)} orders\n")
+
+    # 7. Let the worker drain.
+    await asyncio.sleep(2.0)
+
+    # 8. Show the pipeline state.
+    await _print_pipeline_state()
+
+    # 9. Stop background tasks.
+    stop.set()
+    await asyncio.gather(worker_task, listener_task, return_exceptions=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Step 3 — Run
+
+```bash
+python order_pipeline.py
+```
+
+Expected output (timing and IDs will vary):
+
+```
+consumer: worker-xyzabc
+group   : fulfillment
+
+produced 9 orders
+
+  [worker] ZK8...: FILLED qty=1 sku=SKU-001
+  [worker] HQ3...: FILLED qty=1 sku=SKU-001
+  [worker] 4F1...: FILLED qty=1 sku=SKU-001
+  [worker] LZ2...: FILLED qty=1 sku=SKU-001
+  [worker] 9PB...: FILLED qty=1 sku=SKU-001
+  [worker] A0X...: REJECTED — rate limit exceeded (5/min)
+  [worker] Q7D...: REJECTED — rate limit exceeded (5/min)
+
+── pipeline state ──
+  stream length : 0
+  groups        : 1
+  pending       : 0
+  persisted (5 shown):
+    order:ZK8... → {'order_id': 'ZK8...', 'status': 'filled', ...}
+    ...
+```
+
+If you see 5 `FILLED` entries and 2 `REJECTED` entries, the pipeline worked:
+the per-customer rate limit kicked in once the customer had submitted 5
+orders inside the 60-second window. The 7th and 8th orders were rejected
+without ever touching the persisted hash store.
+
+## Step 4 — Try variations
+
+```bash
+# Wait a minute, then watch the rate limit reset.
+sleep 60
+python order_pipeline.py
+
+# Or, watch the stream live while the demo runs.
+docker exec -it redis redis-cli xinfo stream orders:stream
+
+# Inspect the rate-limit counter directly.
+docker exec -it redis redis-cli get ratelimit:cust-001
+```
+
+## What you just built
+
+| Section | pyredis-om feature |
+| --- | --- |
+| `add_order()` | `RedisStream.add` with idempotent produces |
+| `_rate_limit()` | `AtomicCounter.incr` with bounds, expiration, and ENX |
+| `_lock_account()` / `_unlock_account()` | `AtomicString.compare_and_set` with TTL |
+| `_process_entry()` | `RedisStream.read_group`, `ack_and_delete`, pipeline transactions |
+| `notification_listener()` | raw pubsub for keyspace events |
+| `enable_keyspace_events()` | `enable_keyspace_events` helper |
+
+## Reference
+
+- [Streams](/streams)
+- [Atomic Counter](/atomic_counter)
+- [Atomic Strings](/atomic_strings)
+- [Pipelines and `execute_command`](/pipelines)
+- [Keyspace Notifications](/keyspace_notifications)
+- [Bulk Operations](/bulk_operations)

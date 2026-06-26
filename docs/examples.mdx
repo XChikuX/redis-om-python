@@ -1,0 +1,59 @@
+---
+title: Examples
+description: Three full, copy-paste-runnable applications that exercise pyredis-om end-to-end.
+---
+
+# Examples
+
+Three full applications, each chosen to highlight a different surface of
+pyredis-om. Every example is self-contained: copy the file, run it against a
+local Redis 8.x instance, and see real output.
+
+## Prerequisites
+
+All three examples assume:
+
+- **Python 3.10+**
+- **Redis 8.x** with the search and JSON modules loaded — the easiest path is
+  the official `redis:8-alpine` image:
+  ```bash
+  docker run -d --name redis -p 6379:6379 redis:8-alpine
+  export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
+  ```
+- **pyredis-om installed**:
+  ```bash
+  pip install pyredis-om
+  ```
+- A handful of pure-Python dependencies that the examples themselves install
+  inline via `pip install` (FastAPI/uvicorn, etc.).
+
+The two advanced examples (Order Pipeline, Find My Coffee) optionally use
+Redis 8.x features (`INCREX`, idempotent `XADD`, `XACKDEL`, atomic CAS).
+They detect the server version and fall back gracefully — they will still
+run, with reduced atomicity, on Redis 8.0+.
+
+## Available examples
+
+| Example | What it showcases |
+| --- | --- |
+| [E-commerce Catalog API](/examples/ecommerce_catalog) | `JsonModel` with embedded models, vector KNN search, full-text search, hash field TTL on sessions, bulk `add()`, pipelines, the `migrate` CLI. |
+| [Real-time Order Pipeline](/examples/order_pipeline) | `RedisStream` consumer groups, idempotent produces, `AtomicCounter` rate limiter, `AtomicString` distributed lock, keyspace notifications, bulk deletes. |
+| [Find My Coffee (Geo CLI)](/examples/find_my_coffee) | `HashModel` with `Coordinates`, `GeoFilter`, cursor pagination (signed tokens), bulk `add()` / `get_many()`, weighted `ZUNIONSTORE` ranking, `argparse` CLI. |
+
+## How to run an example
+
+Each example page provides:
+
+1. **Setup** — the exact commands to start Redis, install deps, and seed data.
+2. **The full source** — one file you can copy and run as-is.
+3. **Expected output** — what you should see when the script succeeds.
+
+No example depends on the others. Run them in any order.
+
+## Reading order
+
+If you're new to pyredis-om, read the docs in this order first:
+
+- [Getting Started](/getting_started) — models, fields, `Migrator().run()`
+- [Queries and Vector Search](/queries) — expression syntax
+- [Streams](/streams), [Atomic Counter](/atomic_counter), [Atomic Strings](/atomic_strings), [Geo](/geo_queries) — for the per-example concepts

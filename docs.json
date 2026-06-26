@@ -40,6 +40,11 @@
             "id": "docs",
             "title": "Documentation",
             "href": "/"
+        },
+        {
+            "id": "examples",
+            "title": "Examples",
+            "href": "/examples"
         }
     ],
     "sidebar": [
@@ -226,6 +231,32 @@
                     "title": "Redis Modules",
                     "href": "/redis_modules",
                     "icon": "puzzle-piece"
+                }
+            ]
+        },
+        {
+            "tab": "examples",
+            "group": "Full Applications",
+            "pages": [
+                {
+                    "title": "Examples Overview",
+                    "href": "/examples",
+                    "icon": "rocket"
+                },
+                {
+                    "title": "E-commerce Catalog",
+                    "href": "/examples/ecommerce_catalog",
+                    "icon": "store"
+                },
+                {
+                    "title": "Real-time Order Pipeline",
+                    "href": "/examples/order_pipeline",
+                    "icon": "truck-fast"
+                },
+                {
+                    "title": "Find My Coffee (Geo CLI)",
+                    "href": "/examples/find_my_coffee",
+                    "icon": "mug-hot"
                 }
             ]
         }
