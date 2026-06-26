@@ -16,8 +16,9 @@ help:
 	@echo "  clean       remove all temporary files"
 	@echo "  lint        run the code linters"
 	@echo "  format      reformat code"
-	@echo "  test        run all the tests against redis:8-alpine"
-	@echo "  test_oss    run all the tests against redis:latest (OSS)"
+	@echo "  test        run async tests against redis:8-alpine"
+	@echo "  test_full   run async + sync tests against redis:8-alpine"
+	@echo "  test_oss    run async tests against redis:latest (OSS)"
 	@echo "  shell       open a uv shell"
 	@echo "  redis       start a Redis instance with Docker"
 	@echo "  sync        generate modules redis_om, tests_sync from aredis_om, tests respectively"
@@ -69,6 +70,11 @@ format: $(INSTALL_STAMP) sync
 
 .PHONY: test
 test: $(INSTALL_STAMP) sync redis
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -n auto -vv ./tests/ --cov-report term-missing --cov $(NAME)
+	$(DOCKER_COMPOSE) down
+
+.PHONY: test_full
+test_full: $(INSTALL_STAMP) sync redis
 	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -n auto -vv ./tests/ ./tests_sync/ --cov-report term-missing --cov $(NAME) $(SYNC_NAME)
 	$(DOCKER_COMPOSE) down
 
@@ -77,7 +83,7 @@ test_oss: $(INSTALL_STAMP) sync redis
 	# Specifically tests against a local OSS Redis instance via
 	# docker-compose.yml. Do not use this for CI testing, where we should
 	# instead have a matrix of Docker images.
-	REDIS_OM_URL=redis://localhost:6381?decode_responses=True $(UV) run pytest -n auto -vv ./tests/ ./tests_sync/ --cov-report term-missing --cov $(NAME)
+	REDIS_OM_URL=redis://localhost:6381?decode_responses=True $(UV) run pytest -n auto -vv ./tests/ --cov-report term-missing --cov $(NAME)
 
 
 .PHONY: shell

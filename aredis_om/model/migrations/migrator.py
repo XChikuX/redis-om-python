@@ -180,9 +180,14 @@ class Migrator:
         self,
         module=None,
         conn: Optional[Union[redis.Redis, redis.RedisCluster]] = None,
+        history_key: Optional[str] = None,
     ):
         self.module = module
         self.conn = conn
+        # Per-instance override for the migration history list. Defaults to
+        # the module-level ``MIGRATION_HISTORY_KEY`` constant so existing
+        # callers keep working unchanged.
+        self.history_key = history_key or MIGRATION_HISTORY_KEY
         self.migrations: List[IndexMigration] = []
 
     async def detect_migrations(self):
@@ -283,13 +288,13 @@ class Migrator:
                 await self._record_history(migration)
 
     async def _record_history(self, migration: IndexMigration) -> None:
-        """Best-effort append of a migration record to Redis history."""
-        try:
-            payload = json.dumps(migration.history_record())
-            await migration.conn.rpush(MIGRATION_HISTORY_KEY, payload)
-        except Exception:  # pragma: no cover - history is best effort
-            log.warning(
-                "Failed to record migration history for %s",
-                migration.index_name,
-                exc_info=True,
-            )
+            """Best-effort append of a migration record to Redis history."""
+            try:
+                payload = json.dumps(migration.history_record())
+                await migration.conn.rpush(self.history_key, payload)
+            except Exception:  # pragma: no cover - history is best effort
+                log.warning(
+                    "Failed to record migration history for %s",
+                    migration.index_name,
+                    exc_info=True,
+                )

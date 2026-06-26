@@ -418,6 +418,10 @@ async def test_migrator_records_history_in_redis(key_prefix, redis):
     """``Migrator.run()`` appends a JSON record per applied migration."""
     import json
 
+    # Use a per-test history key so concurrent migrations don't pollute
+    # the assertion (the default key is shared across all migrators).
+    history_key = f"{key_prefix}:migration_history"
+
     class BaseJsonModel(JsonModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
@@ -426,10 +430,10 @@ async def test_migrator_records_history_in_redis(key_prefix, redis):
     class HistoryProduct(BaseJsonModel):
         name: str = Field(index=True)
 
-    migrator = Migrator(conn=redis)
+    migrator = Migrator(conn=redis, history_key=history_key)
     await migrator.run()
 
-    raw = await redis.lrange(migrator_module.MIGRATION_HISTORY_KEY, 0, -1)
+    raw = await redis.lrange(history_key, 0, -1)
     assert raw, "expected at least one history entry"
     # Each entry should be valid JSON with the documented fields.
     record = json.loads(raw[-1])
@@ -443,8 +447,9 @@ async def test_migrator_records_history_in_redis(key_prefix, redis):
 @py_test_mark_asyncio
 async def test_migrator_record_history_can_be_disabled(key_prefix, redis):
     """``record_history=False`` skips writing to the history list."""
-    # Snapshot the existing history length so the test is order-independent.
-    before = await redis.llen(migrator_module.MIGRATION_HISTORY_KEY)
+    # Use a per-test history key so concurrent migrations don't pollute
+    # the assertion (the default key is shared across all migrators).
+    history_key = f"{key_prefix}:migration_history"
 
     class BaseJsonModel(JsonModel, abc.ABC):
         class Meta:
@@ -454,11 +459,11 @@ async def test_migrator_record_history_can_be_disabled(key_prefix, redis):
     class NoHistoryProduct(BaseJsonModel):
         name: str = Field(index=True)
 
-    migrator = Migrator(conn=redis)
+    migrator = Migrator(conn=redis, history_key=history_key)
     await migrator.run(record_history=False)
 
-    after = await redis.llen(migrator_module.MIGRATION_HISTORY_KEY)
-    assert after == before, "history must not grow when record_history=False"
+    after = await redis.llen(history_key)
+    assert after == 0, "history must not grow when record_history=False"
 
 
 def test_index_migration_summary_and_history_record_shape():

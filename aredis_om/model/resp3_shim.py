@@ -83,11 +83,10 @@ def _normalise_field_value(value: Any) -> List[Any]:
 
 def is_resp3_search_response(raw: Any) -> bool:
     """Return True if ``raw`` matches the RESP3 FT.SEARCH / FT.AGGREGATE shape."""
-    return (
-        isinstance(raw, dict)
-        and "results" in raw
-        and ("total_results" in raw or "total_results" in raw)
-    )
+    if not isinstance(raw, dict):
+        return False
+
+    return "results" in raw or "total_results" in raw
 
 
 def _resp2_row_to_key_fields(row: Any) -> Optional[List[Any]]:
