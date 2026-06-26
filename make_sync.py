@@ -39,6 +39,17 @@ POST_SYNC_FIXES = {
         "import asyncio": "import time",
         "asyncio.sleep(": "time.sleep(",
     },
+    # ``_wait_for_index`` polls FT.INFO using ``await asyncio.sleep(0.05)``.
+    # In the sync mirror that becomes a bare ``asyncio.sleep(0.05)`` which
+    # returns a coroutine and is never awaited. Swap the module import and
+    # rewrite the call site.
+    "redis_om/model/migrations/migrator.py": {
+        "import asyncio": "import time\n",
+        "asyncio.sleep(": "time.sleep(",
+        # The async source uses asyncio.get_event_loop().time() to track
+        # the deadline; without an event loop we fall back to time.monotonic().
+        "asyncio.get_event_loop().time()": "time.monotonic()",
+    },
     # Hotkeys async tests use import asyncio + await asyncio.sleep / create_task.
     # After unasync strips await, the sync mirror needs time.sleep and no task.
     "tests_sync/test_observability_hotkeys.py": {
