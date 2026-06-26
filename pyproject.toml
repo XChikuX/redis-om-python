@@ -8,7 +8,7 @@ authors = [
 maintainers = [
     { name = "Srikanth", email = "oss@psync.club" },
 ]
-license = { text = "BSD-3-Clause" }
+license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 classifiers = [
