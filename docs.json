@@ -45,6 +45,11 @@
             "id": "examples",
             "title": "Examples",
             "href": "/examples"
+        },
+        {
+            "id": "cli",
+            "title": "CLI",
+            "href": "/cli"
         }
     ],
     "sidebar": [
@@ -257,6 +262,17 @@
                     "title": "Find My Coffee (Geo CLI)",
                     "href": "/examples/find_my_coffee",
                     "icon": "mug-hot"
+                }
+            ]
+        },
+        {
+            "tab": "cli",
+            "group": "CLI Reference",
+            "pages": [
+                {
+                    "title": "migrate",
+                    "href": "/cli/cli_reference",
+                    "icon": "terminal"
                 }
             ]
         }

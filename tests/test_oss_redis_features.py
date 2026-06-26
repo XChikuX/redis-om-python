@@ -92,15 +92,13 @@ async def test_not_found(m):
 
 def test_validates_required_fields(m):
     # Raises ValidationError: last_name is required
-    # TODO: Test the error value
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="last_name"):
         m.Member(first_name="Andrew", zipcode="97086", join_date=today)
 
 
 def test_validates_field(m):
     # Raises ValidationError: join_date is not a date
-    # TODO: Test the error value
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="join_date"):
         m.Member(first_name="Andrew", last_name="Brookins", join_date="yesterday")
 
 

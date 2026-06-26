@@ -1,0 +1,127 @@
+---
+title: CLI Reference
+description: The migrate command — manage RediSearch indexes from the terminal.
+---
+
+# CLI Reference
+
+pyredis-om ships with a `migrate` CLI command that creates, drops, and
+recreates RediSearch indexes for your models without writing Python code.
+
+## Installation
+
+The `migrate` command is installed automatically when you install
+pyredis-om:
+
+```bash
+pip install pyredis-om
+migrate --help
+```
+
+## Usage
+
+```bash
+migrate [OPTIONS]
+```
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--module TEXT` | `aredis_om` (async) / `redis_om` (sync) | Python module to scan for models. Pass your app's module name (e.g. `myapp.models`) to discover models defined there. |
+| `--dry-run` | `False` | Print the migrations that would be applied without running them. Exits immediately — no prompt. |
+| `--help` | | Print the help message and exit. |
+
+### Examples
+
+```bash
+# Scan the default module for new or changed models.
+migrate
+
+# Point at your own module.
+migrate --module myapp.models
+
+# Preview what would happen without applying anything.
+migrate --dry-run
+```
+
+## What it does
+
+1. **Discovers models** by scanning `model_registry` — any `HashModel` or
+   `JsonModel` subclass that has a `redisearch_schema()` is a candidate.
+2. **Computes a schema hash** (SHA-1 of the RediSearch schema string).
+3. **Compares against Redis** — each model has a hash stored at
+   `<index_name>:hash`.
+4. **Plans migrations**:
+   - No index, no hash → `CREATE`
+   - Index exists, hash matches → no-op
+   - Index exists, hash differs → `DROP` + `CREATE`
+5. **Prompts** before applying. Answer `y` to proceed.
+6. **Records history** — each applied migration is appended to the Redis
+   list `redis_om:migration_history` as a JSON record.
+7. **Exits** — the CLI is a one-shot command, not a daemon.
+
+## Dry run
+
+```bash
+$ migrate --module myapp --dry-run
+Pending migrations:
+  CREATE MyApp.Widget index=:MyApp.Widget:index to=82578...
+```
+
+The dry-run shows what would happen. Nothing is written to Redis.
+
+## Interactive prompt
+
+```bash
+$ migrate --module myapp
+Pending migrations:
+  CREATE MyApp.Widget index=:MyApp.Widget:index to=82578...
+Run migrations? (y/n)
+```
+
+Answer `y` to apply. Answer anything else to abort.
+
+## How it handles schemas
+
+A schema change (e.g. adding a new indexed field) triggers a
+**drop-and-recreate** of the index. The underlying Redis keys are
+**preserved** — only the index itself is rebuilt. After re-creation,
+Redis 8.8+ asynchronously re-indexes the existing documents in the
+background; the migrator waits for `percent_indexed` to reach `1` before
+returning.
+
+## Migration history
+
+Every migration that is applied is recorded in a Redis list at
+`redis_om:migration_history`:
+
+```bash
+redis-cli lrange redis_om:migration_history 0 -1
+```
+
+Output:
+
+```json
+{"timestamp":"2026-06-25T19:42:01.234567+00:00","model":"__main__.Widget","index":":__main__.Widget:index","action":"CREATE","hash":"82578...","previous_hash":null}
+```
+
+History records are best-effort — failures are logged and never abort
+the migration.
+
+## Cluster mode
+
+On Redis Cluster the `migrate` CLI works the same way. Indexes are
+cluster-aware on Redis 8+ and propagate automatically. The migrator
+waits for async indexing to complete before returning.
+
+## See also
+
+- [Migrations](/migrations) — detailed docs on migration internals,
+  history, index health, embedded models, and custom index names.
+- [E-commerce Catalog Example](/examples/ecommerce_catalog) — the
+  example app calls both `Migrator().run()` at startup and the `migrate`
+  CLI.
+- [Find My Coffee (Geo CLI)](/examples/find_my_coffee) — an example
+  CLI app that uses `argparse` alongside `migrate` for index management.
+- Source: [`aredis_om/model/cli/migrate.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/cli/migrate.py)
