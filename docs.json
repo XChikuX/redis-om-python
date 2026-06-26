@@ -3,9 +3,9 @@
     "name": "pyredis-om",
     "description": "pyredis-om — async-first Redis object mapper built on Pydantic v2",
     "logo": {
-        "light": "/images/logo.svg"
+        "light": "../images/logo.svg"
     },
-    "favicon": "/images/icon.svg",
+    "favicon": "../images/icon.svg",
     "theme": {
         "primary": "#DC382D",
         "primaryLight": "#B8281F"
