@@ -1,5 +1,7 @@
 include README.md
 include LICENSE
+include LICENSE.OLD
+include NOTICE
 recursive-include docs *
 recursive-include images *
 recursive-include redis_om **

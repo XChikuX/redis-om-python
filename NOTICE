@@ -1,0 +1,13 @@
+Copyright (c) 2026 Srikanth Gopalakrishnan.
+All rights reserved.
+
+This project includes modified code originally developed by Redis Inc.
+Copyright (c) 2022 Redis Inc.
+
+This program and the accompanying materials are made available under
+the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation; either version 3 of the License, or
+(at your option) any later version.
+
+The original Redis code remains subject to the terms of the MIT License.
+See the accompanying LICENSE.OLD file for full details.
