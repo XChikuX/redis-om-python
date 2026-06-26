@@ -65,6 +65,12 @@ The current release includes:
 - **Hash field TTL** (`HEXPIRE` / `HGETEX` / `HGETDEL` / `HSETEX`) on `HashModel` for Redis 7.4+ / 8.0+ — see [`docs/hash_field_ttl.mdx`](docs/hash_field_ttl.mdx)
 - **RedisStream** wrapper around the `X*` family with 8.2/8.4/8.6/8.8 extensions (`XACKDEL`, `XDELEX`, `XNACK`, `IDMP`, `XREADGROUP ... CLAIM`) — see [`docs/streams.mdx`](docs/streams.mdx)
 - **AtomicString + MSETEX** (`SET IFEQ` / `IFNE`, `DELEX`, `DIGEST`, bulk `MSETEX`) for Redis 8.4+ — see [`docs/atomic_strings.mdx`](docs/atomic_strings.mdx)
+- **Vector sets** (`VectorSet`: `VADD`/`VSIM`/`VINFO`/`VCARD`/`VEMB`/`VLINKS`/`VRANDMEMBER`/`VREM`/`VSETATTR`/`VGETATTR`) for Redis 8.8+ — see [`docs/vector_sets.mdx`](docs/vector_sets.mdx)
+- **Hot-keys tracker** (`HOTKEYS START/GET/STOP/RESET`) for Redis 8.6+ — see [`docs/hotkeys.mdx`](docs/hotkeys.mdx)
+- **Bitmap operators** (`BitmapOps`: `BITOP DIFF`/`DIFF1`/`ANDOR`/`ONE`) for Redis 8.2+ — see [`docs/bitmap_ops.mdx`](docs/bitmap_ops.mdx)
+- **Sorted set aggregations** (`SortedSetOps`: `ZUNION`/`ZINTER` with `AGGREGATE COUNT`) for Redis 8.8+ — see [`docs/sorted_set_aggregations.mdx`](docs/sorted_set_aggregations.mdx)
+- **Cluster admin** (`ClusterAdmin`: `CLUSTER SLOT-STATS`, `CLUSTER MIGRATION ...`) for Redis 8.2+ cluster mode — see [`docs/cluster_admin.mdx`](docs/cluster_admin.mdx)
+- **Keyspace notification helpers** (`KeyspaceEvents`, `build_flags`, `enable_keyspace_events`) for Redis 2.8+ — see [`docs/keyspace_notifications.mdx`](docs/keyspace_notifications.mdx)
 - **OpenTelemetry observability** wrapper around redis-py 8.0 instrumentation — see [`docs/observability.mdx`](docs/observability.mdx)
 
 ## ⚡ Why `execute_command`?
@@ -220,12 +226,12 @@ Why `execute_command` (and not the redis-py typed bindings): see [⚡ Why `execu
 
 **The full documentation lives in [`docs/`](docs/index.mdx).** Highlights:
 
-- **Getting started** — [Overview](docs/index.mdx), [Getting Started](docs/getting_started.mdx), [Connecting to Redis](docs/connections.mdx)
+- **Getting started** — [Overview](docs/index.mdx), [Getting Started](docs/getting_started.mdx), [Connecting to Redis](docs/connections.mdx), [Examples](docs/examples.mdx)
 - **Models and queries** — [Models and Fields](docs/models.mdx), [Queries and Vector Search](docs/queries.mdx), [Validation](docs/validation.mdx), [Error Messages](docs/errors.mdx)
 - **Operations** — [Bulk Operations](docs/bulk_operations.mdx), [Streams](docs/streams.mdx), [Geospatial Queries](docs/geo_queries.mdx), [Hash Field Expiration](docs/hash_field_ttl.mdx), [Pipelines and `execute_command`](docs/pipelines.mdx), [Migrations](docs/migrations.mdx)
-- **Redis 8.x features** — [AtomicCounter (`INCREX`)](docs/atomic_counter.mdx), [Redis Arrays](docs/redis_arrays.mdx), [Atomic Strings (`CAS`, `MSETEX`)](docs/atomic_strings.mdx), [OpenTelemetry Observability](docs/observability.mdx)
+- **Redis 8.x features** — [AtomicCounter (`INCREX`)](docs/atomic_counter.mdx), [Redis Arrays](docs/redis_arrays.mdx), [Atomic Strings (`CAS`, `MSETEX`)](docs/atomic_strings.mdx), [Vector Sets](docs/vector_sets.mdx), [Hot Keys Tracker](docs/hotkeys.mdx), [Bitmap Operations](docs/bitmap_ops.mdx), [Sorted Set Aggregations](docs/sorted_set_aggregations.mdx), [Cluster Admin](docs/cluster_admin.mdx), [Keyspace Notifications](docs/keyspace_notifications.mdx), [OpenTelemetry Observability](docs/observability.mdx)
 - **Deployment** — [Redis Cluster](docs/cluster.mdx), [Protocol Selection](docs/protocol.mdx), [Redis Modules](docs/redis_modules.mdx), [FastAPI Integration](docs/fastapi_integration.mdx)
-- **Reference** — [Upstream Issues Fixed](docs/upstream_fixes.mdx)
+- **Reference** — [Upstream Issues Fixed](docs/upstream_fixes.mdx), [Pending Features (RedisVL)](docs/redisvl.mdx)
 
 ## ❤️ Contributing
 

@@ -18,6 +18,9 @@ pip install pyredis-om
 migrate --help
 ```
 
+The entry point calls the sync-generated mirror (`redis_om.model.cli.migrate`).
+Connection is configured via `REDIS_OM_URL` (same as the library).
+
 ## Usage
 
 ```bash
@@ -28,8 +31,8 @@ migrate [OPTIONS]
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--module TEXT` | `aredis_om` (async) / `redis_om` (sync) | Python module to scan for models. Pass your app's module name (e.g. `myapp.models`) to discover models defined there. |
-| `--dry-run` | `False` | Print the migrations that would be applied without running them. Exits immediately — no prompt. |
+| `--module TEXT` | `aredis_om` | Python module to scan for models. Pass your app's module name (e.g. `myapp.models`) to discover models defined there. The default scans the async source module. |
+| `--dry-run` | `False` | Print the migrations that would be applied without running them. Exits immediately — no prompt, no writes. |
 | `--help` | | Print the help message and exit. |
 
 ### Examples

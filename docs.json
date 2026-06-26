@@ -143,7 +143,7 @@
         },
         {
             "tab": "docs",
-            "group": "Redis 8.8+ Features",
+            "group": "Redis 8.x Features",
             "pages": [
                 {
                     "title": "AtomicCounter (INCREX)",

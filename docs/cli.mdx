@@ -1,0 +1,25 @@
+---
+title: CLI
+description: pyredis-om command-line interface — manage RediSearch indexes from the terminal.
+---
+
+# CLI
+
+pyredis-om ships with a single CLI command, `migrate`, that manages RediSearch
+index creation, updates, and teardown from the terminal. No Python code
+required — point it at your models module and it finds, hashes, and applies
+schema changes.
+
+## Quick start
+
+```bash
+pip install pyredis-om
+export REDIS_OM_URL="redis://localhost:6379?decode_responses=True"
+migrate --module myapp.models
+```
+
+## Reference
+
+See [migrate](/cli/cli_reference) for the full option table, dry-run
+workflow, schema-handling details, migration history format, and cluster-mode
+notes.

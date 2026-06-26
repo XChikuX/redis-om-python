@@ -20,6 +20,7 @@ hash models, atomic string CAS/CAD/MULTI-SET, and OpenTelemetry observability.
 ## Getting Started
 
 - [Getting Started tutorial](/getting_started) — install Redis OM, define a model, save and query data.
+- [Examples](/examples) — three full, copy-paste-runnable applications exercising pyredis-om end-to-end.
 - [Connecting to Redis](/connections) — URL configuration, clusters, RESP2/RESP3.
 
 ## Core features
@@ -43,6 +44,12 @@ hash models, atomic string CAS/CAD/MULTI-SET, and OpenTelemetry observability.
 - [AtomicCounter (`INCREX`)](/atomic_counter) — atomic increment with bounds, saturation, expiration, and `ENX`. Useful for rate limiters and capped counters.
 - [Redis Arrays](/redis_arrays) — sparse, index-addressable arrays with ring-buffer, aggregate (`AROP`), and inline grep (`ARGREP`) operations.
 - [Atomic Strings (CAS, MSETEX)](/atomic_strings) — `AtomicString` (`SET IFEQ`/`IFNE`, `DELEX`, `DIGEST`) and bulk `MSETEX` (Redis 8.4+).
+- [Vector Sets](/vector_sets) — `VectorSet` wrapper over the HNSW-backed `@vectorset` module (`VADD`/`VSIM`/`VINFO`/...) for Redis 8.8+.
+- [Hot Keys Tracker](/hotkeys) — `HOTKEYS START/GET/STOP/RESET` server-side top-K sampling for Redis 8.6+.
+- [Bitmap Operations](/bitmap_ops) — `BITOP DIFF`/`DIFF1`/`ANDOR`/`ONE` via `BitmapOps` (Redis 8.2+).
+- [Sorted Set Aggregations](/sorted_set_aggregations) — `ZUNION`/`ZINTER` with `AGGREGATE COUNT` via `SortedSetOps` (Redis 8.8+).
+- [Cluster Admin](/cluster_admin) — `CLUSTER SLOT-STATS` and `CLUSTER MIGRATION` introspection for Redis 8.2+ clusters.
+- [Keyspace Notifications](/keyspace_notifications) — constants and helpers for `notify-keyspace-events` (Redis 2.8+).
 - [OpenTelemetry Observability](/observability) — opt-in OTel metrics via redis-py 8.0 instrumentation.
 
 ## Deployment
@@ -53,6 +60,8 @@ hash models, atomic string CAS/CAD/MULTI-SET, and OpenTelemetry observability.
 ## Reference
 
 - [Upstream Issues Fixed in This Fork](/upstream_fixes) — every upstream issue resolved here, with examples.
+- [Pending Features (RedisVL)](/redisvl) — advanced RediSearch/Vector features planned for the upcoming RedisVL integration.
+- [Pending Features List](/pending_features) — detailed status of features not yet implemented.
 
 ## Redis Modules
 

@@ -977,17 +977,42 @@ redis_conn = get_redis_connection()
 redis_conn.set("hello", "world")
 ```
 
-## Redis 8.8+ features
+## Redis 8.x features
 
-The current release of redis-om-python also ships three top-level helpers
-that take direct advantage of Redis 8.8+. Each one is documented and
-tested independently:
+The current release of redis-om-python also ships several top-level helpers
+that take direct advantage of newer Redis capabilities. Each one is documented
+and tested independently:
+
+### Redis 8.8+
 
 - **[AtomicCounter](/atomic_counter)** — atomic increment with bounds,
   saturation, expiration, and `ENX`. Drop-in for rate limiters and capped
   counters.
-- **[RedisArray](/redis_arrays)** — sparse, index-addressable arrays with
+- **[Redis Arrays](/redis_arrays)** — sparse, index-addressable arrays with
   ring buffers, `AROP` aggregates, and `ARGREP` text search.
+- **[Atomic Strings](/atomic_strings)** — `AtomicString` (`SET IFEQ` / `IFNE`,
+  `DELEX`, `DIGEST`) and bulk `MSETEX` for compare-and-set style writes.
+- **[Vector Sets](/vector_sets)** — `VectorSet` wrapper over the HNSW-backed
+  `@vectorset` module for approximate nearest-neighbour queries.
+- **[Sorted Set Aggregations](/sorted_set_aggregations)** — `ZUNION` / `ZINTER`
+  with `AGGREGATE COUNT` for co-occurrence counting.
+
+### Redis 8.6+
+
+- **[Hot Keys Tracker](/hotkeys)** — `HOTKEYS START/GET/STOP/RESET` server-side
+  top-K sampling for CPU and network-byte attribution.
+
+### Redis 8.2+
+
+- **[Bitmap Operations](/bitmap_ops)** — `BITOP DIFF` / `DIFF1` / `ANDOR` /
+  `ONE` via `BitmapOps`.
+- **[Cluster Admin](/cluster_admin)** — `CLUSTER SLOT-STATS` and
+  `CLUSTER MIGRATION` introspection for Redis 8.2+ clusters.
+
+### Any Redis version
+
+- **[Keyspace Notifications](/keyspace_notifications)** — constants and helpers
+  for `notify-keyspace-events` (Redis 2.8+).
 - **[OpenTelemetry Observability](/observability)** — opt-in metrics via
   redis-py 8.0 instrumentation.
 
@@ -1007,4 +1032,4 @@ If you're a FastAPI user, check out [how to integrate Redis OM with FastAPI](/fa
 
 [redisearch-url]: https://redis.io/docs/stack/search/
 [redis-json-url]: https://redis.io/docs/stack/json/
-[pydantic-url]: https://github.com/samuelcolvin/pydantic
+[pydantic-url]: https://docs.pydantic.dev/

@@ -1637,7 +1637,6 @@ class FindQuery:
                     field_name=field_name, expanded_value=expanded_value
                 )
             elif op is Operators.NOT_IN:
-                # TODO: Implement NOT_IN, test this...
                 expanded_value = cls.expand_tag_value(value)
                 result += "-(@{field_name}:{{{expanded_value}}})".format(
                     field_name=field_name, expanded_value=expanded_value
@@ -1784,15 +1783,13 @@ class FindQuery:
             result += f"({cls.resolve_redisearch_query(right)})"
         else:
             if not field_name:
-                raise QuerySyntaxError("Could not resolve field name. See docs: TODO")
+                raise QuerySyntaxError("Could not resolve field name.")
             elif not field_type:
-                raise QuerySyntaxError("Could not resolve field type. See docs: TODO")
+                raise QuerySyntaxError("Could not resolve field type.")
             elif not field_info:
-                raise QuerySyntaxError("Could not resolve field info. See docs: TODO")
+                raise QuerySyntaxError("Could not resolve field info.")
             elif is_model_field_instance(right):
-                raise QueryNotSupportedError(
-                    "Comparing fields is not supported. See docs: TODO"
-                )
+                raise QueryNotSupportedError("Comparing fields is not supported.")
             else:
                 embedded_query = None
                 if is_model_field_instance(expression.left) and expression.op in (
@@ -4077,8 +4074,7 @@ class JsonModel(RedisModel, abc.ABC):
             full_text_search = getattr(field_info, "full_text_search", False)
             sortable_tag_error = RedisModelError(  # noqa: F841
                 "In this Preview release, TAG fields cannot "
-                f"be marked as sortable. Problem field: {name}. "
-                "See docs: TODO"
+                f"be marked as sortable. Problem field: {name}."
             )
 
             # For more complicated compound validators (e.g. PositiveInt), we might get a _GenericAlias rather than
@@ -4102,12 +4098,12 @@ class JsonModel(RedisModel, abc.ABC):
                 if typ is not str:
                     raise RedisModelError(
                         "In this Preview release, list and tuple fields can only "
-                        f"contain strings. Problem field: {name}. See docs: TODO"
+                        f"contain strings. Problem field: {name}."
                     )
                 if sortable is True:
                     raise RedisModelError(
                         "In this Preview release, list and tuple fields cannot be "
-                        f"marked as sortable. Problem field: {name}. See docs: TODO"
+                        f"marked as sortable. Problem field: {name}."
                     )
                 if case_sensitive is True and full_text_search is True:
                     raise RedisModelError(
