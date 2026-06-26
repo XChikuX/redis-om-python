@@ -58,6 +58,16 @@ POST_SYNC_FIXES = {
         "task = asyncio.create_task(gen_load())": "gen_load()",
         "        task\n": "",
     },
+    # The strawberry integration tests use ``asyncio.get_running_loop()``
+    # inside ``_find_with_retry``. In the sync mirror there's no running
+    # loop, so we swap the call for ``time.monotonic()`` and rely on the
+    # ``asyncio.sleep`` -> ``time.sleep`` rewrite below.
+    "tests_sync/test_strawberry_integration.py": {
+        "import asyncio": "import time",
+        "asyncio.sleep(": "time.sleep(",
+        "loop = asyncio.get_running_loop()\n    deadline = loop.time() + timeout\n    last_results: list = []\n    while loop.time() < deadline:":
+            "deadline = time.monotonic() + timeout\n    last_results: list = []\n    while time.monotonic() < deadline:",
+    },
     # py_test_mark_asyncio becomes py_test_mark_sync in the mirror; its
     # body ``return pytest.mark.asyncio(f)`` must become ``return f`` so
     # sync test functions stay non-asyncio (unasync does not rewrite the

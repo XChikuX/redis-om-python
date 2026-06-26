@@ -12,6 +12,7 @@ import datetime
 from typing import List, Optional
 
 import pytest
+import pytest_asyncio
 
 from tests._compat import ValidationError
 
@@ -26,9 +27,14 @@ except ImportError:
 
 from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
 
-pytestmark = pytest.mark.skipif(
-    not HAS_STRAWBERRY, reason="strawberry-graphql not installed"
-)
+pytestmark = [
+    pytest.mark.skipif(not HAS_STRAWBERRY, reason="strawberry-graphql not installed"),
+    # All strawberry integration tests share one Redis index and one
+    # module-level model registry. Running them on parallel xdist workers
+    # races on index DROP+CREATE and on the indexing latency between
+    # ``save()`` and ``find()``. Group them on a single worker.
+    pytest.mark.xdist_group(name="strawberry"),
+]
 
 
 # ── Model definitions ────────────────────────────────────────────────
@@ -152,7 +158,64 @@ async def _make_user(**overrides):
     return StrawberryUser(**defaults)
 
 
+async def _find_with_retry(query, *, timeout: float = 5.0):
+    """Execute ``query.all()`` with retries for Redis 8.8+ async indexing.
+
+    Redis 8.8 introduced asynchronous background indexing, so a ``save()``
+    immediately followed by ``find()`` can return an empty result set
+    until the indexer catches up. Production callers usually don't notice
+    because they wait between write and search; tests that run back to
+    back inside a single asyncio task do. Poll for a short window before
+    failing so the assertion reflects the eventual state, not the
+    intermediate one.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_results: list = []
+    while loop.time() < deadline:
+        last_results = await query.all()
+        if last_results:
+            return last_results
+        await asyncio.sleep(0.05)
+    return last_results
+
+
 # ── Tests ─────────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(scope="session")
+async def _ensure_strawberry_indexes():
+    """Create the search index once per worker process.
+
+    Calling ``Migrator().run()`` inside every test body raced with other
+    pytest-xdist workers creating the same index and with Redis 8.8+'s
+    asynchronous background indexing, which surfaced as
+    ``SEARCH_INDEX_NOT_FOUND`` or empty result sets. Running it once per
+    worker session keeps the index alive across all tests in this file.
+    """
+    await Migrator().run()
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _wipe_strawberry_users(_ensure_strawberry_indexes):
+    """Remove any leftover StrawberryUser documents before each test.
+
+    Tolerates a missing or mid-mutation index because another worker may
+    be racing on the same Redis at the same instant.
+    """
+    try:
+        old_pks = [pk async for pk in await StrawberryUser.all_pks()]
+    except Exception:
+        old_pks = []
+    for pk in old_pks:
+        try:
+            await StrawberryUser.delete(pk)
+        except Exception:
+            pass
+    yield
 
 
 @pytest.mark.asyncio
@@ -174,17 +237,12 @@ async def test_strawberry_input_wraps_model():
 @pytest.mark.asyncio
 async def test_strawberry_save_and_find():
     """Save a user via redis-om and retrieve it, then convert to Strawberry type."""
-    await Migrator().run()
-
-    # Clean up stale data
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     user = await _make_user(ethnicity="caucasian", bio="Strawberry test user")
     await user.save()
 
-    found = await StrawberryUser.find(StrawberryUser.pk == user.pk).first()
+    found = (
+        await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk))
+    )[0]
     assert found.pk == user.pk
     assert found.fname == "TestUser"
     assert found.email == "test@example.com"
@@ -194,12 +252,6 @@ async def test_strawberry_save_and_find():
 @pytest.mark.asyncio
 async def test_strawberry_filter_by_ethnicity():
     """Filter users by ethnicity field."""
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     user1 = await _make_user(
         fname="Alice", email="alice@test.com", ethnicity="polynesian"
     )
@@ -207,7 +259,9 @@ async def test_strawberry_filter_by_ethnicity():
     user2 = await _make_user(fname="Bob", email="bob@test.com", ethnicity="melanesian")
     await user2.save()
 
-    results = await StrawberryUser.find(StrawberryUser.ethnicity == "polynesian").all()
+    results = await _find_with_retry(
+        StrawberryUser.find(StrawberryUser.ethnicity == "polynesian")
+    )
     assert len(results) == 1
     assert results[0].fname == "Alice"
 
@@ -215,12 +269,6 @@ async def test_strawberry_filter_by_ethnicity():
 @pytest.mark.asyncio
 async def test_strawberry_filter_by_interests():
     """Filter users by interests (full-text search list field)."""
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     user = await _make_user(
         fname="Charlie",
         email="charlie@test.com",
@@ -228,9 +276,9 @@ async def test_strawberry_filter_by_interests():
     )
     await user.save()
 
-    results = await StrawberryUser.find(
-        StrawberryUser.interests << ["redis"]  # type: ignore
-    ).all()
+    results = await _find_with_retry(
+        StrawberryUser.find(StrawberryUser.interests << ["redis"])  # type: ignore
+    )
     assert len(results) >= 1
     assert any(u.fname == "Charlie" for u in results)
 
@@ -238,12 +286,6 @@ async def test_strawberry_filter_by_interests():
 @pytest.mark.asyncio
 async def test_strawberry_filter_by_bio():
     """Filter users by bio using full-text search (% operator)."""
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     user = await _make_user(
         fname="Diana",
         email="diana@test.com",
@@ -251,7 +293,7 @@ async def test_strawberry_filter_by_bio():
     )
     await user.save()
 
-    results = await StrawberryUser.find(StrawberryUser.bio % "Psync").all()
+    results = await _find_with_retry(StrawberryUser.find(StrawberryUser.bio % "Psync"))
     assert len(results) >= 1
     assert any(u.fname == "Diana" for u in results)
 
@@ -259,17 +301,13 @@ async def test_strawberry_filter_by_bio():
 @pytest.mark.asyncio
 async def test_strawberry_embedded_phone_indexed():
     """Verify that the embedded phone model's indexed fields work."""
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     phone = _make_phone(number=9876543210, device_id="device-xyz")
     user = await _make_user(fname="Eve", email="eve@test.com", phone=phone)
     await user.save()
 
-    found = await StrawberryUser.find(StrawberryUser.pk == user.pk).first()
+    found = (
+        await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk))
+    )[0]
     assert found.phone.number == 9876543210
     assert found.phone.device_id == "device-xyz"
 
@@ -277,12 +315,6 @@ async def test_strawberry_embedded_phone_indexed():
 @pytest.mark.asyncio
 async def test_strawberry_convertible_redis_dict():
     """Test that convertible_redis_dict (if present) works for Strawberry conversion."""
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     user = await _make_user(fname="Frank", email="frank@test.com")
     await user.save()
 
@@ -301,12 +333,6 @@ async def test_strawberry_input_to_model_validate(key_prefix, redis):
     strawberry Input type (backed by a redis-om model) and needs to
     convert it to the underlying model via model_validate.
     """
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     # Simulate what a GraphQL resolver receives: a strawberry Input instance.
     # strawberry-graphql's pydantic integration lets you use the input type
     # as a resolver argument, and the resolver receives the already-
@@ -346,12 +372,6 @@ async def test_strawberry_input_with_explicit_pk_to_model_validate(key_prefix, r
 
     This tests the path where a resolver passes an existing pk (e.g. for updates).
     """
-    await Migrator().run()
-
-    old_pks = [pk async for pk in await StrawberryUser.all_pks()]
-    for pk in old_pks:
-        await StrawberryUser.delete(pk)
-
     # Simulate a resolver that already has the pk (update scenario)
     phone_input = PhoneInput(
         country_code="1",

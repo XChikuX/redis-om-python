@@ -75,27 +75,57 @@ async def _create_index_cluster(
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
-async def _wait_for_index(conn, index_name, timeout=5.0):
+async def _wait_for_index(conn, index_name: str, timeout: float = 5.0) -> None:
     """Poll FT.INFO until the index reports it is fully indexed.
 
     Redis 8.8+ introduced asynchronous background indexing for existing
     documents, which means ``FT.CREATE`` can return before previously
-    written keys have been scanned.  Tests that create an index and
+    written keys have been scanned. Tests that create an index and
     immediately search it can see empty or partial results unless we
     wait for indexing to finish.
+
+    The index may also not be visible immediately when another
+    concurrent process (e.g. another pytest-xdist worker) created it
+    between our ``FT.INFO`` existence check and ``FT.CREATE``. In that
+    case we keep polling instead of returning early so that callers can
+    rely on the index being queryable once this function returns.
     """
     deadline = asyncio.get_event_loop().time() + timeout
+    last_error: Optional[Exception] = None
+
     while asyncio.get_event_loop().time() < deadline:
         try:
             info = await conn.ft(index_name).info()
-        except redis.ResponseError:
-            return
-        # percent_indexed is a string like "1" when complete.
-        percent = info.get("percent_indexed")
-        if percent == "1" or percent == 1:
-            return
+        except redis.ResponseError as exc:
+            # Index not visible yet (race with a concurrent creator). Keep
+            # polling until it appears or we time out.
+            last_error = exc
+            await asyncio.sleep(0.05)
+            continue
+
+        last_error = None
+        raw_percent = info.get("percent_indexed")
+
+        if raw_percent is not None:
+            try:
+                # Converts "1", "1.0", 1, etc., cleanly to a float
+                if float(raw_percent) >= 1.0:
+                    return
+            except (ValueError, TypeError):
+                # Handle edge cases where percent_indexed isn't a valid number
+                pass
+
         await asyncio.sleep(0.05)
-    log.warning("Timeout waiting for index %s to reach 100%% indexed", index_name)
+
+    if last_error is not None:
+        log.warning(
+            "Index %s never became queryable after %ss: %s",
+            index_name,
+            timeout,
+            last_error,
+        )
+    else:
+        log.warning("Timeout waiting for index %s to reach 100%% indexed", index_name)
 
 
 async def create_index(
@@ -115,7 +145,14 @@ async def create_index(
     try:
         await conn.ft(index_name).info()
     except redis.ResponseError:
-        await conn.execute_command(f"ft.create {index_name} {schema}")
+        try:
+            await conn.execute_command(f"ft.create {index_name} {schema}")
+        except redis.ResponseError as exc:
+            # Race: another process created the index between our
+            # existence check and FT.CREATE. Treat that as success, but
+            # re-raise any other error so it isn't silently swallowed.
+            if "Index already exists" not in str(exc):
+                raise
         await conn.set(schema_hash_key(index_name), current_hash)
         await _wait_for_index(conn, index_name)
     else:
@@ -146,7 +183,12 @@ class IndexMigration:
     async def create(self):
         try:
             await create_index(self.conn, self.index_name, self.schema, self.hash)
-        except redis.ResponseError:
+        except redis.ResponseError as exc:
+            # ``create_index`` already handles the common "another worker
+            # beat us to it" race, but defensively tolerate it here too so
+            # a concurrent migrator doesn't surface a noisy error.
+            if "Index already exists" not in str(exc):
+                raise
             log.info("Index already exists: %s", self.index_name)
 
     async def drop(self):
