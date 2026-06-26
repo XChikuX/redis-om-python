@@ -199,9 +199,7 @@ async def test_concurrent_writes_then_find_all_pks():
 
     pks = {pk async for pk in await _FlakyUser.all_pks()}
     expected_pks = {u.pk for u in users}
-    assert expected_pks.issubset(pks), (
-        f"Missing pks: {expected_pks - pks}"
-    )
+    assert expected_pks.issubset(pks), f"Missing pks: {expected_pks - pks}"
 
 
 async def test_isolated_models_do_not_share_state():

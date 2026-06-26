@@ -240,9 +240,9 @@ async def test_strawberry_save_and_find():
     user = await _make_user(ethnicity="caucasian", bio="Strawberry test user")
     await user.save()
 
-    found = (
-        await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk))
-    )[0]
+    found = (await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk)))[
+        0
+    ]
     assert found.pk == user.pk
     assert found.fname == "TestUser"
     assert found.email == "test@example.com"
@@ -305,9 +305,9 @@ async def test_strawberry_embedded_phone_indexed():
     user = await _make_user(fname="Eve", email="eve@test.com", phone=phone)
     await user.save()
 
-    found = (
-        await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk))
-    )[0]
+    found = (await _find_with_retry(StrawberryUser.find(StrawberryUser.pk == user.pk)))[
+        0
+    ]
     assert found.phone.number == 9876543210
     assert found.phone.device_id == "device-xyz"
 
