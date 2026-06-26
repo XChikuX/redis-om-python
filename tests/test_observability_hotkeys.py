@@ -7,13 +7,6 @@ gracefully on Redis < 8.6.
 
 import pytest
 
-# HOTKEYS sampling is a server-wide singleton session: only one
-# ``HOTKEYS START`` can be active on a given Redis at a time. Under
-# pytest-xdist's parallel workers, tests in this module would race and
-# the second ``START`` would raise ``hotkey tracking session already in
-# progress``. Group all hotkeys tests on one worker to serialize them.
-pytestmark = pytest.mark.xdist_group(name="hotkeys")
-
 from aredis_om import get_redis_connection
 from aredis_om.hotkeys import (
     HotKeysSnapshot,
@@ -26,6 +19,14 @@ from aredis_om.hotkeys import (
 )
 
 from .conftest import py_test_mark_asyncio
+
+
+# HOTKEYS sampling is a server-wide singleton session: only one
+# ``HOTKEYS START`` can be active on a given Redis at a time. Under
+# pytest-xdist's parallel workers, tests in this module would race and
+# the second ``START`` would raise ``hotkey tracking session already in
+# progress``. Group all hotkeys tests on one worker to serialize them.
+pytestmark = pytest.mark.xdist_group(name="hotkeys")
 
 
 def _has_command(db, command):

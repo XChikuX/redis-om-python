@@ -55,6 +55,12 @@ from aredis_om.model.model import model_registry
 
 from .conftest import py_test_mark_asyncio
 
+# All cluster tests share the same Redis cluster and the same
+# ``global_key_prefix = "cluster-test"``, so they cannot run concurrently:
+# parallel workers race on index DROP+CREATE and on the indexing latency
+# between ``add()`` and ``find().count()``. Group them on a single worker.
+pytestmark = pytest.mark.xdist_group(name="cluster")
+
 # ── Configuration ─────────────────────────────────────────────────────
 
 CLUSTER_PORT = 7001

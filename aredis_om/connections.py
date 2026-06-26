@@ -76,4 +76,16 @@ def protocol_version(connection) -> int:
                 if proto in (2, 3):
                     return proto
 
+    # RedisCluster has no top-level connection_pool; use get_connection_kwargs().
+    # If protocol was not explicitly set, redis-py defaults to RESP3 (3).
+    if pool is None:
+        conn_kwargs_fn = getattr(connection, "get_connection_kwargs", None)
+        if callable(conn_kwargs_fn):
+            kwargs = conn_kwargs_fn()
+            version = kwargs.get("protocol")
+            if version in (2, 3):
+                return version
+            # protocol not explicitly set → redis-py defaults to RESP3
+            return 3
+
     return 2

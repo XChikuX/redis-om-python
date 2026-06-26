@@ -288,13 +288,13 @@ class Migrator:
                 await self._record_history(migration)
 
     async def _record_history(self, migration: IndexMigration) -> None:
-            """Best-effort append of a migration record to Redis history."""
-            try:
-                payload = json.dumps(migration.history_record())
-                await migration.conn.rpush(self.history_key, payload)
-            except Exception:  # pragma: no cover - history is best effort
-                log.warning(
-                    "Failed to record migration history for %s",
-                    migration.index_name,
-                    exc_info=True,
-                )
+        """Best-effort append of a migration record to Redis history."""
+        try:
+            payload = json.dumps(migration.history_record())
+            await migration.conn.rpush(self.history_key, payload)
+        except Exception:  # pragma: no cover - history is best effort
+            log.warning(
+                "Failed to record migration history for %s",
+                migration.index_name,
+                exc_info=True,
+            )
