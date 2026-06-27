@@ -13,6 +13,7 @@ responses to the parser functions and assert the normalised output.
 import pytest
 
 from aredis_om.model.resp3_shim import (
+    _decode_dict_keys,
     extract_key_from_row,
     is_resp3_search_response,
     split_cursor_response,
@@ -36,6 +37,61 @@ class TestIsResp3SearchResponse:
 
     def test_returns_false_for_none(self):
         assert is_resp3_search_response(None) is False
+
+    def test_returns_true_for_bytes_keys(self):
+        # Regression: redis-py surfaces RESP3 map keys as bytes for raw
+        # ``execute_command`` callers even when ``decode_responses=True``.
+        raw = {
+            b"attributes": [],
+            b"format": b"STRING",
+            b"results": [],
+            b"total_results": 0,
+            b"warning": [],
+        }
+        assert is_resp3_search_response(raw) is True
+
+    def test_returns_true_for_bytes_results_key_only(self):
+        raw = {b"results": []}
+        assert is_resp3_search_response(raw) is True
+
+    def test_returns_true_for_bytes_total_results_key_only(self):
+        raw = {b"total_results": 0}
+        assert is_resp3_search_response(raw) is True
+
+
+# ── _decode_dict_keys ───────────────────────────────────────────────────
+
+
+class TestDecodeDictKeys:
+    def test_decodes_bytes_keys_to_str(self):
+        raw = {b"results": [], b"total_results": 1}
+        out = _decode_dict_keys(raw)
+        assert set(out.keys()) == {"results", "total_results"}
+        assert out["results"] == []
+        assert out["total_results"] == 1
+
+    def test_preserves_str_keys(self):
+        raw = {"results": [], "total_results": 1}
+        out = _decode_dict_keys(raw)
+        assert out == raw
+
+    def test_mixed_keys(self):
+        raw = {"results": [], b"total_results": 1, b"extra": b"value"}
+        out = _decode_dict_keys(raw)
+        assert set(out.keys()) == {"results", "total_results", "extra"}
+        # Values are left untouched.
+        assert out["extra"] == b"value"
+
+    def test_passes_through_non_dict(self):
+        assert _decode_dict_keys([1, 2, 3]) == [1, 2, 3]
+        assert _decode_dict_keys(None) is None
+        assert _decode_dict_keys("abc") == "abc"
+
+    def test_invalid_utf8_keys_do_not_raise(self):
+        # ``errors="ignore"`` means non-UTF-8 bytes don't crash the decoder.
+        raw = {b"\xff\xfe": "value"}
+        out = _decode_dict_keys(raw)
+        assert "value" in out.values()
 
 
 # ── split_search_response — RESP2 ───────────────────────────────────────
@@ -177,6 +233,61 @@ class TestSplitSearchResponseResp3:
         total, rows = split_search_response(raw, protocol=3, command="search")
         assert total == 1
         assert rows[0] == ["id", b"doc:1", "name", b"Alice"]
+
+    def test_top_level_bytes_keys_with_empty_results(self):
+        # Regression for issue #N: redis-py can surface the entire RESP3
+        # FT.SEARCH dict with bytes keys (b"results", b"total_results",
+        # b"attributes", b"format", b"warning").  Without bytes-aware
+        # detection this would fall through to the RESP2 path and raise
+        # ``KeyError: 2``.
+        raw = {
+            b"attributes": [],
+            b"format": b"STRING",
+            b"results": [],
+            b"total_results": 0,
+            b"warning": [],
+        }
+        total, rows = split_search_response(raw, protocol=3, command="search")
+        assert total == 0
+        assert rows == []
+
+    def test_top_level_bytes_keys_protocol_sniffing(self):
+        # Even with ``protocol=None`` the bytes-keyed dict must be detected
+        # as RESP3 (so callers that don't know the protocol still work).
+        raw = {
+            b"attributes": [],
+            b"format": b"STRING",
+            b"results": [],
+            b"total_results": 0,
+            b"warning": [],
+        }
+        total, rows = split_search_response(raw, command="search")
+        assert total == 0
+        assert rows == []
+
+    def test_top_level_bytes_keys_with_data(self):
+        raw = {
+            b"attributes": [],
+            b"format": b"STRING",
+            b"results": [
+                {
+                    b"id": b"doc:1",
+                    b"extra_attributes": {b"name": b"Alice", b"age": b"30"},
+                    b"values": [],
+                },
+                {
+                    b"id": b"doc:2",
+                    b"extra_attributes": {b"name": b"Bob", b"age": b"25"},
+                    b"values": [],
+                },
+            ],
+            b"total_results": 2,
+            b"warning": [],
+        }
+        total, rows = split_search_response(raw, protocol=3, command="search")
+        assert total == 2
+        assert rows[0] == ["id", b"doc:1", "name", b"Alice", "age", b"30"]
+        assert rows[1] == ["id", b"doc:2", "name", b"Bob", "age", b"25"]
 
     def test_aggregate_layout_no_id_field(self):
         # FT.AGGREGATE rows don't have an ``id`` field; __key appears in

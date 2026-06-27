@@ -54,6 +54,7 @@ from ..util import ASYNC_MODE, has_numeric_inner_type, is_numeric_type
 from .encoders import jsonable_encoder
 from .render_tree import render_tree
 from .resp3_shim import (
+    _decode_dict_keys,
     extract_key_from_row,
     is_resp3_search_response,
     split_cursor_response,
@@ -2995,9 +2996,9 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
     @classmethod
     def from_redis(cls, res: Any, protocol: Optional[int] = None):
         # ``res`` may come from a RESP2 wire (flat list) or a RESP3 wire
-        # (structured dict).  ``split_search_response`` normalises both to the
-        # historical ``(total, [[key, fields_list], ...])`` shape so the rest
-        # of this method stays simple.
+        # (structured dict).  ``is_resp3_search_response`` accepts both ``str``
+        # and ``bytes`` dict keys because redis-py does not always decode
+        # RESP3 map keys for raw ``execute_command`` callers.
         def to_string(s):
             if isinstance(s, (str,)):
                 return s
@@ -3006,19 +3007,19 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
             else:
                 return s  # Not a string we care about
 
-        if (
-            isinstance(res, dict)
-            and "results" in res
-            and (protocol == 3 or protocol is None or is_resp3_search_response(res))
-        ):
+        if isinstance(res, dict) and (protocol == 3 or is_resp3_search_response(res)):
             # RESP3 path: structured dict from FT.SEARCH.  Walk the ``results``
             # entries and reuse the same fields-handling logic as the RESP2
-            # path.
+            # path.  Normalise bytes keys to ``str`` up front so the rest of
+            # this branch (and the helpers it calls) can use plain string
+            # comparisons.
+            res = _decode_dict_keys(res)
             docs = []
             for entry in res.get("results") or []:
                 if not isinstance(entry, dict):
                     continue
-                extra = entry.get("extra_attributes") or {}
+                entry = _decode_dict_keys(entry)
+                extra = _decode_dict_keys(entry.get("extra_attributes") or {})
                 # ``extra_attributes`` is already a flat dict of decoded
                 # strings/values; convert to the ``[name, value, ...]`` shape
                 # the rest of the method expects so legacy code paths work.
@@ -3060,7 +3061,13 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
                 docs.append(doc)
             return docs
 
-        # Legacy RESP2 path.
+        # Legacy RESP2 path.  If we land here with a dict it means the caller
+        # passed something we couldn't identify as a RESP3 search response;
+        # rather than indexing into the dict and raising ``KeyError``, return
+        # an empty result set (consistent with an unparseable response).
+        if isinstance(res, dict):
+            return []
+
         docs = []
         step = 2  # Because the result has content
         offset = 1  # The first item is the count of total matches.

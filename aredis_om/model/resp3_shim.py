@@ -81,12 +81,49 @@ def _normalise_field_value(value: Any) -> List[Any]:
     return [_decode_text(value), value]
 
 
+# Known RESP3 FT.SEARCH / FT.AGGREGATE top-level keys, in both ``str`` and
+# ``bytes`` forms. redis-py surfaces RESP3 map keys as bytes for raw
+# ``execute_command`` calls even when ``decode_responses=True`` is set, so we
+# have to match both variants everywhere we inspect the dict.
+_RESP3_SEARCH_KEYS_STR = ("results", "total_results")
+_RESP3_SEARCH_KEYS_BYTES = tuple(k.encode("utf-8") for k in _RESP3_SEARCH_KEYS_STR)
+
+
 def is_resp3_search_response(raw: Any) -> bool:
-    """Return True if ``raw`` matches the RESP3 FT.SEARCH / FT.AGGREGATE shape."""
+    """Return True if ``raw`` matches the RESP3 FT.SEARCH / FT.AGGREGATE shape.
+
+    Accepts dicts whose keys are either ``str`` or ``bytes`` because redis-py
+    does not always decode RESP3 map keys for raw ``execute_command`` callers.
+    """
     if not isinstance(raw, dict):
         return False
 
-    return "results" in raw or "total_results" in raw
+    for str_key in _RESP3_SEARCH_KEYS_STR:
+        if str_key in raw:
+            return True
+    for bytes_key in _RESP3_SEARCH_KEYS_BYTES:
+        if bytes_key in raw:
+            return True
+    return False
+
+
+def _decode_dict_keys(d: Any) -> Dict[str, Any]:
+    """Return a copy of ``d`` with bytes keys decoded to ``str``.
+
+    Used to normalise RESP3 dict responses whose keys arrive as ``bytes``.
+    Non-bytes keys are preserved unchanged. Values are left untouched; the
+    rest of the shim and ``from_redis`` already handle bytes values where it
+    matters (e.g. via :func:`_decode_text`).
+    """
+    if not isinstance(d, dict):
+        return d
+    out: Dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(k, bytes):
+            out[k.decode("utf-8", "ignore")] = v
+        else:
+            out[k] = v
+    return out
 
 
 def _resp2_row_to_key_fields(row: Any) -> Optional[List[Any]]:
@@ -154,10 +191,13 @@ def split_search_response(
     works on either protocol transparently.
     """
     if protocol == 3 or (protocol is None and is_resp3_search_response(raw)):
+        # redis-py may surface RESP3 map keys as bytes for raw
+        # ``execute_command`` callers, so normalise them up front.
+        raw = _decode_dict_keys(raw)
         total = int(raw.get("total_results", 0) or 0)
         rows: List[List[Any]] = []
         for entry in raw.get("results") or []:
-            flat = _resp3_row_to_key_fields(entry)
+            flat = _resp3_row_to_key_fields(_decode_dict_keys(entry))
             if flat is None:
                 continue
             rows.append(flat)
