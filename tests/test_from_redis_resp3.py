@@ -359,7 +359,9 @@ class TestLiveRespParity:
         # decode_responses=False is in the query string.
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(host="localhost", port=6380, decode_responses=False, protocol=2)
+        db = aioredis.Redis(
+            host="localhost", port=6380, decode_responses=False, protocol=2
+        )
         idx = "live_resp2_raw"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, "*")
@@ -419,9 +421,7 @@ class TestLiveRespParity:
         db = aioredis.Redis(host="localhost", port=6380, decode_responses=False)
         idx = "live_resp3_raw_empty"
         await self._setup_index(db, idx)
-        raw = await db.execute_command(
-            "FT.SEARCH", idx, r"@email:{does\@not\@exist}"
-        )
+        raw = await db.execute_command("FT.SEARCH", idx, r"@email:{does\@not\@exist}")
         assert isinstance(raw, dict)
         # Direct positional construction surfaces bytes keys; verify and
         # also confirm ``from_redis`` doesn't blow up on the empty branch.
@@ -441,9 +441,7 @@ class TestLiveRespParity:
         )
         idx = "live_resp2_raw_empty"
         await self._setup_index(db, idx)
-        raw = await db.execute_command(
-            "FT.SEARCH", idx, r"@email:{does\@not\@exist}"
-        )
+        raw = await db.execute_command("FT.SEARCH", idx, r"@email:{does\@not\@exist}")
         assert raw == [0]
         M = _make_hash_model("_LiveResp2RawEmpty")
         assert M.from_redis(raw, protocol=2) == []
