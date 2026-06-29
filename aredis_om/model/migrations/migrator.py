@@ -146,6 +146,41 @@ async def _wait_for_index(conn, index_name: str, timeout: float = 5.0) -> None:
         log.warning("Timeout waiting for index %s to reach 100%% indexed", index_name)
 
 
+async def _retry_aliasupdate(
+    conn, physical: str, alias: str, attempts: int = 20
+) -> None:
+    """Run ``FT.ALIASUPDATE`` with retry on transient ``SEARCH_INDEX_NOT_FOUND``.
+
+    The companion ``ALIAS_CREATE_INDEX`` action builds the physical index
+    immediately before the alias-link / alias-swap / alias-adopt action runs
+    in the same migrator. In rare cases the Redis search module can take a
+    moment to make a freshly-created index visible across all internal
+    structures, causing an ``FT.ALIASUPDATE`` sent microseconds later to
+    surface ``SEARCH_INDEX_NOT_FOUND`` for the physical index. The index is
+    not actually gone — it just isn't queryable yet.
+
+    A short polling retry avoids turning that transient visibility race into
+    a hard migration failure. ``FT.ALIASUPDATE`` itself is idempotent: repeating
+    it with the same physical and alias is a no-op once the alias is in place.
+    """
+    last_exc: Optional[Exception] = None
+    for _ in range(attempts):
+        try:
+            await conn.ft(physical).aliasupdate(alias)
+            return
+        except redis.ResponseError as exc:
+            last_exc = exc
+            # Only retry the transient visibility race. Other errors
+            # (unknown command, alias already pointing elsewhere, etc.)
+            # are real and should propagate.
+            if "SEARCH_INDEX_NOT_FOUND" not in str(exc):
+                raise
+            await asyncio.sleep(0.05)
+    # Exhausted retries; surface the last error.
+    assert last_exc is not None
+    raise last_exc
+
+
 async def create_index(
     conn: Union[redis.Redis, redis.RedisCluster], index_name, schema, current_hash
 ):
@@ -374,7 +409,9 @@ class IndexMigration:
         try:
             # ALIASUPDATE is idempotent: if a sibling worker already linked
             # the alias to the same physical index, this is a no-op.
-            await self.conn.ft(physical).aliasupdate(alias)
+            # Retried to handle transient visibility races where the
+            # freshly-created physical isn't immediately resolvable.
+            await _retry_aliasupdate(self.conn, physical, alias)
         except redis.ResponseError as exc:
             log.warning(
                 "Failed to point alias %s at physical index %s: %s",
@@ -422,7 +459,10 @@ class IndexMigration:
 
         # Now that the alias name is free, point it at the new physical index.
         try:
-            await self.conn.ft(physical).aliasupdate(alias)
+            # Retried for the same transient-visibility reasons as
+            # ``_alias_link``; the physical was created moments ago and
+            # may not be fully resolvable yet.
+            await _retry_aliasupdate(self.conn, physical, alias)
         except redis.ResponseError as exc:
             log.warning(
                 "Failed to point alias %s at physical index %s during adoption: %s",
@@ -445,7 +485,9 @@ class IndexMigration:
             return
 
         try:
-            await self.conn.ft(physical).aliasupdate(alias)
+            # Retried for transient visibility races against the
+            # companion CREATE_INDEX action.
+            await _retry_aliasupdate(self.conn, physical, alias)
         except redis.ResponseError as exc:
             # A sibling worker may have already swapped. If so, the alias
             # now points at our physical index (or a newer one); treat
@@ -535,7 +577,19 @@ class Migrator:
         # e.g. checks for RedisJSON, etc.
         from aredis_om.model.model import model_registry
 
+        # When no connection is given (bare ``Migrator().run()``), skip models
+        # marked ``_test_only = True``. This prevents module-level test model
+        # classes that leaked into the global registry from being picked up by
+        # other tests' bare migrator calls on the same xdist worker.
+        #
+        # When a connection IS provided (``Migrator(conn=redis).run()``),
+        # _test_only is ignored so that explicit migrator runs (e.g. in
+        # migration-specific tests) still process the test models normally.
+        skip_test_only = self.conn is None
+
         for name, cls in model_registry.items():
+            if skip_test_only and getattr(cls.Meta, "_test_only", False):
+                continue
             use_alias = bool(getattr(cls.Meta, "zero_downtime_migrations", False))
             if use_alias:
                 await self._detect_alias_migrations(name, cls)

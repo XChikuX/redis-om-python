@@ -69,6 +69,7 @@ class _PersonV1(JsonModel):
         zero_downtime_migrations = True
         index_name = "alias_person_test"
         model_key_prefix = "alias_person_doc"
+        _test_only = True
 
 
 class _PersonV2(JsonModel):
@@ -86,6 +87,7 @@ class _PersonV2(JsonModel):
         zero_downtime_migrations = True
         index_name = "alias_person_test"
         model_key_prefix = "alias_person_doc"
+        _test_only = True
 
 
 class _PersonV1Rollback(JsonModel):
@@ -96,6 +98,7 @@ class _PersonV1Rollback(JsonModel):
         zero_downtime_migrations = True
         index_name = "alias_rollback_test"
         model_key_prefix = "alias_rollback_doc"
+        _test_only = True
 
 
 class _PersonV2Rollback(JsonModel):
@@ -107,6 +110,7 @@ class _PersonV2Rollback(JsonModel):
         zero_downtime_migrations = True
         index_name = "alias_rollback_test"
         model_key_prefix = "alias_rollback_doc"
+        _test_only = True
 
 
 class _LegacyModel(JsonModel):
@@ -117,6 +121,7 @@ class _LegacyModel(JsonModel):
     class Meta:
         index_name = "alias_legacy_test"
         model_key_prefix = "alias_legacy_doc"
+        _test_only = True
 
 
 class _LegacyModelV2(JsonModel):
@@ -135,6 +140,7 @@ class _LegacyModelV2(JsonModel):
     class Meta:
         index_name = "alias_legacy_test"
         model_key_prefix = "alias_legacy_doc"
+        _test_only = True
 
 
 # Track the qualname-keyed registry entries for each model so tests can

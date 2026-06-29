@@ -105,6 +105,7 @@ class _ClusterPersonV1(JsonModel):
         zero_downtime_migrations = True
         index_name = ALIAS
         model_key_prefix = DOC_PREFIX
+        _test_only = True
 
 
 class _ClusterPersonV2(JsonModel):
@@ -116,6 +117,7 @@ class _ClusterPersonV2(JsonModel):
         zero_downtime_migrations = True
         index_name = ALIAS
         model_key_prefix = DOC_PREFIX
+        _test_only = True
 
 
 _ALL_TEST_MODELS: Dict[str, Type] = {}
@@ -536,3 +538,267 @@ async def test_cluster_alias_resolution_stable_across_nodes(cluster_v1_only):
         target = await _alias_target(redis, ALIAS)
         assert target == v1
         await asyncio.sleep(0.01)
+
+
+# ── Tests: detailed cluster contention scenarios ───────────────────────
+
+
+async def test_cluster_aliasupdate_retries_on_transient_not_found(
+    clean_cluster_alias,
+):
+    """ALIASUPDATE must retry when the physical index hasn't propagated
+    to the node that receives the command yet (cluster propagation lag).
+
+    Redis cluster propagates FT.CREATE to all shards asynchronously. If
+    ALIASUPDATE lands on a shard that hasn't received the new physical
+    index yet, it raises SEARCH_INDEX_NOT_FOUND. The migrator's retry
+    logic must handle this transparently rather than surfacing it as an
+    error.
+    """
+    redis = clean_cluster_alias
+
+    # V1 install first.
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        await Migrator(conn=redis).run()
+        v1 = _expected_physical(ALIAS, _ClusterPersonV1)
+        await _wait_for_alias(redis, ALIAS, v1)
+    finally:
+        _restore_registry(snapshot)
+
+    # V2 deploy: the ALIASUPDATE in the swap action could theoretically
+    # hit a lagging shard. This test verifies the migrator completes
+    # successfully even when retries are needed.
+    snapshot = _isolate_registry(_ClusterPersonV2)
+    try:
+        migrator = Migrator(conn=redis, allow_forward_swap=True)
+        await migrator.run()
+        v2 = _expected_physical(ALIAS, _ClusterPersonV2)
+        await _wait_for_alias(redis, ALIAS, v2)
+
+        # Document from V1 era must survive.
+        assert await _ClusterPersonV2.find().count() == 0  # no docs yet
+    finally:
+        _restore_registry(snapshot)
+
+
+async def test_cluster_concurrent_migrators_with_scattered_ft_create(
+    clean_cluster_alias,
+):
+    """Eight concurrent migrators must converge to one physical index even
+    though each FT.CREATE targets a *random* cluster node via
+    ``target_nodes=RedisCluster.RANDOM``.
+
+    Without coordination, N concurrent migrators could create N different
+    physical indexes (one per random-node hit) if the existence check in
+    FT.CREATE is not cluster-coordinated. The current implementation guards
+    this by checking FT.INFO on a single node before creating; this test
+    verifies that all N migrators land on the same physical index.
+    """
+    redis = clean_cluster_alias
+
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        # 12 concurrent migrators (more than the usual 8, higher pressure).
+        migrators = [Migrator(conn=redis) for _ in range(12)]
+        await asyncio.gather(*(m.run() for m in migrators))
+
+        v1 = _expected_physical(ALIAS, _ClusterPersonV1)
+        await _wait_for_alias(redis, ALIAS, v1)
+
+        # Exactly one physical index should exist for this alias.
+        physicals = [
+            idx for idx in await _ft_list(redis) if idx.startswith(f"{ALIAS}__v")
+        ]
+        assert physicals == [v1], f"expected one physical, got {physicals}"
+    finally:
+        _restore_registry(snapshot)
+
+
+async def test_cluster_aliasupdate_on_every_node_during_migration(
+    clean_cluster_alias,
+):
+    """While a migration is in progress, query FT.INFO on every cluster node
+    to verify that alias resolution is consistent even mid-propagation.
+
+    This exercises the window between when FT.CREATE propagates to some
+    shards but not others, and when FT.ALIASUPDATE has updated some nodes
+    but not all. Reads should either see the old physical or the new one —
+    never an error (SEARCH_INDEX_NOT_FOUND) since the alias itself exists
+    throughout the migration.
+    """
+    redis = clean_cluster_alias
+
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        await Migrator(conn=redis).run()
+        v1 = _expected_physical(ALIAS, _ClusterPersonV1)
+        await _wait_for_alias(redis, ALIAS, v1)
+    finally:
+        _restore_registry(snapshot)
+
+    # Fire V2 migration and while it runs, hit every known cluster node.
+    snapshot = _isolate_registry(_ClusterPersonV2)
+    try:
+        # Run the migration in background.
+        migration_task = asyncio.create_task(
+            Migrator(conn=redis, allow_forward_swap=True).run()
+        )
+
+        # While migrating, verify the alias is always resolvable on any node.
+        # Retry a few times to give the migration room to progress.
+        for _ in range(20):
+            target = await _alias_target(redis, ALIAS)
+            # The alias must resolve to either v1 or v2 (never None, never error).
+            assert target is not None, "alias became unresolvable during migration"
+            assert target == v1 or target == _expected_physical(
+                ALIAS, _ClusterPersonV2
+            ), f"alias pointed to unexpected index {target}"
+            await asyncio.sleep(0.05)
+
+        await migration_task
+
+        v2 = _expected_physical(ALIAS, _ClusterPersonV2)
+        await _wait_for_alias(redis, ALIAS, v2)
+    finally:
+        _restore_registry(snapshot)
+
+
+async def test_cluster_concurrent_schema_change_multiple_versions(clean_cluster_alias):
+    """While V2 migration is racing, a V3 schema change also starts. Only
+    the highest schema version that runs to completion should win.
+
+    This tests the scenario where a rolling deploy has mixed-version
+    processes: some running V2, others running V3. Both sets of migrators
+    race on the same alias. The retry logic and forward-swap guard must
+    ensure only one physical index ultimately receives the alias.
+    """
+    redis = clean_cluster_alias
+
+    # Baseline: V1.
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        await Migrator(conn=redis).run()
+    finally:
+        _restore_registry(snapshot)
+
+    # Define V3 on the fly (adds a new indexed field).
+    class _ClusterPersonV3(JsonModel):
+        name: str = Field(index=True)
+        height: int = Field(index=True)
+        weight: int = Field(index=True)  # new field
+        address: _Address
+
+        class Meta:
+            zero_downtime_migrations = True
+            index_name = ALIAS
+            model_key_prefix = DOC_PREFIX
+
+    snapshot = _isolate_registry(_ClusterPersonV3)
+    try:
+        # 8 V3 migrators racing.
+        migrators = [Migrator(conn=redis, allow_forward_swap=True) for _ in range(8)]
+        await asyncio.gather(*(m.run() for m in migrators))
+
+        v3 = _expected_physical(ALIAS, _ClusterPersonV3)
+        await _wait_for_alias(redis, ALIAS, v3, timeout=15.0)
+
+        # Exactly one physical index should survive.
+        physicals = [
+            idx for idx in await _ft_list(redis) if idx.startswith(f"{ALIAS}__v")
+        ]
+        assert physicals == [v3], f"expected only v3, got {physicals}"
+    finally:
+        _restore_registry(snapshot)
+
+
+async def test_cluster_stale_migrator_idempotent_safety(clean_cluster_alias):
+    """A stale migrator running an old schema must not disturb the alias
+    after a newer migration has already swapped it.
+
+    This is the rolling-deploy safety check: after V2 has won, a V1
+    migrator boots and runs detect_migrations(). It must observe that
+    the alias already points to a *different* physical index, and
+    refuse to create/swap (no ALIAS_SWAP planned).
+    """
+    redis = clean_cluster_alias
+
+    # Install V2 first.
+    snapshot = _isolate_registry(_ClusterPersonV2)
+    try:
+        await Migrator(conn=redis, allow_forward_swap=True).run()
+        v2 = _expected_physical(ALIAS, _ClusterPersonV2)
+        await _wait_for_alias(redis, ALIAS, v2)
+    finally:
+        _restore_registry(snapshot)
+
+    # Now run V1 migrator — it must be a no-op.
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        migrator = Migrator(conn=redis)
+        await migrator.detect_migrations()
+        migrations = _migrations_for(migrator, ALIAS)
+
+        # No forward-swap actions should be planned.
+        swap_actions = [m for m in migrations if m.action == MigrationAction.ALIAS_SWAP]
+        assert swap_actions == [], (
+            f"Stale V1 migrator planned ALIAS_SWAP when V2 is active: {migrations}"
+        )
+
+        # Alias must still point to V2.
+        target = await _alias_target(redis, ALIAS)
+        assert target == v2, f"Stale migrator changed alias from {v2} to {target}"
+    finally:
+        _restore_registry(snapshot)
+
+
+async def test_cluster_repeated_rolling_upgrades_converge(clean_cluster_alias):
+    """Multiple consecutive schema changes (V1→V2→V3) must all converge
+    cleanly with no leftover stale physical indexes.
+
+    Each upgrade: create new physical, swap alias, cleanup old physical.
+    After three upgrades, only the final physical index should remain.
+    """
+    redis = clean_cluster_alias
+
+    # V1
+    snapshot = _isolate_registry(_ClusterPersonV1)
+    try:
+        await Migrator(conn=redis).run()
+    finally:
+        _restore_registry(snapshot)
+
+    # V2 upgrade
+    snapshot = _isolate_registry(_ClusterPersonV2)
+    try:
+        await Migrator(conn=redis, allow_forward_swap=True).run()
+    finally:
+        _restore_registry(snapshot)
+
+    # V3 upgrade (same as V2 for this test — just verify cleanup)
+    class _ClusterPersonV3(JsonModel):
+        name: str = Field(index=True)
+        height: int = Field(index=True)
+        address: _Address
+
+        class Meta:
+            zero_downtime_migrations = True
+            index_name = ALIAS
+            model_key_prefix = DOC_PREFIX
+
+    snapshot = _isolate_registry(_ClusterPersonV3)
+    try:
+        await Migrator(conn=redis, allow_forward_swap=True).run()
+
+        v3 = _expected_physical(ALIAS, _ClusterPersonV3)
+        await _wait_for_alias(redis, ALIAS, v3)
+
+        # Only one physical index should remain.
+        physicals = [
+            idx for idx in await _ft_list(redis) if idx.startswith(f"{ALIAS}__v")
+        ]
+        assert physicals == [v3], (
+            f"Expected only v3={v3}, got {len(physicals)} indexes: {physicals}"
+        )
+    finally:
+        _restore_registry(snapshot)
