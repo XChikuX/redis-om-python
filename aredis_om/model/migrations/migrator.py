@@ -164,7 +164,7 @@ async def create_index(
         await conn.ft(index_name).info()
     except redis.ResponseError:
         try:
-            await conn.execute_command(f"ft.create {index_name} {schema}")
+            await conn.execute_command("FT.CREATE", index_name, *schema.split())
         except redis.ResponseError as exc:
             # Race: another process created the index between our
             # existence check and FT.CREATE. Treat that as success, but
@@ -272,7 +272,7 @@ async def create_physical_index(conn, index_name, schema):
             await conn.ft(index_name).info()
         except redis.ResponseError:
             try:
-                await conn.execute_command(f"ft.create {index_name} {schema}")
+                await conn.execute_command("FT.CREATE", index_name, *schema.split())
             except redis.ResponseError as exc:
                 if "Index already exists" not in str(exc):
                     raise
