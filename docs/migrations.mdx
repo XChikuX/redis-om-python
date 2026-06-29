@@ -36,9 +36,174 @@ await Migrator().run()
 4. Plans migrations:
    - **No index, no stored hash** → `CREATE`
    - **Index exists, hash matches** → no-op
-   - **Index exists, hash differs** → `DROP` + `CREATE` (data preserved
-     during the drop — the index is dropped but the underlying hashes /
-     JSON docs are kept and re-indexed by the new index)
+   - **Index exists, hash differs** → `DROP` + `CREATE`
+
+> **Data safety:** the legacy `DROP` uses `FT.DROPINDEX` with
+> `delete_documents=False` (the redis-py default). The index is dropped
+> but the underlying hash / JSON documents are kept, and the new index
+> immediately re-indexes them (both share the same `PREFIX`). There is
+> a brief query-gap window while the index is being rebuilt. For
+> zero-downtime swaps with no query gap, see
+> [zero-downtime migrations](#zero-downtime-migrations-alias-mode)
+> below.
+> Clusters with multiple nodes will need the updated code
+> as well as the new index to be available near-simultaneously
+> during the rebuild.
+
+## Zero-downtime migrations (alias mode)
+
+Alias mode uses `FT.ALIASUPDATE` to swap RediSearch indexes atomically
+without deleting documents and **without any query-gap window**. It is
+opt-in per model via `Meta.zero_downtime_migrations = True`:
+
+```python
+from aredis_om import Field, JsonModel
+
+
+class Member(JsonModel):
+    name: str = Field(index=True)
+    height: int = Field(index=True)   # adding this field used to wipe every Member document
+
+    class Meta:
+        zero_downtime_migrations = True
+```
+
+### How it works
+
+- `Meta.index_name` becomes the **alias name** that your queries target.
+  No code changes are needed — `Member.find(...)` keeps working unchanged.
+- The migrator creates **versioned physical indexes** named
+  `{index_name}__v{hash8}` (first 8 hex chars of the SHA1 of the schema).
+- When the schema changes, a new physical index is built, RediSearch
+  auto-indexes your existing documents into it (because both indexes
+  share the same `PREFIX`), and `FT.ALIASUPDATE` atomically repoints the
+  alias. Underlying JSON / hash keys are never deleted.
+- Old versioned physical indexes are cleaned up with
+  `delete_documents=False`.
+
+### Why two modes at all? The rolling-deploy problem
+
+Suppose you run multiple app instances behind a load balancer and you
+roll out a new version that adds an indexed field. During the rollout,
+v1 and v2 are both running against the same Redis.
+
+**With the default DROP+CREATE path**, both versions fight over the
+single index name: v2 drops + recreates the index, then v1 boots, sees a
+schema mismatch, and drops + recreates it *back*. Queries fail during
+each drop/create window, and the two versions flip-flop the index.
+
+**With alias mode**, each schema version gets its own versioned physical
+index name (`{name}__v{hash8}`), so v1 and v2 never collide. The alias
+is the single source of truth, and `FT.ALIASUPDATE` swaps it atomically.
+
+### Two invocation modes
+
+The migrator has two safety modes, controlled by `allow_forward_swap`:
+
+| Mode | Flag | When to use |
+| --- | --- | --- |
+| **Conservative** (default) | `allow_forward_swap=False` | App boot — safe to invoke on every instance, even during rolling deploys |
+| **Explicit migration** | `allow_forward_swap=True` | Pre-deploy step, when only one version of the app is running |
+
+**Pre-deploy migration step** — run once before rolling out new code:
+
+```python
+from aredis_om import Migrator
+
+await Migrator(allow_forward_swap=True).run()
+```
+
+**App boot** — safe for rolling deploys, runs on every instance:
+
+```python
+await Migrator().run()
+```
+
+### Rolling-deploy safety
+
+The conservative mode prevents a stale instance from undoing a newer
+migration. Once the alias points at a versioned physical index, the
+migrator will **not** create a competing index and swap the alias to it
+— it logs an info message and leaves the alias alone. This covers the
+window where v1 code is still booting after v2 code has already migrated
+forward.
+
+```
+INFO  Alias users points at users__v<new> but target users__v<old> does
+      not exist. Refusing to create+swap because allow_forward_swap=False
+      (rolling-deploy safety). Run the migrator with allow_forward_swap=True
+      as a pre-deploy step to apply this schema change.
+```
+
+All primitive operations (`FT.CREATE`, `FT.ALIASUPDATE`, `FT.DROPINDEX`)
+are idempotent, so multiple app instances racing to migrate the same
+model on boot is safe.
+
+### "Dual-write coordination with application code"
+
+Alias mode preserves your data automatically for **additive** schema
+changes — adding a new indexed field, adding a new model. The new index
+is a strict superset of the old, so the swap just works.
+
+For **non-additive** changes (removing a field, changing a field's
+indexed type), the index swap is only half the job: your *application
+code* also needs to handle the transition. This is the classic
+**expand/contract** pattern, sometimes called "dual-write":
+
+1. **Expand** — deploy code that writes *both* the old and new field
+   shape. Both old and new readers can work.
+2. **Migrate** — run the alias swap. The new index picks up the new
+   shape; the old index is cleaned up.
+3. **Contract** — deploy code that only writes the new shape.
+
+The migrator cannot do this for you because it doesn't know your read
+paths. For pure field additions (the common case, and the one that
+originally caused data loss), no dual-write is needed.
+
+### Adopting an existing legacy index
+
+If you have been running the default DROP+CREATE migrator and then set
+`zero_downtime_migrations = True` for the first time, the migrator detects the
+legacy physical index (named exactly `Meta.index_name`), builds a
+versioned physical index alongside it, drops the legacy index with
+`delete_documents=False`, and creates the alias pointing at the new
+index. Your documents survive the adoption. There is a brief window
+while the legacy index is dropped and the alias is created where queries
+to `Meta.index_name` will fail — this is a one-time cost on first
+adoption.
+
+### Downsides of alias mode
+
+- **Memory / CPU**: during the swap window, both physical indexes are
+  live, so indexing memory and CPU roughly double briefly. This is the
+  cost of zero downtime.
+- **Adoption window**: the *first* time you switch from legacy to alias
+  mode there is a one-time brief query-failure window (see above).
+- **Non-additive schema changes** still need expand/contract dual-write
+  in your application code (see the dedicated section above).
+- **Redis Cluster**: `FT.ALIASUPDATE` is atomic per shard. On Redis 8+
+  the index is cluster-aware and the swap propagates automatically.
+
+### Migration action reference
+
+Alias mode uses these action types (visible in dry-run output and the
+history records):
+
+| Action | Description |
+| --- | --- |
+| `ALIAS_CREATE_INDEX` | Create a versioned physical index |
+| `ALIAS_LINK` | Point the alias at a freshly-created physical index (fresh install) |
+| `ALIAS_ADOPT` | Drop a legacy physical index and alias the new one (first opt-in) |
+| `ALIAS_SWAP` | Atomically repoint an existing alias at a new physical index |
+| `ALIAS_CLEANUP` | Drop stale versioned physical indexes (`delete_documents=False`) |
+
+> **Note on `FT.ALIASADD` / `FT.ALIASDEL`:** the migrator uses
+> `FT.ALIASUPDATE` exclusively because it is idempotent — it creates
+> the alias if absent, or repoints it if present. `FT.ALIASADD` fails if
+> the alias already exists (useful for strict create-only semantics) and
+> `FT.ALIASDEL` removes an alias without touching the underlying index.
+> The migrator never needs either: `ALIASUPDATE` covers both fresh-link
+> and swap, and stale physical indexes are dropped with `FT.DROPINDEX`.
 
 ## Detect vs. run
 
@@ -195,4 +360,6 @@ how to define an embedded model.
 ## Reference
 
 - Source: [`aredis_om/model/migrations/migrator.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/migrations/migrator.py)
-- Tests: [`tests/test_migrations.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_migrations.py), [`tests/test_regressions.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_regressions.py)
+- Alias migration tests: [`tests/test_migrator_alias.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_migrator_alias.py)
+- Race / flakiness regression tests: [`tests/test_migrator_index_flakiness.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_migrator_index_flakiness.py)
+- Regressions: [`tests/test_regressions.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_regressions.py)

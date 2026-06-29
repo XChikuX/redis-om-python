@@ -60,6 +60,7 @@ The current release includes:
 - Embedded list containment queries (`Workspace.users << User(name="John")`)
 - Comprehensive token escaping for TAG and TEXT fields
 - GEO queries with `Coordinates` / `GeoFilter`, plus raw `GEO*` access — see [`docs/geo_queries.mdx`](docs/geo_queries.mdx)
+- **Zero-downtime schema migrations** via `FT.ALIASUPDATE` — opt in with `Meta.zero_downtime_migrations = True` to swap RediSearch indexes atomically without deleting documents and with no query-gap window; rolling-deploy-safe conservative mode plus explicit `allow_forward_swap=True` pre-deploy step — see [`docs/migrations.mdx`](docs/migrations.mdx)
 - **AtomicCounter** backed by Redis 8.8 `INCREX` — see [`docs/atomic_counter.mdx`](docs/atomic_counter.mdx)
 - **RedisArray** for Redis 8.8+ sparse, index-addressable arrays — see [`docs/redis_arrays.mdx`](docs/redis_arrays.mdx)
 - **Hash field TTL** (`HEXPIRE` / `HGETEX` / `HGETDEL` / `HSETEX`) on `HashModel` for Redis 7.4+ / 8.0+ — see [`docs/hash_field_ttl.mdx`](docs/hash_field_ttl.mdx)

@@ -68,6 +68,15 @@ POST_SYNC_FIXES = {
         "loop = asyncio.get_running_loop()\n    deadline = loop.time() + timeout\n    last_results: list = []\n    while loop.time() < deadline:":
             "deadline = time.monotonic() + timeout\n    last_results: list = []\n    while time.monotonic() < deadline:",
     },
+    # The alias migrator tests define a local ``_wait_for_index_sync`` helper
+    # that uses ``asyncio.get_event_loop().time()``. The sync mirror has no
+    # event loop, so rewrite it to ``time.monotonic()`` (same treatment the
+    # migrator module itself gets above).
+    "tests_sync/test_migrator_alias.py": {
+        "import asyncio": "import time",
+        "asyncio.get_event_loop().time()": "time.monotonic()",
+        "asyncio.sleep(": "time.sleep(",
+    },
     # py_test_mark_asyncio becomes py_test_mark_sync in the mirror; its
     # body ``return pytest.mark.asyncio(f)`` must become ``return f`` so
     # sync test functions stay non-asyncio (unasync does not rewrite the

@@ -133,8 +133,7 @@ class Member(JsonModel):
     first_name: str = Field(index=True)
     bio: str = Field(index=True, full_text_search=True, default="")
 
-# Raises a QueryNotSupportedError because we did not make
-# `first_name` indexed!
+# Will work now that `first_name` is indexed
 Member.find(Member.first_name == "Andrew").all()
 ```
 
