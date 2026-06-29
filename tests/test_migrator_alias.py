@@ -35,7 +35,15 @@ from aredis_om.model.migrations.migrator import (
 from aredis_om.model.model import model_registry
 
 
-pytestmark = [pytest.mark.asyncio]
+# These tests share fixed index names (``alias_person_test`` etc.)
+# and their fixtures drop each other's indexes. Under ``pytest -n auto``
+# with ``--dist=loadgroup`` they must run on a single worker, otherwise
+# parallel workers race on the same alias and surface spurious
+# ``SEARCH_INDEX_NOT_FOUND`` errors. Group them together here.
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="migrator"),
+]
 
 
 # ── Models ───────────────────────────────────────────────────────────

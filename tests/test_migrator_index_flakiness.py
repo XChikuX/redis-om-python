@@ -32,7 +32,14 @@ from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
 # and run ``scripts/flaky_bench.sh`` to reproduce the race explicitly.
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group(name="migrator_flakiness"),
+    # Share a single xdist worker with the other migrator test files.
+    # ``Migrator().run()`` with no model filter migrates every model in
+    # the global registry, and module-level models defined in
+    # ``test_migrator_alias.py`` (e.g. ``_PersonV1``) use fixed index
+    # names like ``alias_person_test``. If these files run on separate
+    # workers they race on the same alias and surface spurious
+    # ``SEARCH_INDEX_NOT_FOUND`` errors.
+    pytest.mark.xdist_group(name="migrator"),
 ]
 
 
@@ -51,9 +58,8 @@ class _FlakyUser(JsonModel):
     address: _FlakyAddress
     interests: List[str] = Field(index=True)
     bio: str = Field(default="", index=True, full_text_search=True)
-
-
-# ── Fixtures ──────────────────────────────────────────────────────────
+from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
+from aredis_om.model.model import model_registry
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -63,8 +69,23 @@ async def _ensure_flaky_indexes():
     Each xdist worker has its own Python process; running ``Migrator().run()``
     here means subsequent tests in this file can rely on the index existing
     without re-creating it.
+
+    The migrator walks the *global* ``model_registry``. On a shared xdist
+    worker this file is grouped with ``test_migrator_alias.py``, whose
+    module-level ``_PersonV1``/``_PersonV2`` models are also registered.
+    Migrating those here would create ``alias_person_test__v*`` physical
+    indexes that pollute the alias tests' assertions. Snapshot the
+    registry, migrate *only* ``_FlakyUser``, then restore so other
+    models are left untouched.
     """
-    await Migrator().run()
+    snapshot = dict(model_registry)
+    model_registry.clear()
+    model_registry[f"{_FlakyUser.__module__}.{_FlakyUser.__qualname__}"] = _FlakyUser
+    try:
+        await Migrator().run()
+    finally:
+        model_registry.clear()
+        model_registry.update(snapshot)
     yield
 
 

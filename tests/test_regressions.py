@@ -260,6 +260,7 @@ async def test_cluster_create_index_targets_one_random_node(monkeypatch):
 
 
 @pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@pytest.mark.xdist_group(name="migrator")
 @py_test_mark_asyncio
 async def test_aggregate_ct_handles_decode_response_strings(key_prefix, redis):
     class BaseJsonModel(JsonModel, abc.ABC):
@@ -381,6 +382,7 @@ def test_embedded_model_instantiation_with_stale_pk_in_dict():
 
 
 @pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@pytest.mark.xdist_group(name="migrator")
 @py_test_mark_asyncio
 async def test_migrator_dry_run_does_not_apply_migrations(key_prefix, redis, capsys):
     """``Migrator.run(dry_run=True)`` prints the plan without executing it."""
@@ -413,6 +415,7 @@ async def test_migrator_dry_run_does_not_apply_migrations(key_prefix, redis, cap
 
 
 @pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@pytest.mark.xdist_group(name="migrator")
 @py_test_mark_asyncio
 async def test_migrator_records_history_in_redis(key_prefix, redis):
     """``Migrator.run()`` appends a JSON record per applied migration."""
@@ -444,6 +447,7 @@ async def test_migrator_records_history_in_redis(key_prefix, redis):
 
 
 @pytest.mark.skipif(not HAS_REDISEARCH, reason="requires RediSearch")
+@pytest.mark.xdist_group(name="migrator")
 @py_test_mark_asyncio
 async def test_migrator_record_history_can_be_disabled(key_prefix, redis):
     """``record_history=False`` skips writing to the history list."""
