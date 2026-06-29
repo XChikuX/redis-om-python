@@ -24,7 +24,7 @@
 
 Install the package from PyPI as `pyredis-om`, then import `aredis_om` for the async API or `redis_om` for the generated sync mirror. This release targets **Pydantic v2**.
 
-📚 **The full documentation lives in [`docs/`](docs/index.mdx).** This README is just the essentials.
+📚 **The full documentation lives in [`docs/`](docs/index.mdx), also at [`Docs Website`](https://docs.page/XChikuX/redis-om-python).** This README is just the essentials.
 
 <details>
   <summary><strong>Table of contents</strong></summary>
