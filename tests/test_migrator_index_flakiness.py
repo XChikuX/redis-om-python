@@ -23,6 +23,7 @@ import pytest
 import pytest_asyncio
 
 from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
+from aredis_om.model.model import model_registry
 
 
 # These tests deliberately exercise races that only surface under
@@ -58,8 +59,6 @@ class _FlakyUser(JsonModel):
     address: _FlakyAddress
     interests: List[str] = Field(index=True)
     bio: str = Field(default="", index=True, full_text_search=True)
-from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
-from aredis_om.model.model import model_registry
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -93,9 +92,19 @@ async def _ensure_flaky_indexes():
 async def _cleanup_keys(key_prefix, _ensure_flaky_indexes):
     """Remove any documents left over from previous tests in this file.
 
-    Tolerates a missing index because another worker may have started but
-    not yet finished running ``Migrator().run()`` when this fixture fires.
+    Also isolate the global ``model_registry`` to just ``_FlakyUser`` for
+    the duration of each test. Several tests here call a bare
+    ``Migrator().run()`` which migrates *every* registered model; without
+    isolation that would create ``alias_person_test__v*`` physical
+    indexes (from the module-level models in ``test_migrator_alias.py``
+    that share this xdist worker) and pollute the alias tests' state.
     """
+    # Snapshot and narrow the registry so bare Migrator().run() calls
+    # only ever touch _FlakyUser.
+    registry_snapshot = dict(model_registry)
+    model_registry.clear()
+    model_registry[f"{_FlakyUser.__module__}.{_FlakyUser.__qualname__}"] = _FlakyUser
+
     try:
         old_pks = [pk async for pk in await _FlakyUser.all_pks()]
     except Exception:
@@ -105,7 +114,11 @@ async def _cleanup_keys(key_prefix, _ensure_flaky_indexes):
             await _FlakyUser.delete(pk)
         except Exception:
             pass
-    yield
+    try:
+        yield
+    finally:
+        model_registry.clear()
+        model_registry.update(registry_snapshot)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
