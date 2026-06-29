@@ -79,6 +79,14 @@ POST_SYNC_FIXES = {
         '    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""\n':
             '    """No-op marker for sync tests (mirrors py_test_mark_asyncio)."""\n',
     },
+    # The RESP3 bytes-key regression tests intentionally construct
+    # ``redis.asyncio.Redis`` directly so they exercise the bytes-keys code
+    # path.  In the sync mirror the asyncio import must be replaced with the
+    # sync redis module so the generated tests exercise the same wire shapes
+    # without awaiting coroutines.
+    "tests_sync/test_from_redis_resp3.py": {
+        "from redis import asyncio as aioredis": "import redis as aioredis",
+    },
 }
 
 # Deduplicate `import pytest` lines that unasync may produce when

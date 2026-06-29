@@ -22,6 +22,8 @@ from aredis_om import Field, HashModel, JsonModel
 from aredis_om.connections import get_redis_connection
 from tests._sync_redis import has_redisearch as sync_has_redisearch
 
+from .conftest import py_test_mark_asyncio
+
 HAS_REDISEARCH = sync_has_redisearch()
 
 pytestmark = pytest.mark.skipif(
@@ -327,7 +329,7 @@ class TestLiveRespParity:
             elif isinstance(raw, list) and raw and raw[0] > 0:
                 break
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp2_decoded_works(self):
         """RESP2 wire + decode_responses=True (the default) is a flat list.
 
@@ -347,7 +349,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp2_bytes_works(self):
         """RESP2 wire + decode_responses=False produces bytes values inside
         the flat list.  The historical ``to_string`` helper already handled
@@ -373,7 +375,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp3_decoded_works(self):
         """RESP3 wire + decode_responses=True (the default)."""
         db = get_redis_connection(url="redis://localhost:6380?decode_responses=True")
@@ -389,7 +391,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp3_bytes_works_regression(self):
         """RESP3 wire + decode_responses=False (the user's exact setup).
 
@@ -413,7 +415,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp3_bytes_empty_results_regression(self):
         """The exact empty-results payload from the user's bug report."""
         from redis import asyncio as aioredis
@@ -431,7 +433,7 @@ class TestLiveRespParity:
         # Before the fix: KeyError: 2.
         assert M.from_redis(raw, protocol=3) == []
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_resp2_bytes_empty_results(self):
         """RESP2 with empty results is just ``[0]``; confirm parity."""
         from redis import asyncio as aioredis
@@ -480,7 +482,7 @@ class _E2EUser(HashModel):
         exec(code, ns)
         return ns["_E2EUser"]
 
-    @pytest.mark.asyncio
+    @py_test_mark_asyncio
     async def test_find_all_with_decode_false_resp3(self, raw_user_model):
         from aredis_om import Migrator
 
