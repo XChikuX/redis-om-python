@@ -242,7 +242,7 @@ Current local coverage baseline: **88% overall** across `aredis_om/` and the gen
 
 ## 📝 License
 
-Redis OM uses the [MIT license][license-url].
+Redis OM uses the [LGPL v3+ license][license-url] with some code re-used under the [MIT license][redis-license-url].
 
 <!-- Badges -->
 
@@ -252,6 +252,7 @@ Redis OM uses the [MIT license][license-url].
 [ci-url]: https://github.com/XChikuX/redis-om-python/actions
 [license-image]: https://img.shields.io/github/license/XChikuX/redis-om-python?style=flat-square
 [license-url]: LICENSE
+[redis-license-url]: LICENSE.OLD
 [redisearch-url]: https://redis.io/docs/stack/search/
 [redis-json-url]: https://redis.io/docs/stack/json/
 [redis-enterprise-url]: https://redis.com/redis-enterprise/
