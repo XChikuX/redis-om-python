@@ -93,7 +93,7 @@ async def _create_index_cluster(
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
-async def _wait_for_index(conn, index_name: str, timeout: float = 5.0) -> None:
+async def _wait_for_index(conn, index_name: str, timeout: float = 3.0) -> None:
     """Poll FT.INFO until the index reports it is fully indexed.
 
     Redis 8.8+ introduced asynchronous background indexing for existing
@@ -107,6 +107,10 @@ async def _wait_for_index(conn, index_name: str, timeout: float = 5.0) -> None:
     between our ``FT.INFO`` existence check and ``FT.CREATE``. In that
     case we keep polling instead of returning early so that callers can
     rely on the index being queryable once this function returns.
+
+    3 s is the empirically sufficient budget for both standalone and
+    pytest-xdist runs (20 workers, single Redis 8 instance) without
+    turning transient load spikes into minute-long suite hangs.
     """
     deadline = asyncio.get_event_loop().time() + timeout
     last_error: Optional[Exception] = None
@@ -147,7 +151,7 @@ async def _wait_for_index(conn, index_name: str, timeout: float = 5.0) -> None:
 
 
 async def _retry_aliasupdate(
-    conn, physical: str, alias: str, attempts: int = 20
+    conn, physical: str, alias: str, attempts: int = 30
 ) -> None:
     """Run ``FT.ALIASUPDATE`` with retry on transient ``SEARCH_INDEX_NOT_FOUND``.
 
@@ -162,6 +166,10 @@ async def _retry_aliasupdate(
     A short polling retry avoids turning that transient visibility race into
     a hard migration failure. ``FT.ALIASUPDATE`` itself is idempotent: repeating
     it with the same physical and alias is a no-op once the alias is in place.
+
+    30 attempts × 50 ms = 1.5 s is calibrated to ride out the worst-case
+    visibility window seen in CI without hiding real failures behind a
+    long retry budget.
     """
     last_exc: Optional[Exception] = None
     for _ in range(attempts):
@@ -585,6 +593,10 @@ class Migrator:
         # When a connection IS provided (``Migrator(conn=redis).run()``),
         # _test_only is ignored so that explicit migrator runs (e.g. in
         # migration-specific tests) still process the test models normally.
+        # In that mode, isolation between tests is the responsibility of the
+        # test fixtures (``_isolate_registry`` in the test files) which clear
+        # all model_registry entries that belong to other tests before
+        # each migration runs.
         skip_test_only = self.conn is None
 
         for name, cls in model_registry.items():

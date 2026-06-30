@@ -122,7 +122,17 @@ class _ClusterPersonV2(JsonModel):
 
 _ALL_TEST_MODELS: Dict[str, Type] = {}
 for _key, _val in list(model_registry.items()):
-    if getattr(_val, "__name__", "").startswith("_ClusterPerson"):
+    _name = getattr(_val, "__name__", "")
+    # Capture every test-prefixed model that may be registered by sibling
+    # test files on the same xdist worker. ``test_migrator_alias.py`` and
+    # this file are both collected on every worker, so we must isolate
+    # against both prefixes to avoid one test's models leaking into the
+    # other's migrator runs.
+    if (
+        _name.startswith("_Person")
+        or _name.startswith("_LegacyModel")
+        or _name.startswith("_ClusterPerson")
+    ):
         _ALL_TEST_MODELS[cast(str, _key)] = _val
 
 
@@ -212,11 +222,27 @@ async def _drop_alias_quietly(conn, name: str):
 
 
 async def _drop_everything(conn, alias: str, doc_prefix: str):
-    """Drop the alias, every related physical index, and document keys."""
-    await _drop_alias_quietly(conn, alias)
-    for idx in await _ft_list(conn):
-        if idx == alias or idx.startswith(f"{alias}__v"):
+    """Drop the alias, every related physical index, and document keys.
+
+    Loops until the alias and physical indexes are gone: cluster-wide
+    propagation of ``FT.DROPINDEX`` is asynchronous, so a freshly-dropped
+    index can reappear in ``FT._LIST`` for a short window before
+    disappearing permanently. Re-checking after a brief pause keeps
+    consecutive tests isolated.
+    """
+    prefix = f"{alias}__v"
+    deadline = asyncio.get_event_loop().time() + 10.0
+    while asyncio.get_event_loop().time() < deadline:
+        await _drop_alias_quietly(conn, alias)
+        all_indexes = await _ft_list(conn)
+        matching = [
+            idx for idx in all_indexes if idx == alias or idx.startswith(prefix)
+        ]
+        if not matching:
+            break
+        for idx in matching:
             await _drop_index_quietly(conn, idx)
+        await asyncio.sleep(0.05)
     async for key in conn.scan_iter(match=f"*{doc_prefix}*"):
         try:
             await conn.delete(key)

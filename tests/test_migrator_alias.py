@@ -144,12 +144,20 @@ class _LegacyModelV2(JsonModel):
 
 
 # Track the qualname-keyed registry entries for each model so tests can
-# isolate themselves by clearing siblings.
+# isolate themselves by clearing siblings. We snapshot every model whose
+# name starts with an underscore (the convention used by every test
+# model in this file and in sibling files like
+# ``test_cluster_migrator_alias.py``), regardless of whether we recognise
+# the name up-front. That guarantees that a module-level model from one
+# test file cannot leak into another test file's migrator runs on the
+# same xdist worker.
+_TEST_MODEL_PREFIXES = ("_Person", "_LegacyModel", "_ClusterPerson")
+
+
 _ALL_TEST_MODELS: Dict[str, Type] = {}
 for _key, _val in list(model_registry.items()):
-    if getattr(_val, "__name__", "").startswith("_Person") or getattr(
-        _val, "__name__", ""
-    ).startswith("_LegacyModel"):
+    _name = getattr(_val, "__name__", "")
+    if any(_name.startswith(p) for p in _TEST_MODEL_PREFIXES):
         _ALL_TEST_MODELS[cast(str, _key)] = _val
 
 
@@ -225,13 +233,30 @@ async def _drop_alias_quietly(conn, name: str):
 
 
 async def _drop_everything(conn, alias: str, doc_prefix: str = ""):
-    """Drop the alias and every related physical index + document keys."""
-    await _drop_alias_quietly(conn, alias)
-    all_indexes = await _ft_list(conn)
+    """Drop the alias and every related physical index + document keys.
+
+    Iterates ``FT._LIST`` multiple times because ``FT.DROPINDEX`` may take
+    a moment to propagate the removal across all internal structures of the
+    search module — a freshly-created index from a previous test that has
+    not yet propagated to the ``FT._LIST`` view used by this helper can
+    otherwise leak into the next test. Looping until the alias and physical
+    indexes are gone (with a short timeout) keeps tests isolated even when
+    the previous run left indexes behind.
+    """
     prefix = f"{alias}__v"
-    for idx in all_indexes:
-        if idx == alias or idx.startswith(prefix):
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline:
+        await _drop_alias_quietly(conn, alias)
+        all_indexes = await _ft_list(conn)
+        matching = [
+            idx for idx in all_indexes if idx == alias or idx.startswith(prefix)
+        ]
+        if not matching:
+            break
+        for idx in matching:
             await _drop_index_quietly(conn, idx)
+        # Brief pause to let search module bookkeeping catch up before re-listing.
+        await asyncio.sleep(0.05)
     # Delete underlying document keys.
     if doc_prefix:
         keys = []

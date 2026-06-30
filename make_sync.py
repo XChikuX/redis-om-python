@@ -65,8 +65,7 @@ POST_SYNC_FIXES = {
     "tests_sync/test_strawberry_integration.py": {
         "import asyncio": "import time",
         "asyncio.sleep(": "time.sleep(",
-        "loop = asyncio.get_running_loop()\n    deadline = loop.time() + timeout\n    last_results: list = []\n    while loop.time() < deadline:":
-            "deadline = time.monotonic() + timeout\n    last_results: list = []\n    while time.monotonic() < deadline:",
+        "loop = asyncio.get_running_loop()\n    deadline = loop.time() + timeout\n    last_results: list = []\n    while loop.time() < deadline:": "deadline = time.monotonic() + timeout\n    last_results: list = []\n    while time.monotonic() < deadline:",
     },
     # The alias migrator tests define a local ``_wait_for_index_sync`` helper
     # that uses ``asyncio.get_event_loop().time()``. The sync mirror has no
@@ -85,8 +84,7 @@ POST_SYNC_FIXES = {
         "return pytest.mark.asyncio(f)": "return f",
         # The async docstring says "Returns pytest.mark.asyncio(f)"; in the
         # sync mirror that's no longer accurate.
-        '    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""\n':
-            '    """No-op marker for sync tests (mirrors py_test_mark_asyncio)."""\n',
+        '    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""\n': '    """No-op marker for sync tests (mirrors py_test_mark_asyncio)."""\n',
     },
     # The RESP3 bytes-key regression tests intentionally construct
     # ``redis.asyncio.Redis`` directly so they exercise the bytes-keys code
@@ -107,9 +105,7 @@ _DEDUPED_IMPORT_PYTEST = "\nimport pytest\n"
 def _dedupe_import_pytest(content: str) -> str:
     """Remove consecutive duplicate `import pytest` lines from generated files."""
     while _DUPLICATE_IMPORT_PYTEST in content:
-        content = content.replace(
-            _DUPLICATE_IMPORT_PYTEST, _DEDUPED_IMPORT_PYTEST
-        )
+        content = content.replace(_DUPLICATE_IMPORT_PYTEST, _DEDUPED_IMPORT_PYTEST)
     return content
 
 
@@ -130,7 +126,11 @@ def _fix_asyncio_sleep(content: str) -> str:
     still_used = False
     for line in content.splitlines():
         stripped = line.lstrip()
-        if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+        if (
+            stripped.startswith("#")
+            or stripped.startswith('"""')
+            or stripped.startswith("'''")
+        ):
             continue
         if "asyncio." in line:
             still_used = True

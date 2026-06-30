@@ -69,3 +69,15 @@ def cleanup_model_registry():
     for key in list(model_registry):
         if key not in existing_models:
             model_registry.pop(key, None)
+        else:
+            # Module-level test models (e.g. ``tests.test_migrator_alias._PersonV1``)
+            # are also stripped out between tests so that a bare
+            # ``Migrator(conn=redis).run()`` in an unrelated test does not pick
+            # them up and try to manage their indexes against the test's
+            # single-node Redis. The fixtures that need them re-register the
+            # class via ``_isolate_registry`` before each test runs.
+            str_key = str(key)
+            if str_key.startswith("tests.test_migrator_alias.") or str_key.startswith(
+                "tests.test_cluster_migrator_alias."
+            ):
+                model_registry.pop(key, None)
