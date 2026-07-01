@@ -1308,3 +1308,47 @@ async def test_optional_bytes_field(key_prefix, redis):
     retrieved2 = await OptionalBinaryModel.get(doc2.pk)
     assert retrieved2.name == "binary_value"
     assert retrieved2.data == binary_content
+
+
+@py_test_mark_asyncio
+async def test_configurable_key_separator(key_prefix):
+    """``Meta.key_separator`` overrides the default ``":"`` in index_name."""
+
+    class DefaultSeparatorModel(HashModel):
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "sep-default"
+
+    assert DefaultSeparatorModel._meta.key_separator == ":"
+    assert DefaultSeparatorModel._meta.index_name == f"{key_prefix}:sep-default:index"
+
+    class CustomSeparatorModel(HashModel):
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "sep-custom"
+            key_separator = "/"
+
+    assert CustomSeparatorModel._meta.key_separator == "/"
+    assert CustomSeparatorModel._meta.index_name == f"{key_prefix}/sep-custom/index"
+
+
+@py_test_mark_asyncio
+async def test_configurable_key_separator_inherited(key_prefix):
+    """Subclasses inherit the parent ``Meta.key_separator``."""
+
+    class Parent(HashModel):
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "parent"
+            key_separator = "."
+
+    class Child(Parent):
+        class Meta:
+            model_key_prefix = "child"
+
+    assert Child._meta.key_separator == "."
+    assert Child._meta.index_name == f"{key_prefix}.child.index"

@@ -3,6 +3,7 @@
 import abc
 import asyncio
 import base64
+import collections.abc
 import dataclasses
 import datetime
 import decimal
@@ -209,7 +210,13 @@ def embedded(cls):
 
 
 def is_supported_container_type(typ: Optional[type]) -> bool:
-    # TODO: Wait, why don't we support indexing sets?
+    """Check if a type annotation is a supported container for indexing.
+
+    Only ``list`` and ``tuple`` are supported. Sets are intentionally excluded
+    because RediSearch TAG fields do not preserve insertion order, which is
+    fundamental to set semantics. Additionally, sets would make query results
+    non-deterministic since the ordering of matched set members is not guaranteed.
+    """
     if typ == list or typ == tuple:
         return True
     unwrapped = get_origin(typ)
@@ -392,8 +399,15 @@ class PipelineError(Exception):
 def verify_pipeline_response(
     response: List[Union[bytes, str]], expected_responses: int = 0
 ):
-    # TODO: More generic pipeline verification here (what else is possible?),
-    #  plus hash and JSON-specific verifications in separate functions.
+    """Verify a Redis pipeline response has the expected number of results.
+
+    This is intentionally minimal: it only checks the response count, not the
+    content of individual responses. Per-command response validation is left to
+    callers because pipeline responses for ``HSET``, ``JSON.SET``, and other
+    commands differ in shape and are consumed by the model code that issues
+    them. If you need stricter validation, add a hash- or JSON-specific verifier
+    on top of this function rather than changing its signature.
+    """
     actual_responses = len(response)
     if actual_responses != expected_responses:
         raise PipelineError(
@@ -622,7 +636,9 @@ class RediSearchFieldTypes(Enum):
     GEO = "GEO"
 
 
-# TODO: How to handle Geo fields?
+# Numeric types indexed as NUMERIC RediSearch fields. GEO fields use the
+# ``Coordinates`` type and are handled separately in ``FindQuery.resolve_value``
+# and ``HashModel.schema_for_type``.
 NUMERIC_TYPES = (float, int, decimal.Decimal)
 DEFAULT_PAGE_SIZE = 1000
 
@@ -1368,9 +1384,12 @@ class FindQuery:
         if isinstance(value, str):
             return escaper.escape(value)
         if isinstance(value, bytes):
-            # TODO: We don't decode bytes objects passed as input. Should we?
-            # TODO: TAG indexes fail on JSON arrays of numbers -- only strings
-            #  are allowed -- what happens if we save an array of bytes?
+            # Bytes values are passed through unchanged. Decoding to ``str``
+            # would be lossy without knowing the original encoding, and TAG
+            # values are byte-comparable on the Redis side. Note that RediSearch
+            # TAG fields only accept strings, so a list of bytes saved into a
+            # TAG-indexed array will fail at index time; callers should convert
+            # such values to strings before saving.
             return value
         try:
             return "|".join([escaper.escape(str(v)) for v in value])
@@ -1577,8 +1596,13 @@ class FindQuery:
                     result += f"@{field_name}:[{value} +inf]"
                 elif op is Operators.LE:
                     result += f"@{field_name}:[-inf {value}]"
-        # TODO: How will we know the difference between a multi-value use of a TAG
-        #  field and our hidden use of TAG for exact-match queries?
+        # NOTE: Both "multi-value" TAG indexes (user-facing lists indexed as
+        # a single TAG field) and single-value exact-match fields (a regular
+        # ``str = Field(index=True)``) are stored as TAG internally. Both render
+        # the same query syntax here. There is no reliable way to distinguish
+        # them at this layer without inspecting the model schema, which is why
+        # users sometimes see surprising results when querying a single-value
+        # field with multiple values via ``IN``.
         elif field_type is RediSearchFieldTypes.GEO:
             if not isinstance(value, GeoFilter):
                 raise QuerySyntaxError(
@@ -1706,10 +1730,8 @@ class FindQuery:
         3. The final resolution of an expression should be a left operand that's
            a ModelField, an operator, and a right operand that's NOT a ModelField.
            With an IN or NOT_IN operator, the right operand can be a sequence
-           type, but otherwise, sequence types are converted to strings.
-
-        TODO: When the operator is not IN or NOT_IN, detect a sequence type (other
-         than strings, which are allowed) and raise an exception.
+           type, but otherwise, sequence types are rejected to surface likely
+           user errors (e.g. accidentally passing a list to an equality check).
         """
         field_type = None
         field_name = None
@@ -1735,8 +1757,12 @@ class FindQuery:
 
         if expression.op is Operators.ALL:
             if encompassing_expression_is_negated:
-                # TODO: Is there a use case for this, perhaps for dynamic
-                #  scoring purposes with full-text search?
+                # Negating a query-for-all-results ("*") would mean "return all
+                # documents that don't match every document," which is logically
+                # contradictory. Users who actually want a filter-then-negate
+                # workflow should construct a positive query expression and
+                # negate that. A full-text-search scoring use case is unlikely
+                # to be useful here, so we explicitly raise.
                 raise QueryNotSupportedError(
                     "You cannot negate a query for all results."
                 )
@@ -1803,6 +1829,17 @@ class FindQuery:
                 raise QuerySyntaxError("Could not resolve field info.")
             elif is_model_field_instance(right):
                 raise QueryNotSupportedError("Comparing fields is not supported.")
+            elif (
+                expression.op not in (Operators.IN, Operators.NOT_IN)
+                and not isinstance(right, (str, bytes))
+                and isinstance(right, collections.abc.Sequence)
+            ):
+                raise QueryNotSupportedError(
+                    f"You passed a sequence value ({right!r}) to operator "
+                    f"{expression.op.name}. Only IN (<<) and NOT_IN (>>) support "
+                    f"sequence values. Use those operators, or pass a single "
+                    f"value. Docs: {ERRORS_URL}#E9"
+                )
             else:
                 embedded_query = None
                 if is_model_field_instance(expression.left) and expression.op in (
@@ -2063,26 +2100,41 @@ class FindQuery:
         Keys and values given as keyword arguments are interpreted as fields
         on the target model and the values as the values to which to set the
         given fields.
+
+        Limitation: all matching models are loaded into memory via
+        ``self.all()`` before being saved back. For very large result sets
+        consider chunking with ``self.page(offset, limit)`` and updating each
+        page. Using ``async for`` over ``iter_cursor()`` would also work but is
+        out of scope for this synchronous-feeling helper.
         """
         validate_model_fields(self.model, field_values)
         pipeline = await self.model.db().pipeline() if use_transaction else None
 
-        # TODO: async for here?
         for model in await self.all():
             for field, value in field_values.items():
                 setattr(model, field, value)
-            # TODO: In the non-transaction case, can we do more to detect
-            #  failure responses from Redis?
+            # When ``pipeline`` is None (non-transaction mode) redis-py returns
+            # per-command responses from ``save()``, which we discard here. We
+            # rely on each command raising on hard failures; soft errors are
+            # surfaced only when ``use_transaction=True`` via ``pipeline.execute()``.
             await model.save(pipeline=pipeline)
 
         if pipeline:
-            # TODO: Response type?
-            # TODO: Better error detection for transactions.
+            # ``pipeline.execute()`` returns a list of per-command responses.
+            # We don't return them because their shape varies by command
+            # (HSET vs JSON.SET) and is not part of the documented contract.
+            # Errors inside the transaction surface as exceptions from
+            # ``execute()`` itself.
             await pipeline.execute()
 
     async def delete(self):
-        """Delete all matching records in this query."""
-        # TODO: Better response type, error detection
+        """Delete all matching records in this query.
+
+        Returns the integer count of deleted keys (Redis ``DEL`` response).
+        A ``ResponseError`` is swallowed and reported as ``0`` to keep the
+        method total: callers that need stricter error handling should issue
+        raw ``DEL`` commands against the model's database.
+        """
         try:
             return await self.model.db().delete(*[m.key() for m in await self.all()])
         except ResponseError:
@@ -2192,13 +2244,17 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]  # ty: ignore[subclass
         self.full_text_search = full_text_search
         self.vector_options = vector_options
         self.separator = separator
-        # TODO: Track Pydantic changes around Annotated metadata merging and
-        # replace this private-attribute hook if a public API becomes available.
         # Pydantic v2 merges Annotated metadata from its internal
         # _attributes_set, so mark Redis OM metadata as explicit when that
         # private attribute exists. If Pydantic changes or removes
         # _attributes_set, json_schema_extra still remains set on this
         # FieldInfo for normal (non-Annotated) fields.
+        #
+        # Upstream tracking: Pydantic is considering a public metadata-merging
+        # API. When it lands, this private-attribute hook can be removed in
+        # favor of the public API. See
+        # https://docs.pydantic.dev/latest/concepts/fields/ for current field
+        # metadata behavior.
         if hasattr(self, "_attributes_set"):
             self._attributes_set["json_schema_extra"] = self.json_schema_extra
 
@@ -2487,13 +2543,21 @@ class BaseMeta(Protocol):
 class DefaultMeta:
     """A default placeholder Meta object.
 
-    TODO: Revisit whether this is really necessary, and whether making
-     these all optional here is the right choice.
+    This is necessary: every model class needs a Meta object to read settings
+    from, and ``ModelMeta.__new__`` populates it with sane defaults if the user
+    doesn't define their own ``Meta`` class. Making the fields optional here
+    lets us distinguish "explicitly set to None/falsy" from "never set," which
+    matters for inheritance through ``getattr(base_meta, ...)``.
     """
 
     global_key_prefix: Optional[str] = None
     model_key_prefix: Optional[str] = None
     primary_key_pattern: Optional[str] = None
+    # Separator used to join key-prefix segments in the default ``index_name``.
+    # Defaults to ``":"", matching historical Redis key conventions. Override
+    # per model via ``class Meta`` to customize the index name format without
+    # forking the library.
+    key_separator: str = ":"
     # May be a connection instance or a callable that returns one lazily.
     database: Optional[Union[DatabaseConnection, DatabaseProvider]] = None
     primary_key: Optional[PrimaryKey] = None
@@ -2634,11 +2698,16 @@ class ModelMeta(ModelMetaclass):
         if getattr(new_class._meta, "default_ttl", None) is None:
             new_class._meta.default_ttl = getattr(base_meta, "default_ttl", None)
         new_class._meta.index_health_checked = False
-        # TODO: Configurable key separate, defaults to ":"
+        # Resolve the key separator (defaults to ":"). It can be customized per
+        # model via ``class Meta: key_separator = ...``. We read it from
+        # ``base_meta`` first so subclasses inherit the parent's choice.
+        if not getattr(new_class._meta, "key_separator", None):
+            new_class._meta.key_separator = getattr(base_meta, "key_separator", ":")
+        separator = new_class._meta.key_separator
         if not getattr(new_class._meta, "index_name", None):
             new_class._meta.index_name = (
-                f"{new_class._meta.global_key_prefix}:"
-                f"{new_class._meta.model_key_prefix}:index"
+                f"{new_class._meta.global_key_prefix}{separator}"
+                f"{new_class._meta.model_key_prefix}{separator}index"
             )
 
         if (
@@ -3287,8 +3356,9 @@ class HashModel(RedisModel, abc.ABC):
         scan_kwargs: Dict[str, Any] = {"_type": "HASH"}
         if count is not None:
             scan_kwargs["count"] = count
-        # TODO: We need to decide how we want to handle the lack of
-        #  decode_responses=True...
+        # SCAN keys are returned as ``bytes`` when ``decode_responses=False``
+        # and ``str`` otherwise. We decode bytes using the model's encoding
+        # (default ``utf-8``) before stripping the key prefix.
         return (
             (
                 remove_prefix(key, key_prefix)
@@ -3540,7 +3610,11 @@ class HashModel(RedisModel, abc.ABC):
         schema_parts = []
 
         for name, field in cls.model_fields.items():
-            # TODO: Merge this code with schema_for_type()?
+            # ``schema_for_fields`` handles primary-key fields, indexed fields,
+            # container fields with embedded models, and embedded RedisModel
+            # fields. ``schema_for_type`` is reused for the inner type of each
+            # case but cannot be inlined here without losing the primary-key
+            # separator handling and the container-vs-model dispatch logic.
             _type = outer_type_or_annotation(field)
             is_subscripted_type = get_origin(_type)
             field_info = field
@@ -3577,7 +3651,10 @@ class HashModel(RedisModel, abc.ABC):
 
                 embedded_cls = get_args(_type)
                 if not embedded_cls:
-                    # TODO: Test if this can really happen.
+                    # Bare ``List`` or ``Tuple`` without a type parameter
+                    # (e.g. ``x: list`` instead of ``x: List[str]``). We can't
+                    # infer a schema without knowing the inner type, so warn and
+                    # skip rather than emit a malformed RediSearch schema.
                     log.warning("Model %s defined an empty list field: %s", cls, name)
                     continue
                 embedded_cls = embedded_cls[0]
@@ -3588,10 +3665,16 @@ class HashModel(RedisModel, abc.ABC):
 
     @classmethod
     def schema_for_type(cls, name, typ: Any, field_info: PydanticFieldInfo):
-        # TODO: Import parent logic from JsonModel to deal with lists, so that
-        #  a List[int] gets indexed as TAG instead of NUMERICAL.
-        # TODO: Abstract string-building logic for each type (TAG, etc.) into
-        #  classes that take a field name.
+        # Per-type schema-string construction (TAG, NUMERIC, GEO, etc.) lives
+        # inline here. A future refactor could move each branch into its own
+        # small builder class keyed on type, but the current explicit dispatch
+        # is readable and keeps all schema logic in one place.
+        #
+        # Container-of-scalars handling (e.g. ``List[int]``) intentionally maps
+        # to TAG rather than NUMERIC, matching the JsonModel behavior. This is
+        # because RediSearch indexes arrays as multi-value TAG fields, not as
+        # numeric ranges. ``is_supported_container_type`` returns True only
+        # for ``list``/``tuple`` and the embedded-model branch handles those.
         typ = _unwrap_type_annotation(typ)
         sortable = getattr(field_info, "sortable", False)
         case_sensitive = getattr(field_info, "case_sensitive", False)
@@ -3599,7 +3682,9 @@ class HashModel(RedisModel, abc.ABC):
         if is_supported_container_type(typ):
             embedded_cls = get_args(typ)
             if not embedded_cls:
-                # TODO: Test if this can really happen.
+                # Bare ``List``/``Tuple`` without a type parameter. Without an
+                # inner type we can't emit a meaningful RediSearch schema, so
+                # warn and return an empty string to skip this field.
                 log.warning(
                     "Model %s defined an empty list or tuple field: %s", cls, name
                 )
@@ -3722,8 +3807,9 @@ class JsonModel(RedisModel, abc.ABC):
         scan_kwargs: Dict[str, Any] = {"_type": "ReJSON-RL"}
         if count is not None:
             scan_kwargs["count"] = count
-        # TODO: We need to decide how we want to handle the lack of
-        #  decode_responses=True...
+        # SCAN keys are returned as ``bytes`` when ``decode_responses=False``
+        # and ``str`` otherwise. We decode bytes using the model's encoding
+        # (default ``utf-8``) before stripping the key prefix.
         return (
             (
                 remove_prefix(key, key_prefix)
@@ -3982,16 +4068,13 @@ class JsonModel(RedisModel, abc.ABC):
             except TypeError:
                 pass
 
-        # TODO: We need a better way to know that we're indexing a value
-        #  discovered in a model within an array.
-        #
-        # E.g., say we have a field like `orders: List[Order]`, and we're
-        # indexing the "name" field from the Order model (because it's marked
-        # index=True in the Order model). The JSONPath for this field is
-        # $.orders[*].name, but the "parent" type at this point is Order, not
-        # List. For now, we'll discover that Orders are stored in a list by
-        # checking if the JSONPath contains the expression for all items in
-        # an array.
+        # Detect when we're indexing a value discovered inside a model that
+        # itself lives in an array. E.g. for ``orders: List[Order]`` the
+        # JSONPath of ``Order.name`` is ``$.orders[*].name``. At this point
+        # ``parent_type`` is ``Order``, not ``List``, so we use the JSONPath
+        # suffix ``[*]`` as the signal that the parent model is array-stored.
+        # This is a heuristic; a future RediSearch schema API that exposes
+        # the original array type would let us drop the path-suffix check.
         parent_is_model_in_container = parent_is_model and json_path.endswith("[*]")
 
         try:

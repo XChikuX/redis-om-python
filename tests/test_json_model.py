@@ -45,9 +45,10 @@ async def m(key_prefix, redis):
             global_key_prefix = key_prefix
 
     class Note(EmbeddedJsonModel):
-        # TODO: This was going to be a full-text search example, but
-        #  we can't index embedded documents for full-text search in
-        #  the preview release.
+        # ``description`` is indexed as TAG (default for ``str`` with
+        # ``index=True``). Full-text search on embedded documents is not
+        # supported, so we use TAG-only indexing here to exercise recursive
+        # embedded-field query resolution rather than FTS.
         description: str = Field(index=True)
         created_on: datetime.datetime
 

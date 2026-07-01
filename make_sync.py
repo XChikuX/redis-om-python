@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+from typing import List
 
 import unasync
 
@@ -135,12 +136,34 @@ def _fix_pytest_mark_asyncio_body(content: str) -> str:
     expression inside the function body, because that is an attribute chain
     (``pytest`` ``.`` ``mark`` ``.`` ``asyncio``), not a single NAME token.
 
-    In the sync mirror the marker must become a plain ``return f`` so that
-    sync test functions stay non-asyncio. Applying this globally means every
-    unit-test file that defines its own ``py_test_mark_asyncio`` is handled
+    Also removes ``pytest.mark.asyncio`` entries from any module-level
+    ``pytestmark = [...]`` or ``pytest.mark.asyncio`` decorators above sync
+    test functions. After unasync, async test functions become sync ones and
+    must NOT carry an asyncio mark, or pytest-asyncio will raise.
+
+    Applying this globally means every sync test file is handled
     automatically, without needing a per-file entry in ``POST_SYNC_FIXES``.
     """
-    return content.replace("return pytest.mark.asyncio(f)", "return f")
+    content = content.replace("return pytest.mark.asyncio(f)", "return f")
+    # Drop individual ``pytest.mark.asyncio`` decorator lines above test
+    # functions. These can appear as a single-line decorator or as one
+    # entry inside a ``pytestmark = [...]`` list.
+    content = re.sub(
+        r"^@pytest\.mark\.asyncio\s*$\n",
+        "",
+        content,
+        flags=re.MULTILINE,
+    )
+    # Drop ``    pytest.mark.asyncio,`` (with trailing comma) from inside
+    # multi-line ``pytestmark`` lists. Other entries in the same list are
+    # preserved.
+    content = re.sub(
+        r"^[ \t]*pytest\.mark\.asyncio,?[ \t]*$\n",
+        "",
+        content,
+        flags=re.MULTILINE,
+    )
+    return content
 
 
 def _fix_asyncio_sleep(content: str) -> str:
@@ -152,7 +175,13 @@ def _fix_asyncio_sleep(content: str) -> str:
     3.12+, which raises ``RuntimeWarning: coroutine 'sleep' was never
     awaited`` (and breaks when ``asyncio`` is no longer imported).
 
-    Also drops ``import asyncio`` once no ``asyncio.*`` reference remains.
+    Also rewrites bare ``asyncio.gather(*expr)`` to ``[x for x in expr]`` so
+    that sync generators (e.g. ``asyncio.gather(*(m.run() for m in migrators))``)
+    actually iterate and run their work. The ``[ ]`` materialises the generator
+    and discards the return values, mirroring the fire-and-forget semantics of
+    the awaited gather.
+
+    Drops ``import asyncio`` once no ``asyncio.*`` reference remains.
     When the import lives inside a ``try: ... except ImportError: ...``
     skip-guard, the whole guard is removed first — otherwise stripping
     just the import line would leave a ``try:`` with an empty body and
@@ -160,6 +189,37 @@ def _fix_asyncio_sleep(content: str) -> str:
     """
     if "asyncio.sleep(" in content:
         content = content.replace("asyncio.sleep(", "time.sleep(")
+
+    if "asyncio.gather(" in content:
+        # Rewrite ``asyncio.gather(*EXPR)`` to ``[None for _ in EXPR]``.
+        # This materialises the generator and runs each sync call without
+        # needing an event loop. We can't use a simple regex because
+        # ``EXPR`` itself contains parens (e.g. ``*(m.run() for m in migrators)``);
+        # find each occurrence and replace with a balanced-paren scan.
+        prefix = "asyncio.gather("
+        rebuilt: List[str] = []
+        cursor = 0
+        while True:
+            idx = content.find(prefix, cursor)
+            if idx < 0:
+                rebuilt.append(content[cursor:])
+                break
+            rebuilt.append(content[cursor:idx])
+            depth = 1
+            i = idx + len(prefix)
+            while i < len(content) and depth > 0:
+                ch = content[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                i += 1
+            inner = content[idx + len(prefix) : i - 1].lstrip()
+            if inner.startswith("*"):
+                inner = inner[1:].lstrip()
+            rebuilt.append(f"[None for _ in ({inner})]")
+            cursor = i
+        content = "".join(rebuilt)
 
     # If a ``try: import asyncio / except ImportError: ...`` skip-guard is
     # present, remove it before stripping the import — otherwise the

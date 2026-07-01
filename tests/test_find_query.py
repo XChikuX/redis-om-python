@@ -41,9 +41,10 @@ async def m(key_prefix, redis):
             global_key_prefix = key_prefix
 
     class Note(EmbeddedJsonModel):
-        # TODO: This was going to be a full-text search example, but
-        #  we can't index embedded documents for full-text search in
-        #  the preview release.
+        # ``description`` is indexed as TAG (default for ``str`` with
+        # ``index=True``). Full-text search on embedded documents is not
+        # supported, so we use TAG-only indexing here to exercise recursive
+        # embedded-field query resolution rather than FTS.
         description: str = Field(index=True)
         created_on: datetime.datetime
 
@@ -167,6 +168,46 @@ async def test_find_query_not_in(members, m):
     ).get_query()
     not_in_str = "-(@pk:{" + str(member2.pk) + "|" + str(member3.pk) + "})"
     assert fq == ["FT.SEARCH", model_name, not_in_str, "LIMIT", 0, 1000]
+
+
+@py_test_mark_asyncio
+async def test_find_query_rejects_sequence_for_scalar_operator(m):
+    """Passing a sequence to a scalar operator raises QueryNotSupportedError.
+
+    Only IN (<<) and NOT_IN (>>) accept sequence right-hand sides. Other
+    operators receive a single value, so a list/tuple is treated as a
+    likely user mistake.
+    """
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == ["Andrew", "Bob"]], model=m.Member
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name != ["Andrew", "Bob"]], model=m.Member
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.age > [10, 20]], model=m.Member
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.age >= (10, 20)], model=m.Member
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_find_query_accepts_string_sequence_for_in(m):
+    """Strings are NOT considered sequences here, even though ``str`` is iterable.
+
+    We use ``collections.abc.Sequence`` to exclude ``str`` and ``bytes`` from
+    the validation, so a string passed to EQ/NE/etc. continues to work as a
+    plain string.
+    """
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name == "Andrew"], model=m.Member
+    ).get_query()
+    assert fq == ["FT.SEARCH", model_name, "@first_name:{Andrew}", "LIMIT", 0, 1000]
 
 
 # experssion testing; (==, !=, <, <=, >, >=, |, &, ~)

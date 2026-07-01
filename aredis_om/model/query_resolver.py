@@ -26,7 +26,11 @@ def _render_expression(expression: ExpressionLike) -> str:
     """
     if isinstance(expression, LogicalOperatorForListOfExpressions):
         return expression.query
-    return FindQuery.resolve_redisearch_query(expression)
+    # After filtering out LogicalOperatorForListOfExpressions, the remaining
+    # types are Expression | NegatedExpression, which resolve_redisearch_query
+    # accepts. KNNExpression is handled separately by the KNN path and never
+    # reaches this function through Or/And/Not combination.
+    return FindQuery.resolve_redisearch_query(expression)  # type: ignore[arg-type]
 
 
 class LogicalOperatorForListOfExpressions(Expression):
