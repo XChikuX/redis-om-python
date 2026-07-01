@@ -6,7 +6,13 @@ from unittest import mock
 import pytest
 
 from aredis_om.model.model import Expression, FindQuery
-from aredis_om.model.query_resolver import And, Not, Or, QueryResolver
+from aredis_om.model.query_resolver import (
+    And,
+    LogicalOperatorForListOfExpressions,
+    Not,
+    Or,
+    QueryResolver,
+)
 
 
 def _make_expr():
@@ -215,3 +221,26 @@ def test_and_is_subclass_of_expression():
 
 def test_not_is_subclass_of_expression():
     assert issubclass(Not, Expression)
+
+
+# ---------------------------------------------------------------------------
+# Abstract _combine contract
+# ---------------------------------------------------------------------------
+
+
+class _BareLogical(LogicalOperatorForListOfExpressions):
+    """Concrete subclass that does not override ``_combine``."""
+
+    operator = "?"
+
+
+def test_base_combine_raises_not_implemented_error():
+    """The base ``_combine`` is intentionally abstract.
+
+    Subclasses (Or, And, Not) override it, but a user-defined subclass that
+    forgets to do so must surface ``NotImplementedError`` rather than silently
+    producing wrong output.
+    """
+    bare = _BareLogical(_make_expr())
+    with pytest.raises(NotImplementedError):
+        bare._combine(["(x)"])

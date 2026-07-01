@@ -363,6 +363,101 @@ def test_explicit_non_empty_meta_values_are_preserved():
     assert "|" in WithCustomValues._meta.index_name
 
 
+def test_explicit_index_name_bypasses_key_separator():
+    """When ``Meta.index_name`` is set explicitly, ``key_separator`` is ignored.
+
+    The separator only feeds into the *default* index-name construction. A
+    user-supplied ``index_name`` wins outright, so a custom separator has no
+    effect on the resulting index name.
+    """
+
+    class WithExplicitIndex(HashModel, abc.ABC):
+        name: str
+
+        class Meta:
+            model_key_prefix = "anything"
+            key_separator = "~"
+            index_name = "my-hardcoded-index"
+
+    assert WithExplicitIndex._meta.index_name == "my-hardcoded-index"
+    # The separator is still recorded on Meta (it just isn't used here).
+    assert WithExplicitIndex._meta.key_separator == "~"
+    assert "~" not in WithExplicitIndex._meta.index_name
+
+
+def test_key_separator_inherited_through_multilevel_chain():
+    """A grandparent's ``key_separator`` propagates to grandchildren.
+
+    The resolution reads ``base_meta.key_separator`` at every level, so a
+    separator set on a top-level abstract base flows down through intermediate
+    abstract classes that don't redeclare it.
+    """
+
+    class GrandParent(HashModel, abc.ABC):
+        class Meta:
+            key_separator = "."
+
+    class Parent(GrandParent, abc.ABC):
+        pass
+
+    class Child(Parent, abc.ABC):
+        name: str
+
+    assert GrandParent._meta.key_separator == "."
+    assert Parent._meta.key_separator == "."
+    assert Child._meta.key_separator == "."
+
+
+def test_key_separator_override_in_subclass_wins():
+    """A subclass can override the parent's ``key_separator``.
+
+    This confirms the ``if not getattr(...)`` guard only backfills the inherited
+    value when the subclass didn't set its own; an explicit subclass value is
+    preserved.
+    """
+
+    class Parent(HashModel, abc.ABC):
+        class Meta:
+            key_separator = "."
+
+    class Child(Parent, abc.ABC):
+        name: str
+
+        class Meta:
+            key_separator = "/"
+
+    assert Parent._meta.key_separator == "."
+    assert Child._meta.key_separator == "/"
+
+
+def test_key_separator_in_index_name_for_both_model_types():
+    """``key_separator`` affects ``index_name`` for both HashModel and JsonModel.
+
+    The resolution lives in the shared ``ModelMeta.__new__`` metaclass, so both
+    model bases get the same behavior. This is a complement to the per-base
+    tests in ``test_hash_model.py`` and ``test_json_model.py``.
+    """
+
+    class Hashy(HashModel, abc.ABC):
+        name: str
+
+        class Meta:
+            global_key_prefix = "gp"
+            model_key_prefix = "mp"
+            key_separator = "@@"
+
+    class Jsony(JsonModel, abc.ABC):
+        name: str
+
+        class Meta:
+            global_key_prefix = "gp"
+            model_key_prefix = "mp"
+            key_separator = "@@"
+
+    assert Hashy._meta.index_name == "gp@@mp@@index"
+    assert Jsony._meta.index_name == "gp@@mp@@index"
+
+
 # ---------------------------------------------------------------------------
 # #9 Pagination increments offset by ``limit`` not ``page_size``
 # ---------------------------------------------------------------------------

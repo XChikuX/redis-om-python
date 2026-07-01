@@ -2238,3 +2238,38 @@ async def test_get_value_requests_only_the_subpath(member_with_orders, m):
     # was never requested.
     assert ["$.address.city"] in captured_paths
     assert ["$"] not in captured_paths
+
+
+@py_test_mark_asyncio
+async def test_configurable_key_separator_for_json_model(key_prefix):
+    """``Meta.key_separator`` also applies to ``JsonModel``.
+
+    The companion test in ``test_hash_model.py`` covers the HashModel path;
+    here we verify the same wiring works for JsonModel-derived classes
+    (the separator resolution lives in ``ModelMeta`` and is shared).
+    """
+
+    class DefaultSeparatorModel(JsonModel):
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "json-sep-default"
+
+    assert DefaultSeparatorModel._meta.key_separator == ":"
+    assert (
+        DefaultSeparatorModel._meta.index_name == f"{key_prefix}:json-sep-default:index"
+    )
+
+    class CustomSeparatorModel(JsonModel):
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "json-sep-custom"
+            key_separator = "~"
+
+    assert CustomSeparatorModel._meta.key_separator == "~"
+    assert (
+        CustomSeparatorModel._meta.index_name == f"{key_prefix}~json-sep-custom~index"
+    )

@@ -130,6 +130,13 @@ results = await Customer.find(
 
 `IN` works on both TAG and NUMERIC fields.
 
+::: tip
+Using `==` (or any scalar operator) with a list raises
+`QueryNotSupportedError` (see [errors.mdx#E9](errors.mdx#e9)). If you
+intend a multi-value match, use `<<`; if you only meant to compare against a
+single value, drop the brackets.
+:::
+
 ## Prefix matches
 
 Use `field.startswith(value)` for TAG-prefix searches. The library

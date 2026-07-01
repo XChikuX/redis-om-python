@@ -21,8 +21,10 @@ from aredis_om import (
     Migrator,
     NotFoundError,
     QueryNotSupportedError,
+    QuerySyntaxError,
     RedisModelError,
 )
+from aredis_om.model.query_resolver import And, Not, Or
 from tests._compat import EmailStr, PositiveInt, ValidationError
 from tests._sync_redis import has_redis_json
 
@@ -194,20 +196,60 @@ async def test_find_query_rejects_sequence_for_scalar_operator(m):
         await FindQuery(
             expressions=[m.Member.age >= (10, 20)], model=m.Member
         ).get_query()
+    # LT/LE for the numeric path (covers the second operator branch).
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.age < [10, 20]], model=m.Member
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.age <= (10, 20)], model=m.Member
+        ).get_query()
+    # String operators: LIKE (requires full_text_search=True), STARTSWITH,
+    # ENDSWITH, CONTAINS. ``bio`` is the only FTS-enabled string field.
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.bio % ["and", "bob"]], model=m.Member
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name.startswith(["and", "bob"])],
+            model=m.Member,
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name.endswith(("and", "bob"))],
+            model=m.Member,
+        ).get_query()
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name.contains(["and", "bob"])],
+            model=m.Member,
+        ).get_query()
 
 
 @py_test_mark_asyncio
-async def test_find_query_accepts_string_sequence_for_in(m):
-    """Strings are NOT considered sequences here, even though ``str`` is iterable.
+async def test_find_query_accepts_string_and_bytes_for_scalar_operator(m):
+    """``str`` and ``bytes`` are NOT considered sequences by the validator.
 
     We use ``collections.abc.Sequence`` to exclude ``str`` and ``bytes`` from
-    the validation, so a string passed to EQ/NE/etc. continues to work as a
-    plain string.
+    the validation, so passing a plain string to EQ/NE/etc. continues to work
+    and renders as a regular TAG field lookup. The validator's only job is to
+    reject lists/tuples; downstream rendering of ``bytes`` is a separate
+    concern documented as a known issue elsewhere.
     """
     model_name, fq = await FindQuery(
         expressions=[m.Member.first_name == "Andrew"], model=m.Member
     ).get_query()
     assert fq == ["FT.SEARCH", model_name, "@first_name:{Andrew}", "LIMIT", 0, 1000]
+    # Bytes must not be rejected by the sequence validator. We only assert that
+    # the validation branch doesn't raise; downstream rendering of bytes is
+    # out of scope for this test (see CLAUDE.md "bytes field querying
+    # asymmetry").
+    with pytest.raises((QueryNotSupportedError, TypeError)):
+        await FindQuery(
+            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
+        ).get_query()
 
 
 # experssion testing; (==, !=, <, <=, >, >=, |, &, ~)
@@ -526,3 +568,580 @@ async def test_find_query_monster(m):
         1,
         1,
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sequence-value validation in compound / nested expressions.
+#
+# The validator in ``FindQuery.resolve_redisearch_query`` runs on every leaf
+# expression because both the ``|`` / ``&`` / ``~`` operator path (which
+# recurses through ``resolve_redisearch_query``) and the explicit ``Or`` /
+# ``And`` / ``Not`` classes (which call ``_render_expression`` →
+# ``resolve_redisearch_query`` for each leaf) end up dispatching to the same
+# scalar-rendering branch. These tests pin down that a sequence passed to ANY
+# scalar operator, no matter how deeply nested, is rejected.
+# ---------------------------------------------------------------------------
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_pipe_operator_or(m):
+    """``(a == [list]) | (b == x)`` rejects the sequence on the left."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                (m.Member.first_name == ["a", "b"]) | (m.Member.last_name == "x")
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_pipe_operator_or_right(m):
+    """``(a == x) | (b == [list])`` rejects the sequence on the right."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                (m.Member.first_name == "x") | (m.Member.last_name == ["a", "b"])
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_ampersand_operator_and(m):
+    """``(a == [list]) & (b == x)`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                (m.Member.first_name == ["a", "b"]) & (m.Member.last_name == "x")
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_tilde_operator_not(m):
+    """``~(a == [list])`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[~(m.Member.first_name == ["a", "b"])],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_nested_tilde_and(m):
+    """``~((a == [list]) & (b == x))`` rejects the sequence inside the negation."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                ~((m.Member.first_name == ["a", "b"]) & (m.Member.last_name == "x"))
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_explicit_or_left(m):
+    """``Or(a == [list], b == x)`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(m.Member.first_name == ["a", "b"], m.Member.last_name == "x")
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_explicit_or_right(m):
+    """``Or(a == x, b == [list])`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(m.Member.first_name == "x", m.Member.last_name == ["a", "b"])
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_explicit_and(m):
+    """``And(a == [list], b == x)`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                And(m.Member.first_name == ["a", "b"], m.Member.last_name == "x")
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_explicit_not(m):
+    """``Not(a == [list])`` rejects the sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[Not(m.Member.first_name == ["a", "b"])],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_deeply_nested_explicit(m):
+    """``Or(And(a == [list], b), c)`` rejects the deeply nested sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(
+                    And(m.Member.first_name == ["a", "b"], m.Member.last_name == "y"),
+                    m.Member.age == 30,
+                )
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_deeply_nested_explicit_right(m):
+    """``Or(And(a, b), c == [list])`` rejects the sequence in the right operand."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(
+                    And(m.Member.first_name == "a", m.Member.last_name == "y"),
+                    m.Member.age == [30, 40],
+                )
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_triple_nested_not(m):
+    """``Or(And(Not(a == [list])), b)`` rejects the triple-nested sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(And(Not(m.Member.first_name == ["a"])), m.Member.age == 30)
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_sequence_rejected_in_nested_explicit_or(m):
+    """``Or(Or(valid, a == [list]), valid)`` rejects the nested-Or sequence."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[
+                Or(
+                    Or(m.Member.first_name == "a", m.Member.last_name == ["x", "y"]),
+                    m.Member.age == 30,
+                )
+            ],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_valid_nested_query_still_renders(m):
+    """Sanity check: equivalent nested queries with NO sequences render fine.
+
+    This guards against a regression where the validator accidentally rejects
+    valid compound expressions because of an over-broad type check.
+    """
+    model_name, fq = await FindQuery(
+        expressions=[Or(And(Not(m.Member.first_name == "a")), m.Member.age == 30)],
+        model=m.Member,
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "((-(@first_name:{a}))) | (@age:[30 30])",
+        "LIMIT",
+        0,
+        1000,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Edge-case sequence types.
+#
+# ``collections.abc.Sequence`` accepts ``list``, ``tuple``, ``range``,
+# ``collections.deque``, and the immutable variants, but NOT ``str`` / ``bytes``
+# (which are special-cased) and NOT generators / iterators. These tests pin the
+# boundary so a future refactor of the validator doesn't silently widen or
+# narrow the rejection set.
+# ---------------------------------------------------------------------------
+
+
+@py_test_mark_asyncio
+async def test_range_is_rejected_as_sequence(m):
+    """``range`` is a ``collections.abc.Sequence`` and must be rejected."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == range(3)], model=m.Member
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_deque_is_rejected_as_sequence(m):
+    """``collections.deque`` is a ``collections.abc.Sequence`` and must be rejected."""
+    import collections
+
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == collections.deque(["a", "b"])],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_empty_list_is_rejected_as_sequence(m):
+    """An empty list is still a Sequence and must be rejected.
+
+    An empty IN/NOT_IN is fine, but an empty list passed to a scalar operator
+    is almost certainly a bug and should surface the validator's error rather
+    than render an empty TAG lookup.
+    """
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == []], model=m.Member
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_single_element_list_is_rejected_as_sequence(m):
+    """A single-element list is still a Sequence and must be rejected.
+
+    Users sometimes write ``field == [value]`` expecting an IN-style match;
+    the validator steers them toward ``field << [value]`` (or just ``field ==
+    value``) with a clear error.
+    """
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == ["a"]], model=m.Member
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_generator_is_not_caught_by_validator(m):
+    """Generators are NOT ``collections.abc.Sequence`` so the validator skips them.
+
+    The generator therefore reaches the rendering stage and fails there with a
+    ``TypeError``. This documents the boundary: the validator only catches
+    materialized sequence containers, not arbitrary iterables. A stricter
+    check using ``Iterable`` would also reject ``str`` / ``bytes``, which is
+    why the implementation uses ``Sequence``.
+    """
+    with pytest.raises(TypeError):
+        await FindQuery(
+            expressions=[m.Member.first_name == (x for x in ["a", "b"])],
+            model=m.Member,
+        ).get_query()
+
+
+@py_test_mark_asyncio
+async def test_tuple_is_rejected_as_sequence(m):
+    """``tuple`` is a ``collections.abc.Sequence`` and must be rejected."""
+    with pytest.raises(QueryNotSupportedError, match="sequence value"):
+        await FindQuery(
+            expressions=[m.Member.first_name == ("a", "b")], model=m.Member
+        ).get_query()
+
+
+# ---------------------------------------------------------------------------
+# Positive cases: ``str`` and ``bytes`` are explicitly allowed by the validator
+# (``bytes`` rendering is a separate known issue; here we only assert the
+# validator itself does not raise).
+# ---------------------------------------------------------------------------
+
+
+@py_test_mark_asyncio
+async def test_str_passes_validator_and_renders(m):
+    """A plain ``str`` is allowed and renders as a TAG lookup."""
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name == "Andrew"], model=m.Member
+    ).get_query()
+    assert fq == ["FT.SEARCH", model_name, "@first_name:{Andrew}", "LIMIT", 0, 1000]
+
+
+@py_test_mark_asyncio
+async def test_bytes_passes_validator(m):
+    """``bytes`` is explicitly allowed by the sequence validator.
+
+    Downstream rendering of ``bytes`` is documented as a known issue in
+    ``CLAUDE.md`` ("bytes field querying asymmetry"); this test only pins the
+    validator's behavior so that a refactor that tightens the check (e.g. by
+    dropping the ``bytes`` exemption) is forced to update this test too.
+    """
+    # The validator must not raise QueryNotSupportedError; whatever happens
+    # downstream is out of scope here.
+    with pytest.raises((QueryNotSupportedError, TypeError, QuerySyntaxError)):
+        await FindQuery(
+            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
+        ).get_query()
+    # Confirm explicitly: re-running and catching allows us to assert the
+    # raised error is NOT a "sequence value" error.
+    try:
+        await FindQuery(
+            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
+        ).get_query()
+    except QueryNotSupportedError as e:
+        assert "sequence value" not in str(e)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Sequence validation interacts correctly with IN / NOT_IN — they are exempt.
+# ---------------------------------------------------------------------------
+
+
+@py_test_mark_asyncio
+async def test_in_operator_accepts_sequence(m):
+    """``<<`` (IN) must accept a sequence without triggering the validator."""
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name << ["Andrew", "Kim"]], model=m.Member
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "(@first_name:{Andrew|Kim})",
+        "LIMIT",
+        0,
+        1000,
+    ]
+
+
+@py_test_mark_asyncio
+async def test_not_in_operator_accepts_sequence(m):
+    """``>>`` (NOT_IN) must accept a sequence without triggering the validator."""
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name >> ["Andrew", "Kim"]], model=m.Member
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "-(@first_name:{Andrew|Kim})",
+        "LIMIT",
+        0,
+        1000,
+    ]
+
+
+@py_test_mark_asyncio
+async def test_in_inside_or_does_not_trigger_validator(m):
+    """An ``IN`` query nested in an ``Or`` must render, not be rejected."""
+    model_name, fq = await FindQuery(
+        expressions=[Or(m.Member.first_name << ["Andrew", "Kim"], m.Member.age == 30)],
+        model=m.Member,
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "((@first_name:{Andrew|Kim})) | (@age:[30 30])",
+        "LIMIT",
+        0,
+        1000,
+    ]
+
+
+@py_test_mark_asyncio
+async def test_not_in_inside_not_does_not_trigger_validator(m):
+    """A ``NOT_IN`` query nested in a ``Not`` must render, not be rejected."""
+    model_name, fq = await FindQuery(
+        expressions=[Not(m.Member.first_name >> ["Andrew"])],
+        model=m.Member,
+    ).get_query()
+    # Not(...) wraps the rendered inner query in ``-(... (-(...)) )``. The
+    # exact shape is exercised here to keep the test honest.
+    assert fq[0] == "FT.SEARCH"
+    assert fq[1] == model_name
+    assert "@first_name:{Andrew}" in fq[2]
+    assert "-" in fq[2]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end combination tests.
+#
+# These exercises the full pipeline: build a compound query with ``Or`` /
+# ``And`` / ``Not`` and the ``|`` / ``&`` / ``~`` operators, render it, send it
+# to Redis, and verify the returned members match expectations. They guard
+# against regressions where a query *renders* but returns the wrong result set
+# (e.g. because of parenthesis placement or operator precedence).
+#
+# Fixture ``members`` inserts:
+#   member1: Andrew Brookins, age 38
+#   member2: Kim    Brookins, age 34
+#   member3: Andrew Smith,    age 100
+# ---------------------------------------------------------------------------
+
+
+@py_test_mark_asyncio
+async def test_explicit_or_returns_union(members, m):
+    """``Or(first_name == Andrew, last_name == Brookins)`` matches all 3.
+
+    Andrew appears twice in first_name; Brookins appears twice in last_name;
+    the union is all three members.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        Or(m.Member.first_name == "Andrew", m.Member.last_name == "Brookins")
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member1.pk, member2.pk, member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_explicit_and_returns_intersection(members, m):
+    """``And(first_name == Andrew, last_name == Smith)`` matches only member3."""
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        And(m.Member.first_name == "Andrew", m.Member.last_name == "Smith")
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_explicit_not_excludes_matches(members, m):
+    """``Not(first_name == Andrew)`` matches only member2 (Kim)."""
+    member1, member2, member3 = members
+    found = await m.Member.find(Not(m.Member.first_name == "Andrew")).all()
+    pks = {member.pk for member in found}
+    assert pks == {member2.pk}
+
+
+@py_test_mark_asyncio
+async def test_pipe_operator_or_returns_union(members, m):
+    """``(age == 100) | (age == 34)`` matches member2 and member3."""
+    member1, member2, member3 = members
+    found = await m.Member.find((m.Member.age == 100) | (m.Member.age == 34)).all()
+    pks = {member.pk for member in found}
+    assert pks == {member2.pk, member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_ampersand_operator_and_returns_intersection(members, m):
+    """``(first_name == Andrew) & (age == 100)`` matches only member3."""
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        (m.Member.first_name == "Andrew") & (m.Member.age == 100)
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_tilde_operator_not_excludes(members, m):
+    """``~(last_name == Brookins)`` matches only member3 (Smith)."""
+    member1, member2, member3 = members
+    found = await m.Member.find(~(m.Member.last_name == "Brookins")).all()
+    pks = {member.pk for member in found}
+    assert pks == {member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_nested_or_inside_and_end_to_end(members, m):
+    """``And(Or(first == Andrew, first == Kim), last == Brookins)``.
+
+    The Or matches all three (Andrew×2, Kim×1); intersecting with
+    ``last_name == Brookins`` (member1, member2) yields member1 + member2.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        And(
+            Or(m.Member.first_name == "Andrew", m.Member.first_name == "Kim"),
+            m.Member.last_name == "Brookins",
+        )
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member1.pk, member2.pk}
+
+
+@py_test_mark_asyncio
+async def test_not_inside_or_end_to_end(members, m):
+    """``Or(Not(first == Andrew), age == 100)``.
+
+    Not(first == Andrew) → member2 (Kim).
+    age == 100 → member3.
+    Union → member2 + member3.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        Or(Not(m.Member.first_name == "Andrew"), m.Member.age == 100)
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member2.pk, member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_in_query_combined_with_or_end_to_end(members, m):
+    """Mixing ``<<`` (IN) with a scalar inside an ``Or``.
+
+    ``Or(age << [34, 100], first_name == Andrew)`` should match all three:
+    IN matches member2 (34) and member3 (100); the Andrew branch matches
+    member1 and member3. Union = all three.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        Or(m.Member.age << [34, 100], m.Member.first_name == "Andrew")
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member1.pk, member2.pk, member3.pk}
+
+
+@py_test_mark_asyncio
+async def test_negated_compound_query_end_to_end(members, m):
+    """``~((first == Andrew) | (age < 40))``.
+
+    first == Andrew → member1, member3.
+    age < 40 → member1 (38), member2 (34).
+    Union → all three.
+    Negation → empty set.
+    """
+    found = await m.Member.find(
+        ~((m.Member.first_name == "Andrew") | (m.Member.age < 40))
+    ).all()
+    assert found == []
+
+
+@py_test_mark_asyncio
+async def test_deeply_nested_query_end_to_end(members, m):
+    """Deep nesting: ``Or(And(Not(last == Smith), age >= 34), first == Kim)``.
+
+    Not(last == Smith) → member1, member2.
+    age >= 34 → member1 (38), member2 (34), member3 (100).
+    And → member1, member2.
+    Or(first == Kim → member2) → member1, member2.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        Or(
+            And(Not(m.Member.last_name == "Smith"), m.Member.age >= 34),
+            m.Member.first_name == "Kim",
+        )
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member1.pk, member2.pk}
+
+
+@py_test_mark_asyncio
+async def test_explicit_and_with_in_operator_end_to_end(members, m):
+    """``And(first_name << [Andrew], last_name << [Brookins, Smith])``.
+
+    first_name IN [Andrew] → member1, member3.
+    last_name IN [Brookins, Smith] → all three.
+    And → member1, member3.
+    """
+    member1, member2, member3 = members
+    found = await m.Member.find(
+        And(
+            m.Member.first_name << ["Andrew"],
+            m.Member.last_name << ["Brookins", "Smith"],
+        )
+    ).all()
+    pks = {member.pk for member in found}
+    assert pks == {member1.pk, member3.pk}

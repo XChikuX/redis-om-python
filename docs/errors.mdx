@@ -244,3 +244,45 @@ Member.find(Member.first_name != "Andrew").all()
 
 Still, `~` is useful to negate groups of expressions
 surrounded by parentheses.
+
+## E9
+
+> You passed a sequence value (...) to operator EQ. Only IN (<<) and NOT_IN (>>) support sequence values.
+
+The scalar comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`,
+`LIKE` (`%`), `STARTSWITH`, `ENDSWITH`, `CONTAINS`) expect a single value on
+the right-hand side. Lists, tuples, and other `collections.abc.Sequence`
+containers are only meaningful with `IN` (`<<`) and `NOT_IN` (`>>`).
+
+If you wanted to check that a field equals **any of** several values, use
+`IN`:
+
+```python
+from redis_om import JsonModel, Field
+
+class Member(JsonModel):
+    first_name: str = Field(index=True)
+    last_name: str = Field(index=True)
+
+
+# ✗ This raises QueryNotSupportedError (E9):
+# Member.find(Member.last_name == ["Brookins", "Smith"])
+
+# ✓ Use IN (<<) instead:
+results = Member.find(
+    Member.last_name << ["Brookins", "Smith"]
+).all()
+```
+
+If you only meant to compare against a single value, drop the brackets:
+
+```python
+results = Member.find(Member.last_name == "Brookins").all()
+```
+
+The validator does not reject `str` or `bytes` on the right-hand side of a
+scalar operator, because both are deliberately excluded from
+`collections.abc.Sequence` in this check (see
+[tests/test_find_query.py](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_find_query.py)
+for the exact boundary, which also covers `range`, `collections.deque`,
+empty lists, single-element lists, and tuples).
