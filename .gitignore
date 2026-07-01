@@ -31,7 +31,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 poetry.lock
-uv.lock
+# uv.lock # Commented out to enable CI caching
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
