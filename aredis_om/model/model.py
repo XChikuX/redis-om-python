@@ -1721,6 +1721,18 @@ class FindQuery:
             encompassing_expression_is_negated = True
             expression = expression.expression
 
+        # Logical operators (Or / And / Not) build a RediSearch query string
+        # from a list of sub-expressions. Delegate to their own ``query``
+        # property, which is the single source of truth for their rendering.
+        # Deferred import avoids a circular dependency (query_resolver imports
+        # from this module).
+        from aredis_om.model.query_resolver import (
+            LogicalOperatorForListOfExpressions,
+        )
+
+        if isinstance(expression, LogicalOperatorForListOfExpressions):
+            return expression.query
+
         if expression.op is Operators.ALL:
             if encompassing_expression_is_negated:
                 # TODO: Is there a use case for this, perhaps for dynamic

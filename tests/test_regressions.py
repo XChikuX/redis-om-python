@@ -128,10 +128,17 @@ async def test_async_checks_cache_results_per_connection():
 
 
 def test_not_query_no_longer_returns_placeholder():
+    """Not(...) renders a real RediSearch query string, not the old placeholder dict."""
+    from aredis_om import FindQuery
+
     expr_one = mock.Mock(spec=Expression)
     expr_two = mock.Mock(spec=Expression)
 
-    assert Not(expr_one, expr_two).query == {"-": [expr_one, expr_two]}
+    with mock.patch.object(FindQuery, "resolve_redisearch_query") as mocked:
+        mocked.side_effect = ["@price:[-inf 10]", "@category:{Sweets}"]
+        result = Not(expr_one, expr_two).query
+
+    assert result == "-(@price:[-inf 10]) -(@category:{Sweets})"
 
 
 def test_expression_proxy_returns_isolated_parent_chains():

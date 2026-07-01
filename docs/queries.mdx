@@ -50,6 +50,8 @@ Customer.find(
 | `~(expr)` | NOT |
 | `expr & expr` | AND |
 | `expr \| expr` | OR |
+| `Or(*exprs)`, `And(*exprs)`, `Not(*exprs)` | Explicit OR / AND / NOT for variable-length lists |
+| `QueryResolver(*exprs).resolve()` | Render expressions to a raw query string |
 
 ## Equality, inequality, and range
 
@@ -191,6 +193,88 @@ results = await Customer.find(
     | (Customer.first_name == "Kim")
 ).all()
 ```
+
+## Explicit logical operators: `Or`, `And`, `Not`
+
+For combining more than two predicates — especially when the list is built
+at runtime from a variable-length collection of conditions — the explicit
+`Or`, `And`, and `Not` classes are clearer than nesting `&` / `|` by hand.
+
+```python
+from aredis_om.model.query_resolver import Or, And, Not
+```
+
+Each takes any number of expressions and renders the standard RediSearch
+syntax (`|` for OR, a space for AND, and a `-` prefix for NOT):
+
+```python
+# Or — renders: (@price:[-inf (10]]) | (@category:{Sweets})
+results = await Customer.find(
+    Or(Customer.price < 10, Customer.category == "Sweets")
+).all()
+
+# And — renders: (@price:[-inf (10]]) (@category:{Sweets})
+results = await Customer.find(
+    And(Customer.price < 10, Customer.category == "Sweets")
+).all()
+
+# Not — renders: -(@price:[-inf (10]]) -(@category:{Sweets})
+results = await Customer.find(
+    Not(Customer.price < 10, Customer.category == "Sweets")
+).all()
+```
+
+Each sub-expression is parenthesized, so the operators compose and nest
+without precedence surprises:
+
+```python
+# (price < 10 OR category == "Tools") AND category == "Candy"
+results = await Customer.find(
+    And(
+        Or(Customer.price < 10, Customer.category == "Tools"),
+        Customer.category == "Candy",
+    )
+).all()
+```
+
+### `QueryResolver`
+
+`QueryResolver` renders one or more expressions into a single RediSearch
+query string. With a single expression it returns that expression's rendered
+form; with several it combines them with implicit AND (a space). With no
+expressions it returns `None`.
+
+```python
+from aredis_om.model.query_resolver import QueryResolver
+
+QueryResolver(Customer.price < 10).resolve()
+# > '@price:[-inf (10]'
+
+QueryResolver(Customer.price < 10, Customer.category == "Sweets").resolve()
+# > '@price:[-inf (10] @category:{Sweets}'
+
+QueryResolver().resolve()
+# > None
+```
+
+This is useful when you need the raw query string for a hand-built
+`FT.SEARCH` call or for debugging.
+
+> **When to use which?** The `&`, `|`, and `~` operators (above) are the
+> most concise for two or three fixed predicates. Reach for the explicit
+> `Or` / `And` / `Not` classes when you are combining a variable-length
+> list of conditions (`Or(*conditions)`) or want self-documenting grouping.
+
+### How operators map to RediSearch syntax
+
+These mappings were verified against the official Redis
+[query syntax reference](https://redis.io/docs/latest/develop/ai/search-and-query/advanced-concepts/query_syntax/):
+
+| Operator | RediSearch syntax | Example |
+| --- | --- | --- |
+| `Or(e1, e2)` | `(...)` <code>\|</code> `(...)` | `(@a:1) \| (@b:2)` |
+| `And(e1, e2)` | `(...) (...)` (implicit AND is a space) | `(@a:1) (@b:2)` |
+| `Not(e1, e2)` | `-(...) -(...)` (each term negated) | `-(@a:1) -(@b:2)` |
 
 ## Composing dynamic queries
 
@@ -495,5 +579,6 @@ FindQuery(
 
 ## Reference
 
-- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py)
-- Tests: [`tests/test_find_query.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_find_query.py), [`tests/test_knn_expression.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_knn_expression.py)
+- Source: [`aredis_om/model/model.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/model.py), [`aredis_om/model/query_resolver.py`](https://github.com/XChikuX/redis-om-python/blob/main/aredis_om/model/query_resolver.py)
+- Tests: [`tests/test_find_query.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_find_query.py), [`tests/test_knn_expression.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_knn_expression.py), [`tests/unit/test_query_resolver.py`](https://github.com/XChikuX/redis-om-python/blob/main/tests/unit/test_query_resolver.py)
+- Redis docs: [Query syntax](https://redis.io/docs/latest/develop/ai/search-and-query/advanced-concepts/query_syntax/)
