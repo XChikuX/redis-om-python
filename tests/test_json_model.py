@@ -997,19 +997,12 @@ async def test_list_field_limitations(m, redis):
             # feature is To Be Determined.
             lucky_numbers: List[int] = Field(index=True)
 
-    with pytest.raises(RedisModelError):
-
-        class ReadingWithPrice(EmbeddedJsonModel):
-            gold_coins_charged: int = Field(index=True)
-
-        class TarotWitchWhoCharges(m.BaseJsonModel):
-            tarot_cards: List[str] = Field(index=True)
-
-            # The preview release does not support indexing numeric fields on models
-            # found within a list or tuple. This is the same limitation that stops
-            # us from indexing plain lists (or tuples) containing numeric values.
-            # The fate of this feature is To Be Determined.
-            readings: List[ReadingWithPrice]
+    # Note: ``List[Model]`` where the embedded model has numeric fields IS
+    # now supported — the schema generator correctly emits NUMERIC for int
+    # fields inside ``List[EmbeddedJsonModel]`` (see fix #6 in CLAUDE.md and
+    # ``test_json_schema_accepts_list_of_model_with_int_field`` in
+    # ``tests/test_audit_fixes.py"). The previous restriction was a
+    # preview-release limitation that has been lifted.
 
     class TarotWitch(m.BaseJsonModel):
         # We support indexing lists of strings for quality and membership

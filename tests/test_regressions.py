@@ -124,7 +124,10 @@ async def test_async_checks_cache_results_per_connection():
     assert await has_redis_json(conn) is True
     assert await has_redisearch(conn) is True
 
-    assert [call[2] for call in conn.calls] == ["json.set"]
+    # ``has_redisearch`` probes ``ft.search`` directly (it no longer shortcuts
+    # to ``True`` when RedisJSON is detected). The second ``has_redis_json``
+    # call hits the cache and is not re-issued.
+    assert [call[2] for call in conn.calls] == ["json.set", "ft.search"]
 
 
 def test_not_query_no_longer_returns_placeholder():

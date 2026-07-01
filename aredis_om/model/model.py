@@ -540,12 +540,12 @@ class ExpressionProxy:
         self.field = field
         self.parents = parents.copy()
 
-    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]  # ty: ignore[invalid-method-override]
+    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]
         return Expression(
             left=self.field, op=Operators.EQ, right=other, parents=self.parents
         )
 
-    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]  # ty: ignore[invalid-method-override]
+    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]
         return Expression(
             left=self.field, op=Operators.NE, right=other, parents=self.parents
         )
@@ -935,22 +935,24 @@ class FindQueryCursor:
         results: Optional[Sequence["RedisModel"]] = None,
         total: Optional[int] = None,
     ):
+        from collections import deque
+
         self.model = model
         self.index_name = index_name
         self.cursor_id = cursor_id
         self.count = count
         self.total = total
-        self._buffer: List["RedisModel"] = list(results or [])
+        self._buffer: deque = deque(results or [])
 
     def __aiter__(self):
         return self
 
     async def __anext__(self):
         if not self._buffer:
-            self._buffer = list(await self.read())
+            self._buffer.extend(await self.read())
         if not self._buffer:
             raise StopAsyncIteration
-        return self._buffer.pop(0)
+        return self._buffer.popleft()
 
     @property
     def exhausted(self) -> bool:
@@ -1021,8 +1023,8 @@ class FindQueryCursor:
 
     async def read(self) -> Sequence["RedisModel"]:
         if self._buffer:
-            results = self._buffer
-            self._buffer = []
+            results = list(self._buffer)
+            self._buffer.clear()
             return results
         if self.cursor_id == 0:
             return []
@@ -1545,9 +1547,9 @@ class FindQuery:
         if field_type is RediSearchFieldTypes.TEXT:
             result = f"@{field_name}_fts:"
             if op is Operators.EQ:
-                result += f'"{value}"'
+                result += f'"{escaper.escape(value)}"'
             elif op is Operators.NE:
-                result = f'-({result}"{value}")'
+                result = f'-({result}"{escaper.escape(value)}")'
             elif op is Operators.LIKE:
                 result += value
             else:
@@ -1634,18 +1636,20 @@ class FindQuery:
                         field_name=field_name, value=value
                     )
                 elif isinstance(value, int):
-                    # This if will hit only if the field is a primary key of type int
+                    # Integer primary-key queries use NUMERIC range syntax (intentionally).
                     result = f"@{field_name}:[{value} {value}]"
                 elif separator_char in value:
                     # The value contains the TAG field separator. We can work
                     # around this by breaking apart the values and unioning them
                     # with multiple field:{} queries.
-                    values: filter = filter(None, value.split(separator_char))
-                    for value in values:
-                        value = escaper.escape(value)
-                        result += "@{field_name}:{{{value}}}".format(
-                            field_name=field_name, value=value
+                    sub_values: list = [v for v in value.split(separator_char) if v]
+                    parts = [
+                        "@{field_name}:{{{v}}}".format(
+                            field_name=field_name, v=escaper.escape(v)
                         )
+                        for v in sub_values
+                    ]
+                    result += " ".join(parts)
                 else:
                     value = escaper.escape(value)
                     result += "@{field_name}:{{{value}}}".format(
@@ -1932,8 +1936,8 @@ class FindQuery:
         query = self
         while True:
             # Make a query for each pass of the loop, with a new offset equal to the
-            # current offset plus `page_size`, until we stop getting results back.
-            query = query.copy(offset=query.offset + query.page_size)
+            # current offset plus `limit`, until we stop getting results back.
+            query = query.copy(offset=query.offset + query.limit)
             _results = await query.execute(exhaust_results=False)
             if not _results:
                 break
@@ -2167,7 +2171,7 @@ class FindQuery:
                 "Cannot use [] notation with async code. "
                 "Use FindQuery.get_item() instead."
             )
-        if self._model_cache and len(self._model_cache) >= item:
+        if self._model_cache and len(self._model_cache) > item:
             return self._model_cache[item]
 
         query = self.copy(offset=item, limit=1)
@@ -2191,7 +2195,7 @@ class FindQuery:
         NOTE: This method is included specifically for async users, who
         cannot use the notation Model.find()[1000].
         """
-        if self._model_cache and len(self._model_cache) >= item:
+        if self._model_cache and len(self._model_cache) > item:
             return self._model_cache[item]
 
         query = self.copy(offset=item, limit=1)
@@ -3669,12 +3673,6 @@ class HashModel(RedisModel, abc.ABC):
         # inline here. A future refactor could move each branch into its own
         # small builder class keyed on type, but the current explicit dispatch
         # is readable and keeps all schema logic in one place.
-        #
-        # Container-of-scalars handling (e.g. ``List[int]``) intentionally maps
-        # to TAG rather than NUMERIC, matching the JsonModel behavior. This is
-        # because RediSearch indexes arrays as multi-value TAG fields, not as
-        # numeric ranges. ``is_supported_container_type`` returns True only
-        # for ``list``/``tuple`` and the embedded-model branch handles those.
         typ = _unwrap_type_annotation(typ)
         sortable = getattr(field_info, "sortable", False)
         case_sensitive = getattr(field_info, "case_sensitive", False)
@@ -4060,22 +4058,6 @@ class JsonModel(RedisModel, abc.ABC):
         should_index = should_index_field(field_info)
         is_container_type = is_supported_container_type(typ)
         parent_is_container_type = is_supported_container_type(parent_type)
-        parent_is_model = False
-
-        if parent_type:
-            try:
-                parent_is_model = issubclass(parent_type, RedisModel)
-            except TypeError:
-                pass
-
-        # Detect when we're indexing a value discovered inside a model that
-        # itself lives in an array. E.g. for ``orders: List[Order]`` the
-        # JSONPath of ``Order.name`` is ``$.orders[*].name``. At this point
-        # ``parent_type`` is ``Order``, not ``List``, so we use the JSONPath
-        # suffix ``[*]`` as the signal that the parent model is array-stored.
-        # This is a heuristic; a future RediSearch schema API that exposes
-        # the original array type would let us drop the path-suffix check.
-        parent_is_model_in_container = parent_is_model and json_path.endswith("[*]")
 
         try:
             field_is_model = issubclass(typ, RedisModel)
@@ -4196,7 +4178,11 @@ class JsonModel(RedisModel, abc.ABC):
 
             if is_vector and vector_options:
                 schema = f"{path} AS {index_field_name} {vector_options.schema}"
-            elif parent_is_container_type or parent_is_model_in_container:
+            elif parent_is_container_type:
+                # only restrict the inner type to ``str`` when the field
+                # is a bare list of scalars (e.g. ``List[str]``).
+                # Fields inside an embedded model (e.g. ``List[Model]`` with
+                # ``Model.zip_code: int``) inherit the model's type rules.
                 if typ is not str:
                     raise RedisModelError(
                         "In this Preview release, list and tuple fields can only "

@@ -167,7 +167,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
   - `update()` and `delete()` have documented limitations.
   - `verify_pipeline_response` is documented as intentionally minimal.
   - `FieldInfo` Pydantic hook is documented with upstream-tracking note.
-  - `HashModel.schema_for_type` correctly indexes `List[int]` as TAG (not NUMERIC).
+  - `HashModel.schema_for_type` for container types corrected; HashModel rejects list/tuple fields at class-definition time anyway.
   - `schema_for_fields` / `schema_for_type` merge noted as a future refactor candidate.
   - `Note` model comments in tests clarified (TAG indexing, not FTS).
 
@@ -181,6 +181,95 @@ Redis OM has two embedded-model patterns with intentionally different `pk` behav
 | `pk` in `model_dump()` | Always excluded | Preserved when explicitly set; excluded when null or query proxy |
 | Input stale `pk` handling | Strips embedded `pk` values before validation | Uses normal RedisModel query-proxy stripping |
 | Typical use | Structured sub-documents | Embedded objects that need meaningful identifiers |
+
+## Recent bug fixes and deep-review findings (2026-07-01)
+
+A comprehensive line-by-line audit of the codebase was performed against the
+Redis documentation. The following issues were found and fixed:
+
+- **`has_redisearch` no longer conflates RedisJSON with RediSearch.**
+  The previous implementation returned ``True`` as soon as RedisJSON was
+  detected, even if RediSearch was absent. It now checks ``ft.search``
+  directly.  (`aredis_om/checks.py`)
+- **`__getitem__` / `get_item` off-by-one.**  ``len(cache) >= item``
+  allowed accessing index ``item`` when the cache had exactly ``item``
+  elements, producing an ``IndexError``.  Changed to ``len(cache) > item``.
+  (`aredis_om/model/model.py`)
+- **``validate_primary_key`` threshold is intentionally ``> 2``.**
+  ``RedisModel`` always declares an inherited ``pk: Optional[str] = Field(primary_key=True)``
+  field, so a model with one user-defined ``primary_key=True`` field actually has a
+  count of 2.  The ``> 2`` check therefore correctly allows the legitimate
+  "override the default pk" pattern (see ``test_primary_pk_exists``) while
+  rejecting genuine multi-PK definitions (count >= 3).  An earlier audit
+  incorrectly proposed changing this to ``> 1``; that would have broken custom
+  primary keys and was reverted.  (`aredis_om/model/model.py`)
+- **TEXT field values are now escaped.**  ``EQ`` and ``NE`` on TEXT fields
+  previously inserted raw values into double-quoted RediSearch strings.  A
+  ``"`` in the value would break the query syntax.  Values are now run
+  through ``escaper.escape()``.  (`aredis_om/model/model.py`)
+- **Integer primary-key queries use NUMERIC range syntax (intentionally).**
+  ``resolve_field_type`` returns TAG for every ``primary_key=True`` field, but
+  the schema generator indexes ``int``/``float`` PKs as NUMERIC (see
+  ``schema_for_fields``). The query renderer therefore uses NUMERIC range
+  syntax ``@id:[5 5]`` for int values, which matches the actual schema.
+  An earlier audit incorrectly proposed changing this to TAG syntax
+  ``@id:{5}``; that returned zero results against the NUMERIC index and
+  was reverted. (`aredis_om/model/model.py`)
+- **TAG separator-split queries now join with spaces.**  When a queried
+  value contains the TAG separator character, the code splits it and
+  concatenated ``@field:{a}@field:{b}`` without separators.  Each segment
+  is now joined with a space (implicit AND).  (`aredis_om/model/model.py`)
+- **Pagination offset now increments by ``limit``, not ``page_size``.**
+  When ``execute(exhaust_results=True)`` paginated through results, it used
+  ``query.page_size`` as the offset step, but each page's result count is
+  ``limit``.  This caused gaps or overlaps when the two values differed.
+  The public ``page()`` and ``all()`` APIs are unaffected (they keep both
+  values in sync), but the internal loop is now correct regardless.
+  (`aredis_om/model/model.py`)
+- **Empty-string ``Meta`` values are intentionally treated as "use default".**
+  The metaclass resolves ``model_key_prefix``, ``primary_key_pattern``,
+  ``encoding``, and ``key_separator`` with ``if not getattr(...)``, which treats
+  the empty string ``""`` as a sentinel meaning "fall back to the inherited
+  default." This is required by ``primary_key_pattern = ""`` — an established
+  pattern in the codebase (see ``tests/test_oss_redis_features.py`` and the
+  ``m`` fixture in ``tests/test_hash_model.py``) that means "use the inherited
+  ``{pk}`` pattern." An earlier audit incorrectly proposed changing these to
+  ``is None``; that broke key generation (all instances collided on a single
+  key) and was reverted. (`aredis_om/model/model.py`)
+- **``FindQueryCursor.__anext__`` uses ``collections.deque``.**  The
+  previous ``list.pop(0)`` was O(n) per item.  (`aredis_om/model/model.py`)
+- **JsonModel schema generation no longer restricts inner-model field
+  types to ``str``.**  ``parent_is_model_in_container`` was lumped together
+  with ``parent_is_container_type``, causing ``List[Address]`` (where
+  ``Address`` has an ``int`` field) to raise a ``RedisModelError``.
+  Only bare ``List[str]`` fields are now restricted.
+  (`aredis_om/model/model.py`)
+- **Comment-code mismatch in ``HashModel.schema_for_type`` removed.**
+  The comment claimed ``List[int]`` mapped to ``TAG``, but the code maps it
+  to ``NUMERIC``.  HashModel rejects list fields at class-definition time
+  anyway; the misleading comment was removed.
+  (`aredis_om/model/model.py`)
+- **``ExpressionProxy.__eq__`` / ``__ne__`` mypy suppression typo fixed.**
+  ``# ty: ignore`` was not a recognized pragma.  (`aredis_om/model/model.py`)
+
+### Remaining known issues
+
+- **``List[datetime]`` silent data corruption.**  ``convert_datetime_to_timestamp``
+  converts ``List[datetime]`` items to numeric timestamps on save, but
+  ``convert_timestamp_to_datetime`` does not convert the list items back
+  to ``datetime`` on load.  Model instances silently return raw timestamps
+  for a field typed ``datetime``.  (`aredis_om/model/model.py`)
+- **``bytes`` field querying asymmetry.**  ``bytes`` are base64-encoded on
+  save but queried as raw ``bytes`` in ``expand_tag_value``.  A ``bytes``
+  equality query will never match the stored base64 string.
+  (`aredis_om/model/model.py`)
+- **``FindQuery.delete()`` swallows all ``ResponseError`` types.**
+  Intentionally broad for the documented API contract; callers needing
+  stricter error handling should use raw ``DEL`` commands.
+  (`aredis_om/model/model.py`)
+- **``ReJSON-RL`` type filter in ``JsonModel.all_pks()``** may need updating
+  for Redis 8.x which may report the type as ``"JSON"``.
+  (`aredis_om/model/model.py`)
 
 ## Performance review highlights
 
