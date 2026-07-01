@@ -3,6 +3,26 @@ from pathlib import Path
 
 import unasync
 
+# Modules that are intentionally async-only and must not be mirrored into
+# the generated ``redis_om`` sync package.  Each entry is a path relative
+# to the repo root using OS-native separators.
+#
+# ``integrations/fastapi_redis_sdk.py`` bridges with fastapi-redis-sdk,
+# which manages ``redis.asyncio`` pools exclusively — there is no sync
+# counterpart to generate.
+_ASYNC_ONLY_DIRS = (os.path.join("aredis_om", "integrations"),)
+
+# Tests that exercise async-only modules.  Listed explicitly because the
+# unasync walker cannot tell from a directory alone which tests reference
+# an async-only module — these are mirrored by file basename.
+_ASYNC_ONLY_TEST_BASENAMES = frozenset(
+    {
+        # Bridge tests — would ``from redis_om.integrations import ...``
+        # and fail to import because the sync mirror does not exist.
+        "test_fastapi_integration.py",
+    }
+)
+
 ADDITIONAL_REPLACEMENTS = {
     "aredis_om": "redis_om",
     "async_redis": "sync_redis",
@@ -76,14 +96,11 @@ POST_SYNC_FIXES = {
         "asyncio.get_event_loop().time()": "time.monotonic()",
         "asyncio.sleep(": "time.sleep(",
     },
-    # py_test_mark_asyncio becomes py_test_mark_sync in the mirror; its
-    # body ``return pytest.mark.asyncio(f)`` must become ``return f`` so
-    # sync test functions stay non-asyncio (unasync does not rewrite the
-    # decorator inside the function body).
+    # py_test_mark_asyncio becomes py_test_mark_sync in the mirror. The
+    # ``return pytest.mark.asyncio(f)`` body rewrite is applied globally by
+    # ``_fix_pytest_mark_asyncio_body``; only the docstring text remains
+    # file-specific.
     "tests_sync/conftest.py": {
-        "return pytest.mark.asyncio(f)": "return f",
-        # The async docstring says "Returns pytest.mark.asyncio(f)"; in the
-        # sync mirror that's no longer accurate.
         '    """Mark a test as async. Returns pytest.mark.asyncio(f) for decorator use."""\n': '    """No-op marker for sync tests (mirrors py_test_mark_asyncio)."""\n',
     },
     # The RESP3 bytes-key regression tests intentionally construct
@@ -107,6 +124,22 @@ def _dedupe_import_pytest(content: str) -> str:
     while _DUPLICATE_IMPORT_PYTEST in content:
         content = content.replace(_DUPLICATE_IMPORT_PYTEST, _DEDUPED_IMPORT_PYTEST)
     return content
+
+
+def _fix_pytest_mark_asyncio_body(content: str) -> str:
+    """Strip the ``pytest.mark.asyncio`` marker from ``py_test_mark_sync`` bodies.
+
+    unasync rewrites the NAME token ``py_test_mark_asyncio`` to
+    ``py_test_mark_sync`` but cannot rewrite the ``return pytest.mark.asyncio(f)``
+    expression inside the function body, because that is an attribute chain
+    (``pytest`` ``.`` ``mark`` ``.`` ``asyncio``), not a single NAME token.
+
+    In the sync mirror the marker must become a plain ``return f`` so that
+    sync test functions stay non-asyncio. Applying this globally means every
+    unit-test file that defines its own ``py_test_mark_asyncio`` is handled
+    automatically, without needing a per-file entry in ``POST_SYNC_FIXES``.
+    """
+    return content.replace("return pytest.mark.asyncio(f)", "return f")
 
 
 def _fix_asyncio_sleep(content: str) -> str:
@@ -164,6 +197,7 @@ def apply_post_sync_fixes(repo_root: Path):
             content = file_path.read_text()
             updated = _dedupe_import_pytest(content)
             updated = _fix_asyncio_sleep(updated)
+            updated = _fix_pytest_mark_asyncio_body(updated)
             if updated != content:
                 file_path.write_text(updated)
 
@@ -184,11 +218,21 @@ def main():
     ]
     filepaths = []
     for root, _, filenames in os.walk(repo_root):
+        # Skip async-only directories (e.g. the fastapi-redis-sdk bridge)
+        # so that no broken sync mirror is generated.
+        if any(
+            root.endswith(os.sep + d) or root == str(repo_root / d)
+            for d in _ASYNC_ONLY_DIRS
+        ):
+            continue
         for filename in filenames:
             if filename.rpartition(".")[-1] in (
                 "py",
                 "pyi",
             ):
+                # Skip tests that target async-only modules.
+                if filename in _ASYNC_ONLY_TEST_BASENAMES:
+                    continue
                 filepaths.append(os.path.join(root, filename))
 
     unasync.unasync_files(filepaths, rules)

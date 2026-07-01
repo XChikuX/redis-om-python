@@ -7,7 +7,9 @@ import pytest
 
 from aredis_om.checks import check_for_command, clear_command_cache
 
-from .conftest import py_test_mark_asyncio
+
+def py_test_mark_asyncio(f):
+    return pytest.mark.asyncio(f)
 
 
 class FakeConn:

@@ -1,6 +1,6 @@
 ---
 title: FastAPI Integration
-description: Wire Redis OM into a FastAPI app with sync or async endpoints.
+description: Wire Redis OM into a FastAPI app — the official fastapi-redis-sdk, or standalone.
 ---
 
 # FastAPI Integration
@@ -9,7 +9,10 @@ description: Wire Redis OM into a FastAPI app with sync or async endpoints.
 
 Good news: Redis OM was specifically designed to integrate with FastAPI!
 
-This section includes a complete example showing how to integrate Redis OM with FastAPI.
+This page covers two integration paths:
+
+1. **[fastapi-redis-sdk](https://github.com/redis/fastapi-redis-sdk)** — Redis' official FastAPI integration for connection-pool management and DI-based HTTP caching. Redis OM ships a small bridge module so your models can share the same managed pool.
+2. **Standalone** — bring your own Redis connection and caching layer. Redis OM works with plain `redis-py` and needs no web framework.
 
 ## Concepts
 
@@ -28,10 +31,170 @@ Redis works well as either a durable data store or a cache, but the optimal Redi
 
 You almost always want to use a Redis instance tuned for caching when you're caching and a separate Redis instance tuned for data durability for storing application state.
 
-This example shows how to manage these two uses of Redis within the same application. The app uses a FastAPI caching framework and dedicated caching instance of Redis for caching, and a separate Redis instance tuned for durability for Redis OM models.
+Both integration paths below can manage these two uses of Redis within the same application — a dedicated caching instance for HTTP responses and a separate durability-tuned instance for Redis OM models.
+
+## Using the official `fastapi-redis-sdk`
+
+[`fastapi-redis-sdk`](https://github.com/redis/fastapi-redis-sdk) (`pip install fastapi-redis-sdk`) is Redis' official FastAPI integration. It manages async Redis connection pools via a FastAPI lifespan and provides dependency-injection-based HTTP caching (`cache()`, `cache_evict()`, `cache_put()`) plus a lower-level `CacheBackend`. Features include ETag / `304 Not Modified` / `Cache-Control` support, `dependency_overrides`-friendly testing, and Pydantic-validated configuration via `REDIS_*` env vars or a `.env` file.
+
+Redis OM ships a bridge module — `aredis_om.integrations.fastapi_redis_sdk` — that lets your models **reuse the same connection pool** managed by `fastapi-redis-sdk`, so you don't open a second pool to the same instance. The bridge imports `redis_fastapi` lazily, so `aredis_om` keeps working without `fastapi-redis-sdk` installed.
+
+<Note>
+The bridge module is **async-only** because `fastapi-redis-sdk` manages `redis.asyncio`
+clients. Pair it with `aredis_om` (the async source of truth), not the generated
+`redis_om` sync mirror. For sync Redis OM usage, configure `Meta.database` with a
+sync `redis.Redis` client directly — see the [standalone example](#standalone-example-without-fastapi-redis-sdk) below.
+</Note>
+
+### Install
+
+```sh
+pip install pyredis-om fastapi-redis-sdk
+# or, with uv:
+uv add pyredis-om fastapi-redis-sdk
+```
+
+### Share the managed pool (`database_from_app`)
+
+`database_from_app(app)` returns a *callable* suitable for a model's `Meta.database`. Redis OM invokes it lazily the first time the model touches Redis (i.e. after the FastAPI lifespan has started the pool), so it is safe to assign at class-definition time.
+
+```python
+from datetime import date
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
+from pydantic import EmailStr
+
+from redis_fastapi import (
+    FastAPIRedis,
+    CacheBackendDep,
+    cache,
+    cache_evict,
+    default_key_builder,
+)
+from fastapi import Depends
+
+from aredis_om import HashModel, NotFoundError
+from aredis_om.integrations.fastapi_redis_sdk import database_from_app
+
+app = FastAPI()
+
+# 1. Let fastapi-redis-sdk own the lifespan and the async connection pool.
+#    REDIS_URL (or REDIS_HOST/REDIS_PORT/...) configures it.
+FastAPIRedis(app).lifespan().caching()
 
 
-## Example app code
+class Customer(HashModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    join_date: date
+    age: int
+    bio: Optional[str] = None
+
+    class Meta:
+        # 2. Reuse the same pool fastapi-redis-sdk manages. The callable
+        #    resolves on first use, after the lifespan has initialised it.
+        database = database_from_app(app)
+
+
+@app.post("/customer")
+async def save_customer(customer: Customer):
+    return await customer.save()
+
+
+@app.get("/customers")
+async def list_customers():
+    return {"customers": [pk async for pk in Customer.all_pks()]}
+
+
+@app.get("/customer/{pk}", dependencies=[Depends(cache(ttl=10, eviction_group="customers"))])
+async def get_customer(pk: str):
+    try:
+        return await Customer.get(pk)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+
+@app.delete(
+    "/customer/{pk}",
+    dependencies=[Depends(cache_evict(eviction_group="customers", key_builder=default_key_builder))],
+)
+async def delete_customer(pk: str):
+    await Customer.delete(pk)
+    return {"deleted": pk}
+```
+
+Because `database_from_app` shares `fastapi-redis-sdk`'s pool, this setup uses a **single** Redis instance for both the durable model data and the HTTP cache. Configure it with one `REDIS_URL`.
+
+### Separate data and cache instances
+
+If you prefer the [Cache vs. Data](#cache-vs-data) split — a durability-tuned instance for Redis OM and a separate cache instance — point the two libraries at different Redis instances:
+
+```python
+import os
+
+from fastapi import FastAPI
+from redis_fastapi import FastAPIRedis, get_settings
+
+from aredis_om import HashModel, get_redis_connection
+
+app = FastAPI()
+# fastapi-redis-sdk reads REDIS_URL for the cache instance.
+FastAPIRedis(app).lifespan().caching()
+
+
+class Customer(HashModel):
+    first_name: str
+
+    class Meta:
+        # Redis OM reads its own env var and opens an independent pool
+        # to a separate durability-tuned instance.
+        database = get_redis_connection(url=os.environ["REDIS_OM_URL"])
+```
+
+### Honour `fastapi-redis-sdk` settings without sharing a pool
+
+`database_from_fastapi_settings()` builds a Redis OM connection from `fastapi-redis-sdk`'s public `RedisSettings` (env vars prefixed `REDIS_`, or a `.env` file) instead of sharing its pool. Use this when you want both libraries to honour the same configuration but keep their pools isolated, or when the `FastAPI` instance is not available at model-definition time:
+
+```python
+from aredis_om import HashModel
+from aredis_om.integrations.fastapi_redis_sdk import database_from_fastapi_settings
+
+
+class Customer(HashModel):
+    first_name: str
+
+    class Meta:
+        database = database_from_fastapi_settings()
+```
+
+The settings are read lazily on first invocation, so environment variables set after import time are picked up.
+
+### Combining caching with model invalidation
+
+The `CacheBackend` dependency is handy when invalidation depends on model state — for example, evicting a dashboard cache after writing through a Redis OM model:
+
+```python
+from fastapi import Depends
+from redis_fastapi import CacheBackendDep
+
+
+@app.post("/customer/{pk}/touch")
+async def touch_customer(pk: str, cache: CacheBackendDep):
+    customer = await Customer.get(pk)
+    customer.bio = "updated"
+    await customer.save()
+    # Cascade-evict any cached views keyed under this group.
+    await cache.delete_group("customers")
+    return {"ok": True}
+```
+
+`CacheBackend` handles JSON serialization, key prefixing, and eviction groups automatically.
+
+## Standalone example (without `fastapi-redis-sdk`)
+
+Redis OM remains fully usable as a standalone library with plain `redis-py` and any FastAPI caching layer you like. The example below uses [`fastapi-cache`](https://github.com/long2ice/fastapi-cache) and manages its own connections — it is the original Redis OM FastAPI example and does **not** require `fastapi-redis-sdk`.
 
 Let's look at an example FastAPI app that uses Redis OM.
 
