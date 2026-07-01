@@ -134,6 +134,7 @@ jobs:
             - name: Upload coverage
               uses: codecov/codecov-action@v7
               with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
                   file: ./coverage.xml
                   flags: unit
                   env_vars: OS
@@ -188,6 +189,7 @@ jobs:
             - name: Upload coverage
               uses: codecov/codecov-action@v7
               with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
                   file: ./coverage.xml
                   flags: cluster
                   env_vars: OS
