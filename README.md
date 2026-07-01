@@ -19,6 +19,7 @@
 [![Version][version-svg]][package-url]
 [![License][license-image]][license-url]
 [![Build Status][ci-svg]][ci-url]
+[![Codecov][codecov-svg]][codecov-url]
 
 **Redis OM Python** makes it easy to model Redis data in your Python applications.
 
@@ -250,6 +251,8 @@ Redis OM uses the [LGPL v3+ license][license-url] with some code re-used under t
 [package-url]: https://pypi.org/project/pyredis-om/
 [ci-svg]: https://img.shields.io/github/actions/workflow/status/XChikuX/redis-om-python/ci.yml?branch=main&style=flat-square
 [ci-url]: https://github.com/XChikuX/redis-om-python/actions
+[codecov-svg]: https://img.shields.io/codecov/c/github/XChikuX/redis-om-python?style=flat-square
+[codecov-url]: https://codecov.io/github/XChikuX/redis-om-python
 [license-image]: https://img.shields.io/github/license/XChikuX/redis-om-python?style=flat-square
 [license-url]: LICENSE
 [redis-license-url]: LICENSE.OLD
