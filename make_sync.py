@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import unasync
@@ -150,9 +151,20 @@ def _fix_asyncio_sleep(content: str) -> str:
     sync mirror. ``asyncio.sleep`` returns a coroutine object in Python
     3.12+, which raises ``RuntimeWarning: coroutine 'sleep' was never
     awaited`` (and breaks when ``asyncio`` is no longer imported).
+
+    Also drops ``import asyncio`` once no ``asyncio.*`` reference remains.
+    When the import lives inside a ``try: ... except ImportError: ...``
+    skip-guard, the whole guard is removed first — otherwise stripping
+    just the import line would leave a ``try:`` with an empty body and
+    an orphan ``except`` clause (a SyntaxError).
     """
     if "asyncio.sleep(" in content:
         content = content.replace("asyncio.sleep(", "time.sleep(")
+
+    # If a ``try: import asyncio / except ImportError: ...`` skip-guard is
+    # present, remove it before stripping the import — otherwise the
+    # ``try:`` ends up with an empty body.
+    content = _strip_try_import_asyncio(content)
 
     # Drop ``import asyncio`` once no ``asyncio.*`` call remains. We scan
     # every line so occurrences in docstrings/comments don't count.
@@ -171,6 +183,29 @@ def _fix_asyncio_sleep(content: str) -> str:
     if not still_used and "import asyncio\n" in content:
         content = content.replace("import asyncio\n", "")
     return content
+
+
+def _strip_try_import_asyncio(content: str) -> str:
+    """Remove ``try: \n import asyncio \n except ImportError: <body>`` blocks.
+
+    The ``try: import asyncio / except ImportError:`` idiom guards against
+    a missing ``asyncio`` module — but asyncio is part of the stdlib on
+    every Python version this project supports, so the guard is dead code
+    in the sync mirror.  Removing the whole block (not just the import
+    line) avoids leaving an empty ``try:`` body.
+    """
+    well_formed = re.compile(
+        r"^(?P<indent>[ \t]*)try:\s*(?:\#[^\n]*)?\n"
+        r"(?P=indent)[ \t]+import asyncio\s*(?:\#[^\n]*)?\n"
+        r"(?P=indent)except ImportError:\s*(?:\#[^\n]*)?\n"
+        r"(?:(?P=indent)[ \t]+[^\n]*\n?)*",
+        re.MULTILINE,
+    )
+    new_content = well_formed.sub("", content)
+    if new_content != content:
+        # Collapse runs of 3+ blank lines left behind by the removal.
+        new_content = re.sub(r"\n{3,}", "\n\n", new_content)
+    return new_content
 
 
 def apply_post_sync_fixes(repo_root: Path):
