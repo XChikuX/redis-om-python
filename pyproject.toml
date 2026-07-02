@@ -1,6 +1,6 @@
 [project]
 name = "pyredis-om"
-version = "0.9.7"
+version = "0.10.0"
 description = "A drop-in replacement for `redis-om`, built out of frustration."
 authors = [
     { name = "Redis OSS", email = "oss@redis.com" },
@@ -58,7 +58,7 @@ dev = [
     "pytest-asyncio>=1.0,<2.0",
     "email-validator>=2.0,<3.0",
     "tox>=4.0,<6.0",
-    "strawberry-graphql>=0.314.0",
+    "strawberry-graphql>=0.320.0",
     "twine>=6.2.0",
 ]
 

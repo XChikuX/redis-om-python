@@ -665,6 +665,29 @@ def convert_datetime_to_timestamp(obj):
         return obj
 
 
+def _timestamp_to_datetime(value, target_type):
+    """Convert a single numeric/string timestamp to a ``datetime`` or ``date``.
+
+    ``target_type`` must be ``datetime.datetime`` or ``datetime.date``.
+    Returns the original value unchanged if it is not a number or if the
+    conversion fails (e.g. out-of-range timestamp), so callers can apply this
+    opportunistically without losing non-convertible data.
+    """
+    if not isinstance(value, (int, float, str)):
+        return value
+    try:
+        if isinstance(value, str):
+            value = float(value)
+        dt = datetime.datetime.fromtimestamp(value, tz=datetime.timezone.utc).replace(
+            tzinfo=None
+        )
+        if target_type is datetime.date:
+            return dt.date()
+        return dt
+    except (ValueError, OSError):
+        return value
+
+
 def convert_timestamp_to_datetime(obj, model_fields):
     """Convert Unix timestamps back to datetime objects based on model field types."""
     if isinstance(obj, dict):
@@ -690,22 +713,8 @@ def convert_timestamp_to_datetime(obj, model_fields):
                         field_type = non_none_types[0]
 
                 # Handle direct datetime/date fields
-                if field_type in (datetime.datetime, datetime.date) and isinstance(
-                    value, (int, float, str)
-                ):
-                    try:
-                        if isinstance(value, str):
-                            value = float(value)
-                        dt = datetime.datetime.fromtimestamp(
-                            value, tz=datetime.timezone.utc
-                        ).replace(tzinfo=None)
-                        # If the field is specifically a date, convert to date
-                        if field_type is datetime.date:
-                            result[key] = dt.date()
-                        else:
-                            result[key] = dt
-                    except (ValueError, OSError):
-                        result[key] = value  # Keep original value if conversion fails
+                if field_type in (datetime.datetime, datetime.date):
+                    result[key] = _timestamp_to_datetime(value, field_type)
                 # Handle nested models - check if it's a RedisModel subclass
                 elif isinstance(value, dict):
                     try:
@@ -720,9 +729,10 @@ def convert_timestamp_to_datetime(obj, model_fields):
                             result[key] = convert_timestamp_to_datetime(value, {})
                     except (TypeError, AttributeError):
                         result[key] = convert_timestamp_to_datetime(value, {})
-                # Handle lists that might contain nested models
+                # Handle lists that might contain nested models or scalars
+                # (e.g. List[SomeModel], List[datetime], List[date])
                 elif isinstance(value, list):
-                    # Try to extract the inner type from List[SomeModel]
+                    # Try to extract the inner type from List[...]
                     inner_type = None
                     if (
                         hasattr(field_type, "__origin__")
@@ -732,21 +742,31 @@ def convert_timestamp_to_datetime(obj, model_fields):
                     ):
                         inner_type = field_type.__args__[0]
 
-                        # Check if the inner type is a nested model
-                        try:
-                            if isinstance(inner_type, type) and has_model_field_mapping(
-                                inner_type
-                            ):
-                                result[key] = [
-                                    convert_timestamp_to_datetime(
-                                        item, get_model_fields(inner_type)
+                        # List[datetime] / List[date]: convert each numeric
+                        # item back to a datetime/date.
+                        if inner_type in (datetime.datetime, datetime.date):
+                            result[key] = [
+                                _timestamp_to_datetime(item, inner_type)
+                                for item in value
+                            ]
+                        else:
+                            # Check if the inner type is a nested model
+                            try:
+                                if isinstance(
+                                    inner_type, type
+                                ) and has_model_field_mapping(inner_type):
+                                    result[key] = [
+                                        convert_timestamp_to_datetime(
+                                            item, get_model_fields(inner_type)
+                                        )
+                                        for item in value
+                                    ]
+                                else:
+                                    result[key] = convert_timestamp_to_datetime(
+                                        value, {}
                                     )
-                                    for item in value
-                                ]
-                            else:
+                            except (TypeError, AttributeError):
                                 result[key] = convert_timestamp_to_datetime(value, {})
-                        except (TypeError, AttributeError):
-                            result[key] = convert_timestamp_to_datetime(value, {})
                     else:
                         result[key] = convert_timestamp_to_datetime(value, {})
                 else:
