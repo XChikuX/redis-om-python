@@ -157,7 +157,7 @@ docker-compose.cluster.yml # Six-node local Redis Cluster
 - **Complete TODO cleanup** — all `TODO` comments have been removed from `aredis_om/` and `tests/`. Decisions were made and documented inline:
   - Sets are intentionally unsupported in `is_supported_container_type` (no order preservation in TAG fields).
   - Geo fields are handled via `Coordinates` type separately from `NUMERIC_TYPES`.
-  - Bytes values in TAG queries are passed through unchanged (documented rationale).
+  - Bytes values in TAG queries are base64-encoded to match the stored representation.
   - Multi-value vs exact-match TAG ambiguity is documented with a note.
   - Negating `*` (ALL) is explicitly rejected as logically contradictory.
   - Non-IN/NOT_IN sequence right-hand values now raise `QueryNotSupportedError`.
@@ -279,17 +279,49 @@ Redis documentation. The following issues were found and fixed:
   ``tests/test_json_all_pks_type_filter.py`` (mock-based tests for both
   type names + dedupe + count forwarding, plus an integration test).
   (`aredis_om/model/model.py`)
+- **``List[bytes]`` load round-trip fixed (2026-07-02).**
+  ``convert_bytes_to_base64`` encoded ``bytes`` items inside lists on save,
+  but ``convert_base64_to_bytes`` only recursed into list items when the
+  inner type was a RedisModel — so ``List[bytes]`` items were returned as
+  raw base64 strings on load (silent data corruption, mirroring the earlier
+  ``List[datetime]`` bug).  A new ``inner_type is bytes`` branch decodes
+  each base64 item back to ``bytes``; non-``str`` items (e.g. ``None``)
+  pass through unchanged.  ``Optional[List[bytes]]`` is handled by the
+  existing ``Optional`` unwrapping logic.  Covered by
+  ``tests/test_bytes_roundtrip.py`` (pure-function + JsonModel integration
+  tests, including ``decode_responses=False`` variants).
+  (`aredis_om/model/model.py`)
+- **``bytes`` field querying fixed (2026-07-02).**
+  ``bytes`` are base64-encoded on save (``convert_bytes_to_base64``), so
+  the stored TAG value is a base64 string.  The query path previously
+  used the raw ``bytes`` value:
+    * EQ/NE: passed raw ``bytes`` to ``escaper.escape()`` which raised
+      ``TypeError: cannot use a string pattern on a bytes-like object``.
+    * IN/NOT_IN/STARTSWITH/ENDSWITH/CONTAINS: ``expand_tag_value``
+      returned the raw ``bytes``, which produced a query string containing
+      ``b'...'`` reprs and never matched the stored base64.
+  ``expand_tag_value`` now base64-encodes both scalar and list-element
+  ``bytes`` values (then runs the result through ``TokenEscaper`` so
+  base64's ``+`` / ``/`` / ``=`` are RediSearch-escaped), and the EQ/NE
+  branches in ``resolve_value`` route ``bytes`` values through
+  ``expand_tag_value`` as well.  Covered by ``tests/test_bytes_roundtrip.py``
+  (pure-function + JsonModel integration tests, including
+  ``decode_responses=False`` variants).
+  (`aredis_om/model/model.py`)
+- **``FindQuery.delete()`` now logs swallowed ``ResponseError`` (2026-07-02).**
+  The method still swallows ``ResponseError`` (commonly raised on Redis
+  Cluster when ``DEL`` hits keys in different slots) and reports it as
+  ``0`` to keep the documented total contract, but it now also emits a
+  ``WARNING`` log with the model name and error message so failures are
+  debuggable from server logs.  Covered by ``tests/test_find_query_delete.py``
+  (mock-based zero/log/count tests + an integration test).
+  (`aredis_om/model/model.py`)
 
 ### Remaining known issues
 
-- **``bytes`` field querying asymmetry.**  ``bytes`` are base64-encoded on
-  save but queried as raw ``bytes`` in ``expand_tag_value``.  A ``bytes``
-  equality query will never match the stored base64 string.
-  (`aredis_om/model/model.py`)
-- **``FindQuery.delete()`` swallows all ``ResponseError`` types.**
-  Intentionally broad for the documented API contract; callers needing
-  stricter error handling should use raw ``DEL`` commands.
-  (`aredis_om/model/model.py`)
+None are currently known. See ``SECURITY_REVIEW.md`` and
+``## Performance review highlights`` below for hardening and optimisation
+opportunities that are out of scope for the correctness audit.
 
 ## Performance review highlights
 

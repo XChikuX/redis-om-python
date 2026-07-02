@@ -913,7 +913,8 @@ def convert_base64_to_bytes(obj, model_fields):
                 except (TypeError, AttributeError):
                     result[key] = value
             elif isinstance(value, list):
-                # Handle lists that might contain nested models with bytes
+                # Handle lists that might contain nested models with bytes,
+                # or ``List[bytes]`` (base64-encoded strings on load).
                 inner_type = None
                 if (
                     hasattr(field_type, "__origin__")
@@ -930,6 +931,17 @@ def convert_base64_to_bytes(obj, model_fields):
                                 convert_base64_to_bytes(
                                     item, get_model_fields(inner_type)
                                 )
+                                for item in value
+                            ]
+                        elif inner_type is bytes:
+                            # ``List[bytes]``: each item was base64-encoded
+                            # on save (``convert_bytes_to_base64``); decode
+                            # each item back to ``bytes``. Non-str items
+                            # (e.g. ``None``) pass through unchanged.
+                            result[key] = [
+                                base64.b64decode(item)
+                                if isinstance(item, str)
+                                else item
                                 for item in value
                             ]
                         else:
@@ -1406,15 +1418,26 @@ class FindQuery:
         if isinstance(value, str):
             return escaper.escape(value)
         if isinstance(value, bytes):
-            # Bytes values are passed through unchanged. Decoding to ``str``
-            # would be lossy without knowing the original encoding, and TAG
-            # values are byte-comparable on the Redis side. Note that RediSearch
-            # TAG fields only accept strings, so a list of bytes saved into a
-            # TAG-indexed array will fail at index time; callers should convert
-            # such values to strings before saving.
-            return value
+            # Bytes values are base64-encoded on save
+            # (``convert_bytes_to_base64``), so the stored TAG value is the
+            # base64 string. The query value must be base64-encoded too, or
+            # the query will never match. We encode, decode to ASCII, and run
+            # through the RediSearch escaper (base64's ``+``/``/``/``=`` are
+            # all in ``DEFAULT_ESCAPED_CHARS``).
+            return escaper.escape(base64.b64encode(value).decode("ascii"))
+
+        # For sequence values (IN / NOT_IN / STARTSWITH / ...), each element
+        # is a separate TAG value joined by ``|``. Elements that are bytes
+        # must be base64-encoded (same rationale as the scalar branch above)
+        # so the query matches the stored base64 representation. Other
+        # element types fall through to ``str(v)`` as before.
+        def _encode(v):
+            if isinstance(v, bytes):
+                return escaper.escape(base64.b64encode(v).decode("ascii"))
+            return escaper.escape(str(v))
+
         try:
-            return "|".join([escaper.escape(str(v)) for v in value])
+            return "|".join([_encode(v) for v in value])
         except TypeError:
             log.debug(
                 "Escaping single non-iterable value used for an IN or NOT_IN query: %s",
@@ -1655,6 +1678,15 @@ class FindQuery:
                     result = "@{field_name}:{{{value}}}".format(
                         field_name=field_name, value=value
                     )
+                elif isinstance(value, bytes):
+                    # Bytes values are base64-encoded on save; the query
+                    # value must be base64-encoded (and RediSearch-escaped)
+                    # to match the stored TAG value. ``expand_tag_value``
+                    # handles this for us.
+                    expanded = cls.expand_tag_value(value)
+                    result += "@{field_name}:{{{expanded}}}".format(
+                        field_name=field_name, expanded=expanded
+                    )
                 elif isinstance(value, int):
                     # Integer primary-key queries use NUMERIC range syntax (intentionally).
                     result = f"@{field_name}:[{value} {value}]"
@@ -1676,10 +1708,16 @@ class FindQuery:
                         field_name=field_name, value=value
                     )
             elif op is Operators.NE:
-                value = escaper.escape(value)
-                result += "-(@{field_name}:{{{value}}})".format(
-                    field_name=field_name, value=value
-                )
+                if isinstance(value, bytes):
+                    expanded = cls.expand_tag_value(value)
+                    result += "-(@{field_name}:{{{expanded}}})".format(
+                        field_name=field_name, expanded=expanded
+                    )
+                else:
+                    value = escaper.escape(value)
+                    result += "-(@{field_name}:{{{value}}})".format(
+                        field_name=field_name, value=value
+                    )
             elif op is Operators.IN:
                 expanded_value = cls.expand_tag_value(value)
                 result += "(@{field_name}:{{{expanded_value}}})".format(
@@ -2155,13 +2193,23 @@ class FindQuery:
         """Delete all matching records in this query.
 
         Returns the integer count of deleted keys (Redis ``DEL`` response).
-        A ``ResponseError`` is swallowed and reported as ``0`` to keep the
+        A ``ResponseError`` is logged and reported as ``0`` to keep the
         method total: callers that need stricter error handling should issue
         raw ``DEL`` commands against the model's database.
         """
         try:
             return await self.model.db().delete(*[m.key() for m in await self.all()])
-        except ResponseError:
+        except ResponseError as e:
+            # The most common cause is a cross-slot ``DEL`` on a Redis
+            # Cluster (keys hashing to different slots). We log the error so
+            # the failure is debuggable, but preserve the documented total
+            # contract (return ``0`` rather than raising).
+            log.warning(
+                "FindQuery.delete() for %s swallowed ResponseError: %s. "
+                "Use raw DEL commands for stricter error handling.",
+                self.model.__name__,
+                e,
+            )
             return 0
 
     async def __aiter__(self):
