@@ -1,6 +1,7 @@
 # type: ignore
 
 import abc
+import base64
 import dataclasses
 import datetime
 import decimal
@@ -234,22 +235,32 @@ async def test_find_query_accepts_string_and_bytes_for_scalar_operator(m):
 
     We use ``collections.abc.Sequence`` to exclude ``str`` and ``bytes`` from
     the validation, so passing a plain string to EQ/NE/etc. continues to work
-    and renders as a regular TAG field lookup. The validator's only job is to
-    reject lists/tuples; downstream rendering of ``bytes`` is a separate
-    concern documented as a known issue elsewhere.
+    and renders as a regular TAG field lookup. ``bytes`` is likewise allowed
+    through the validator and is base64-encoded downstream (bytes are
+    base64-encoded on save, so the query must encode them too to match the
+    stored TAG value).
     """
+    # str renders as a plain TAG lookup.
     model_name, fq = await FindQuery(
         expressions=[m.Member.first_name == "Andrew"], model=m.Member
     ).get_query()
     assert fq == ["FT.SEARCH", model_name, "@first_name:{Andrew}", "LIMIT", 0, 1000]
-    # Bytes must not be rejected by the sequence validator. We only assert that
-    # the validation branch doesn't raise; downstream rendering of bytes is
-    # out of scope for this test (see CLAUDE.md "bytes field querying
-    # asymmetry").
-    with pytest.raises((QueryNotSupportedError, TypeError)):
-        await FindQuery(
-            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
-        ).get_query()
+
+    # bytes renders as the base64 of the value, RediSearch-escaped. For
+    # ``b"Andrew"`` the base64 is ``"QW5kcmV3"`` and contains no RediSearch
+    # special characters, so the escaper leaves it unchanged.
+    expected_b64 = base64.b64encode(b"Andrew").decode("ascii")
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name == b"Andrew"], model=m.Member
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "@first_name:{" + expected_b64 + "}",
+        "LIMIT",
+        0,
+        1000,
+    ]
 
 
 # experssion testing; (==, !=, <, <=, >, >=, |, &, ~)
@@ -868,30 +879,31 @@ async def test_str_passes_validator_and_renders(m):
 
 
 @py_test_mark_asyncio
-async def test_bytes_passes_validator(m):
-    """``bytes`` is explicitly allowed by the sequence validator.
+async def test_bytes_passes_validator_and_renders(m):
+    """``bytes`` is explicitly allowed by the sequence validator and renders
+    as a base64-encoded TAG lookup.
 
-    Downstream rendering of ``bytes`` is documented as a known issue in
-    ``CLAUDE.md`` ("bytes field querying asymmetry"); this test only pins the
-    validator's behavior so that a refactor that tightens the check (e.g. by
-    dropping the ``bytes`` exemption) is forced to update this test too.
+    Bytes values are base64-encoded on save (``convert_bytes_to_base64``), so
+    the query path base64-encodes them too (see ``expand_tag_value``) to match
+    the stored representation. There is no "known issue" here anymore; the
+    bytes querying asymmetry was fixed and this test pins the fixed behavior.
     """
-    # The validator must not raise QueryNotSupportedError; whatever happens
-    # downstream is out of scope here.
-    with pytest.raises((QueryNotSupportedError, TypeError, QuerySyntaxError)):
-        await FindQuery(
-            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
-        ).get_query()
-    # Confirm explicitly: re-running and catching allows us to assert the
-    # raised error is NOT a "sequence value" error.
-    try:
-        await FindQuery(
-            expressions=[m.Member.first_name == b"Andrew"], model=m.Member
-        ).get_query()
-    except QueryNotSupportedError as e:
-        assert "sequence value" not in str(e)
-    except Exception:
-        pass
+    expected_b64 = base64.b64encode(b"Andrew").decode("ascii")
+    model_name, fq = await FindQuery(
+        expressions=[m.Member.first_name == b"Andrew"], model=m.Member
+    ).get_query()
+    assert fq == [
+        "FT.SEARCH",
+        model_name,
+        "@first_name:{" + expected_b64 + "}",
+        "LIMIT",
+        0,
+        1000,
+    ]
+    # Sanity check: the rendered query must not contain a Python bytes repr
+    # (``b'Andrew'``), which would indicate the raw bytes leaked through.
+    assert "b'" not in fq[2]
+    assert 'b"' not in fq[2]
 
 
 # ---------------------------------------------------------------------------
