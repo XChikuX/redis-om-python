@@ -251,14 +251,37 @@ Redis documentation. The following issues were found and fixed:
   (`aredis_om/model/model.py`)
 - **``ExpressionProxy.__eq__`` / ``__ne__`` mypy suppression typo fixed.**
   ``# ty: ignore`` was not a recognized pragma.  (`aredis_om/model/model.py`)
+- **``List[datetime]`` / ``List[date]`` round-trip fixed (2026-07-02).**
+  ``convert_datetime_to_timestamp`` converted ``List[datetime]`` items to
+  numeric timestamps on save, but ``convert_timestamp_to_datetime`` only
+  recursed into list items when the inner type was a RedisModel.  For
+  ``List[datetime]`` / ``List[date]`` (and the ``Optional[...]`` variants)
+  it recursed with empty model fields, so each numeric item hit the
+  no-op ``else`` branch and was returned as a raw timestamp — silent data
+  corruption on load.  A new ``_timestamp_to_datetime(value, target_type)``
+  helper now handles the scalar conversion for both direct fields and list
+  items, and the list branch converts ``List[datetime]`` / ``List[date]``
+  item-by-item.  Non-numeric items (e.g. ``None``) pass through unchanged.
+  Covered by ``tests/test_datetime_list_roundtrip.py`` (pure-function +
+  JsonModel integration tests).
+  (`aredis_om/model/model.py`)
+- **``JsonModel.all_pks()`` JSON type-name fallback (2026-07-02).**
+  ``all_pks()`` filtered its ``SCAN`` with ``_type="ReJSON-RL"`` — the
+  module type name the ReJSON module has historically reported.  Redis 8.x
+  and some forks/variants may instead report JSON keys as ``"JSON"``, in
+  which case the type filter would silently match nothing and
+  ``all_pks()`` would yield no primary keys.  ``all_pks()`` now scans with
+  ``ReJSON-RL`` first and, only if that yields no keys, falls back to a
+  second ``SCAN`` with ``_type="JSON"``.  Results are deduplicated
+  defensively (a key has exactly one ``TYPE``, so overlap is impossible in
+  practice).  Verified against ``redis:8-alpine`` (8.0.x), which still
+  reports ``ReJSON-RL`` — the fallback is forward-compatible.  Covered by
+  ``tests/test_json_all_pks_type_filter.py`` (mock-based tests for both
+  type names + dedupe + count forwarding, plus an integration test).
+  (`aredis_om/model/model.py`)
 
 ### Remaining known issues
 
-- **``List[datetime]`` silent data corruption.**  ``convert_datetime_to_timestamp``
-  converts ``List[datetime]`` items to numeric timestamps on save, but
-  ``convert_timestamp_to_datetime`` does not convert the list items back
-  to ``datetime`` on load.  Model instances silently return raw timestamps
-  for a field typed ``datetime``.  (`aredis_om/model/model.py`)
 - **``bytes`` field querying asymmetry.**  ``bytes`` are base64-encoded on
   save but queried as raw ``bytes`` in ``expand_tag_value``.  A ``bytes``
   equality query will never match the stored base64 string.
@@ -266,9 +289,6 @@ Redis documentation. The following issues were found and fixed:
 - **``FindQuery.delete()`` swallows all ``ResponseError`` types.**
   Intentionally broad for the documented API contract; callers needing
   stricter error handling should use raw ``DEL`` commands.
-  (`aredis_om/model/model.py`)
-- **``ReJSON-RL`` type filter in ``JsonModel.all_pks()``** may need updating
-  for Redis 8.x which may report the type as ``"JSON"``.
   (`aredis_om/model/model.py`)
 
 ## Performance review highlights

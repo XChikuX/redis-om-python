@@ -3821,21 +3821,49 @@ class JsonModel(RedisModel, abc.ABC):
 
     @classmethod
     async def all_pks(cls, count: Optional[int] = None):
+        """Yield the primary keys of every stored instance of this model.
+
+        Uses a type-filtered ``SCAN`` over the model's key prefix. The ReJSON
+        module has historically reported its keys' ``TYPE`` as ``ReJSON-RL``;
+        Redis 8.x and some forks/variants may instead report them as
+        ``"JSON"``. We scan with ``ReJSON-RL`` first and, only if that yields
+        no keys, fall back to ``JSON``. A key can have only one ``TYPE``, so
+        the two scans are mutually exclusive in practice; we still dedupe
+        defensively in case a server ever reports both names.
+        """
         key_prefix = cls.make_key(cls._meta.primary_key_pattern.format(pk=""))
-        scan_kwargs: Dict[str, Any] = {"_type": "ReJSON-RL"}
-        if count is not None:
-            scan_kwargs["count"] = count
+        db = cls.db()
+
         # SCAN keys are returned as ``bytes`` when ``decode_responses=False``
         # and ``str`` otherwise. We decode bytes using the model's encoding
         # (default ``utf-8``) before stripping the key prefix.
-        return (
-            (
-                remove_prefix(key, key_prefix)
-                if isinstance(key, str)
-                else remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
-            )
-            async for key in cls.db().scan_iter(f"{key_prefix}*", **scan_kwargs)
-        )
+        def _decode(key):
+            if isinstance(key, str):
+                return remove_prefix(key, key_prefix)
+            return remove_prefix(key.decode(cls.Meta.encoding), key_prefix)
+
+        async def _scan_type(type_name):
+            scan_kwargs: Dict[str, Any] = {"_type": type_name}
+            if count is not None:
+                scan_kwargs["count"] = count
+            async for key in db.scan_iter(f"{key_prefix}*", **scan_kwargs):
+                yield _decode(key)
+
+        async def _generator():
+            seen: Set[str] = set()
+            found_any = False
+            # Try the historical name first; only fall back if it produced
+            # nothing (avoids a second SCAN on the common path).
+            for type_name in ("ReJSON-RL", "JSON"):
+                if type_name != "ReJSON-RL" and found_any:
+                    break
+                async for pk in _scan_type(type_name):
+                    found_any = True
+                    if pk not in seen:
+                        seen.add(pk)
+                        yield pk
+
+        return _generator()
 
     async def update(self, **field_values):
         validate_model_fields(self.__class__, field_values)
