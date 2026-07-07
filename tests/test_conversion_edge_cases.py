@@ -236,9 +236,7 @@ def test_optional_list_bytes_roundtrip():
     """``Optional[List[bytes]]`` with a real list."""
     blobs = [b"abc", b"\x00\xff"]
     encoded = convert_bytes_to_base64({"blobs": blobs})
-    decoded = convert_base64_to_bytes(
-        encoded, _fields(blobs=Optional[List[bytes]])
-    )
+    decoded = convert_base64_to_bytes(encoded, _fields(blobs=Optional[List[bytes]]))
     assert decoded["blobs"] == blobs
 
 
@@ -319,6 +317,7 @@ def test_combined_save_conversions():
 
 # Define embedded models at module level (no per-test key_prefix needed).
 # Top-level models are created in the fixture below.
+
 
 class _Address(EmbeddedJsonModel):
     street: str
