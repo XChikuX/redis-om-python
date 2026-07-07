@@ -19,7 +19,7 @@ Object mapping library for Redis built on Pydantic v2, utilizing Redis Search an
 * **Source of Truth:** All manual edits belong in `aredis_om/` or `tests/`.
 * **Generated Artifacts:** `redis_om/` and `tests_sync/` (generated via `make sync`; git-ignored).
 * **Tooling:** `uv` manages dependencies/workflows. `uv.lock` is committed (commit `4dcd256`) to enable CI caching; treat it as the source of truth for reproducible installs and bump it via `uv lock` when `pyproject.toml` changes.
-* **Test Dependencies:** `pytest`, `pytest-asyncio`, `pytest-xdist`, `pytest-cov`, `pytest-codspeed`, `bandit`, `mypy`, `black`, `isort`, `flake8` (via `uv sync --extra dev`).
+* **Test Dependencies:** `pytest`, `pytest-asyncio`, `pytest-xdist`, `pytest-cov`, `pytest-codspeed`, `mypy`, `ruff`, `unasync`, `ipdb`, `coverage`, `email-validator`, `tox`, `strawberry-graphql`, `twine` (via `uv sync --extra dev`).
 * **Redis Targets:** * Local: `redis:8-alpine` (6380), `valkey/valkey:9-alpine` (6381) via Compose.
 * CI: `redis:8-alpine` (6379).
 
@@ -49,14 +49,14 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 3. **Local Redis:** `docker compose up -d` → `export REDIS_OM_URL="redis://localhost:6380?decode_responses=True"`.
 4. **Commands:**
 * Install: `uv sync --extra dev`
-* Verify: `make sync`, `make lint` (runs `make dist` → isort, black, flake8, mypy, bandit).
+* Verify: `make sync`, `make lint` (runs `ruff check`, `ruff format --check`, `mypy`).
 * Test: `make test` (starts Compose → async/sync + coverage → stops Compose).
 * Cluster Test: `make test_cluster` (starts both Compose files → cluster tests).
 * Benchmark: `make benchmark` (runs `tests/test_performance_benchmark.py --codspeed` for local validation; CI regression tracking via `.github/workflows/codspeed.yml`).
 * Direct Pytest: `uv run pytest tests/test_hash_model.py -vv` (use `-k` for filtering).
 
 
-5. **Stale Tools:** Ignore `tox.ini` (Poetry metadata removed).
+5. **Stale Tools:** `tox.ini` is not used by CI (which uses `uv` + `Makefile` directly). It still declares a `uv`-based tox env for local use but is not a gating path.
 
 ## 3. Core Architecture
 
@@ -176,5 +176,5 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 ### Security
 
 * **Mitigations:** `TokenEscaper` sanitizes strings. Vector queries utilize `PARAMS`. Pydantic handles primary data boundaries.
-* **Tooling:** Bandit/CodeQL active. (Note: Intentionally broad dependencies with no committed lockfile).
+* **Tooling:** CodeQL active; `ruff` + `mypy` for lint/type-checking. `uv.lock` is committed for reproducible installs.
 * **State / Risks:** Global mutable state for command caches/registries (safe at import, unsafe for runtime mutation). Local Cluster compose uses unprotected host networking (dev only). Schema migration `FT.CREATE` construction remains an internal-only path.

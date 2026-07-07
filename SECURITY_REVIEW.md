@@ -9,7 +9,7 @@ Scope: `/home/runner/work/redis-om-python/redis-om-python` fresh clone, with emp
 
 The codebase is generally well-structured for a Redis object mapper: it is async-first, keeps sync code generated from one source, validates model data through Pydantic v2, consistently escapes RediSearch query tokens, and has broad test coverage across CRUD, query, pipeline, cluster, and regression scenarios.
 
-No critical security flaw was identified in this documentation review. The highest-priority concerns are operational and resilience issues: unbounded query exhaustion can create memory pressure, benchmark tests do not currently fail on regressions, dependency resolution is not locked in the repository, and some CI/tooling files are stale or inconsistent with the uv-based workflow.
+No critical security flaw was identified in this documentation review. The highest-priority concerns originally raised were operational and resilience issues: unbounded query exhaustion can create memory pressure, benchmark tests did not fail on regressions, dependency resolution was not locked in the repository, and some CI/tooling files were stale or inconsistent with the uv-based workflow. As of the 2026-07-07 re-verification, the lockfile is committed, `tox.ini` uses uv, and the benchmark suite is gated by `pytest-codspeed` in CI; the remaining open items are documented inline below and summarised in the "Re-verification summary" section.
 
 ## Reviewed assets
 
@@ -22,14 +22,14 @@ No critical security flaw was identified in this documentation review. The highe
 - `tests/test_performance_benchmark.py` — single-instance benchmark baseline suite.
 - `tests/test_cluster_operations.py` — cluster operation and performance comparison coverage.
 - `Makefile`, `pyproject.toml`, `tox.ini`, `docker-compose.yml`, `docker-compose.cluster.yml`.
-- `.github/workflows/ci.yml` and `.github/workflows/codeql.yml`.
+- `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, and `.github/workflows/codspeed.yml`.
 
 ## Evidence map
 
 - `pyproject.toml` defines broad production dependency ranges in `project.dependencies` and development tooling in `project.optional-dependencies.dev`.
-- The repository `.gitignore` ignores `uv.lock`, and no lockfile is present in the current clone.
-- `Makefile` defines `make sync`, `make lint`, `make test`, `make test_oss`, and `make test_cluster`.
-- `tox.ini` still uses Poetry commands.
+- The repository `.gitignore` has the `uv.lock` entry commented out ("to enable CI caching"), and `uv.lock` is committed (commit `4dcd256`), enabling reproducible installs.
+- `Makefile` defines `make sync`, `make lint`, `make test`, `make test_oss`, `make test_cluster`, and `make benchmark`.
+- `tox.ini` uses `uv` commands (`uv sync --extra dev`, `uv run pytest`); Poetry metadata has been removed.
 - `make_sync.py` defines unasync generation for `aredis_om/` → `redis_om/` and `tests/` → `tests_sync/`.
 - `aredis_om/model/model.py` defines the global `model_registry`, Redis Cluster pipeline detection, `FindQuery.copy()`, transparent result exhaustion, and conversion-heavy load/save paths.
 - `aredis_om/model/migrations/migrator.py` builds and executes `FT.CREATE` migration commands.
@@ -38,6 +38,7 @@ No critical security flaw was identified in this documentation review. The highe
 - `docker-compose.cluster.yml` uses host networking and `--protected-mode no` for local cluster testing.
 - `.github/workflows/ci.yml` runs linting and matrix tests.
 - `.github/workflows/codeql.yml` configures CodeQL analysis.
+- `.github/workflows/codspeed.yml` runs the benchmark suite under `pytest-codspeed` (walltime mode) on every push to `main` and every pull request.
 
 ## Performance strengths
 
@@ -146,7 +147,7 @@ The benchmark suite records elapsed time and operations per second, but the main
    - Update paths call `validate_model_fields()` to reject invalid field references.
 
 5. **Security tooling exists**
-   - `make lint` runs Bandit over async and generated sync packages.
+   - `make lint` runs `ruff check`, `ruff format --check`, and `mypy` over async and generated sync packages.
    - `.github/workflows/codeql.yml` runs CodeQL for Python on pull requests, pushes to main, and weekly schedule.
 
 6. **No obvious dynamic code execution path**
@@ -240,7 +241,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 
 - `redis_om/` and `tests_sync/` are generated and ignored, so line references and static scans should prioritize `aredis_om/` and `tests/` unless generated outputs have been produced locally.
 - CI runs lint before tests and runs `make test`, which itself starts/stops Docker Compose. In GitHub Actions, a Redis service is also configured, but the Makefile defaults to port 6380 unless overridden.
-- `make lint` invokes `make dist`, and `make dist` invokes `clean`, which removes generated outputs and the virtual environment. This can be surprising during local iteration.
+- `make lint` depends on `make sync` (not `make dist`); it runs `ruff check`, `ruff format --check`, and `mypy`. `make dist` (which builds the wheel/sdist) separately depends on `clean`, which removes generated outputs and the virtual environment — surprising if invoked during local iteration.
 - The project advertises Python 3.14 in classifiers and CI tests against it (matrix: 3.10–3.14 in both `test-unix` and `test-cluster`). Lint pins to 3.12.
 
 ## Prioritized recommendations
@@ -270,7 +271,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 
 ## Overall assessment
 
-The project has a solid baseline for a production-oriented Redis object mapper. Its strongest security properties are Pydantic validation, RediSearch token escaping, and existing Bandit/CodeQL coverage. Its strongest performance properties are async-first design and pipeline-backed bulk operations.
+The project has a solid baseline for a production-oriented Redis object mapper. Its strongest security properties are Pydantic validation, RediSearch token escaping, and existing CodeQL coverage. Its strongest performance properties are async-first design and pipeline-backed bulk operations.
 
 The main improvements are not emergency fixes; they are hardening and scalability work that will make behavior more predictable under large result sets, changing dependency graphs, and contributor workflow variation.
 
