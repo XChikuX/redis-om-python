@@ -325,33 +325,57 @@ In this example, we marked `Customer.last_name` as indexed.
 
 ### Indexing Every Field on a Model
 
-The class-level `index=True` flag marks a model as indexed (so that
-migrations create a RediSearch index for it), but it does **not** by itself
-turn every field into an indexed field. You still need to opt each field
-in, either with `Field(index=True)` or by setting a field-level option that
-implies indexing (vector, full-text search, or sortable):
+The class-level `index=True` flag does two things: it tells the Migrator to
+create a RediSearch index for the model, **and** it auto-indexes every
+unmarked field on the model. This is convenient for small/medium models where
+you want to query on any field:
 
 ```python
 from redis_om import HashModel, Field
 
 
 class Customer(HashModel, index=True):
-    first_name: str = Field(index=True)
-    last_name: str = Field(index=True)
-    email: str = Field(index=True)
-    age: int = Field(index=True, sortable=True)
+    first_name: str
+    last_name: str
+    email: str
+    age: int = Field(sortable=True)
     bio: str = Field(full_text_search=True)
 ```
 
-A field is included in the index when any of the following are true:
+In this example, `first_name`, `last_name`, `email`, and `age` are all
+indexed because the model uses `index=True` at the class level. `age` would
+also be indexed because `sortable=True` implies indexing, and `bio` because
+`full_text_search=True` implies indexing.
+
+A field is included in the index when **any** of the following are true:
 
 * It is marked `Field(index=True)`
+* The class is declared with `class Foo(Model, index=True)` and the field has
+  no explicit `index=` argument
 * It has `Field(..., vector_options=...)` (vector fields are always indexed)
 * It has `Field(..., full_text_search=True)`
 * It has `Field(..., sortable=True)`
 
-If you set `Field(index=False)` on a field, that field is excluded from the
-index even when its model class is `index=True`.
+To opt out of class-level indexing for a single field, use
+`Field(index=False)`:
+
+```python
+class Customer(HashModel, index=True):
+    first_name: str
+    last_name: str
+    email: str
+    password_hash: str = Field(index=False)  # Sensitive; do not index
+```
+
+The field-level `Field(index=False)` always wins over the class-level
+`index=True`, so it is the recommended escape hatch for the rare fields you
+want to keep out of the index.
+
+**NOTE:** Class-level `index=True` on a model with many fields produces a
+large RediSearch index, which increases memory usage and can slow queries.
+If your model has more than 20 fields, a one-time `UserWarning` is emitted at
+class construction time telling you to consider per-field indexing. See
+[How Indexing Works](#how-indexing-works) for the full resolution rules.
 
 ### Running Migrations
 
@@ -379,6 +403,135 @@ migrations it would apply, then prompts for confirmation before running them.
 Migrations are idempotent: re-running them is a no-op unless the schema
 changed, in which case the existing index is dropped (your data is preserved)
 and rebuilt. The full migration reference lives in the project README.
+
+## How Indexing Works
+
+Redis OM supports two complementary ways to declare which fields appear in
+the RediSearch index: **field-level** `Field(index=True|False)` and
+**class-level** `class Foo(Model, index=True)`. They compose using a
+small resolution order — understanding it lets you predict exactly which
+fields end up in the index for any given model.
+
+### The resolution order
+
+For each field on the model, Redis OM asks: *should this field be in the
+RediSearch index?* It checks the following rules in order, and the first
+match wins:
+
+1. **Explicit field-level decision.** If you wrote `Field(index=True)` or
+   `Field(index=False)`, your choice is final — even when the model uses
+   class-level `index=True`. This is how you opt a single field out of
+   class-level indexing.
+2. **Primary keys.** Fields declared with `Field(primary_key=True)` are
+   always indexed, because you need to query by primary key.
+3. **Index-implying attributes.** Fields with `vector_options=...`,
+   `full_text_search=True`, or `sortable=True` are always indexed,
+   because RediSearch requires the field to be in the index to support
+   those features.
+4. **Class-level default.** If the model is declared with
+   `class Foo(Model, index=True)` and none of the above rules fired, the
+   field is indexed.
+5. Otherwise the field is not indexed.
+
+### RediSearch field types
+
+Each indexed field maps to one of the following RediSearch field types.
+The mapping is determined by the field's Python type:
+
+| Python type                         | RediSearch type | Notes                                                                                                |
+| ----------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
+| `str`                               | `TAG`           | Exact-match equality and `IN`/`NOT_IN`/`STARTSWITH`/`ENDSWITH`/`CONTAINS` queries. Custom separator supported. |
+| `Annotated[str, ...]` constraints   | `TAG`           | Same as `str` — the constraint validates input but does not change the index type.                  |
+| `str` + `Field(full_text_search=True)` | `TEXT`       | Adds a separate `<field>_fts TEXT` field alongside the `TAG` for full-text search.                   |
+| `int`, `float`, `decimal.Decimal`   | `NUMERIC`       | Range queries (`>`, `<`, `>=`, `<=`, `==`).                                                          |
+| `datetime.date`, `datetime.datetime` | `NUMERIC`      | Stored as a Unix timestamp; range-queryable.                                                         |
+| `bool`                              | `TAG`           | Always stored as the string `"True"` / `"False"`.                                                     |
+| `Coordinates`                       | `GEO`           | Use with `GeoFilter` for radius queries.                                                              |
+| `list[float]` + `vector_options`    | `VECTOR`        | FLAT or HNSW index; see [Vector Fields for Similarity Search](#vector-fields-for-similarity-search). |
+| `list[str]` / `tuple[str]`          | `TAG`           | Each element is a separate TAG value, joined by the field's separator.                               |
+| Embedded model fields               | (rolled up)     | Sub-fields are indexed under the parent's prefix (e.g. `address_city` for `Address.city`).            |
+
+### Embedded models and class-level indexing
+
+Embedded models (`EmbeddedJsonModel`, or `HashModel` with
+`Meta.embedded = True`) inherit their own class-level `index` flag. When
+they are rolled up into a parent's schema, the embedded model's own flag
+controls which sub-fields appear:
+
+```python
+from redis_om import EmbeddedJsonModel, JsonModel
+
+
+class Address(EmbeddedJsonModel, index=True):
+    city: str
+    state: str
+    postal_code: int  # Auto-indexed because Address uses class-level index
+
+
+class Customer(JsonModel):
+    name: str = Field(index=True)
+    address: Address  # address_city, address_state, address_postal_code all appear
+```
+
+You can mix and match: a field on an embedded model can use `Field(index=False)`
+to opt out, or you can mark it `Field(index=True)` on the parent:
+
+```python
+class Address(EmbeddedJsonModel):
+    city: str = Field(index=True)   # Only city is indexed; state/postal_code are not
+    state: str
+    postal_code: int
+
+
+class Customer(JsonModel):
+    name: str = Field(index=True)
+    address: Address = Field(index=True)  # Marks the embedded field as opt-in
+```
+
+When the parent field is marked `Field(index=True)`, only the sub-fields
+with `Field(index=True)` (or other index-implying attributes) are added to
+the parent's index.
+
+### The 20-field warning
+
+A `UserWarning` is emitted at class construction time when a model declared
+with `index=True` has more than 20 indexed fields. The warning fires once per
+process per model — subsequent migrations and `redisearch_schema()` calls do
+not re-emit it — so it does not spam your logs on every app start.
+
+The threshold is intentionally generous: most legitimate models stay well
+under it. The warning is a *hint* to consider switching to per-field
+indexing on models where you don't actually need to query on every field.
+You can suppress it for a specific model by setting
+`CLASS_INDEX_WARN_THRESHOLD` (not currently a public API), or simply by
+adding `Field(index=False)` to the fields you don't want to query on.
+
+### Common pitfalls
+
+- **`KNNExpression` score fields.** When using KNN vector search with
+  `score_field=Model.some_field`, that field is *synthesized by RediSearch*
+  at query time. If the model uses class-level `index=True`, the score
+  field will be auto-indexed as a `NUMERIC` field and RediSearch will
+  reject the schema with `Property '...' already exists`. Mark it as
+  `Field(index=False)` to opt it out:
+
+  ```python
+  class Document(JsonModel, index=True):
+      embedding: list[float] = Field(vector_options=...)
+      embedding_score: Optional[float] = Field(index=False)
+  ```
+
+- **Pydantic subclassing.** When a model is subclassed, Pydantic v2
+  reconstructs each `FieldInfo`, which strips private attributes. Redis OM
+  persists the "user explicitly set this index" flag inside the
+  `json_schema_extra` metadata so it survives reconstruction. If you write
+  your own `Field` subclass, preserve this contract by calling
+  `_set_redis_om_field_attr(self, "_index_explicitly_set", ...)` on
+  instances whose `index` value you change.
+
+- **Embedded `pk` fields.** Embedded models inherit an `pk` field from
+  `RedisModel` for query-builder ergonomics, but `pk` is never indexed on
+  embedded models. Redis OM strips it from the rolled-up schema.
 
 ## Vector Fields for Similarity Search
 

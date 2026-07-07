@@ -5,8 +5,8 @@ services:
         ports:
             - "6380:6379"
 
-    oss_redis:
-        image: "redis:latest"
+    valkey:
+        image: "valkey/valkey:9-alpine"
         restart: always
         ports:
             - "6381:6379"

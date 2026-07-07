@@ -13,6 +13,7 @@ import json
 import logging
 import operator
 import types
+import warnings
 from copy import copy
 from enum import Enum
 from functools import reduce
@@ -530,6 +531,50 @@ class KNNExpression:
     @property
     def score_field(self) -> str:
         return self._score_field or f"__{self.vector_field.name}_score"
+
+    def validate_score_field_not_indexed(self, model_cls: Type["RedisModel"]) -> None:
+        """Raise a clear error when the score field would collide with an
+        indexed schema field.
+
+        When ``score_field`` is set on the KNN expression, RediSearch
+        synthesises that field at query time via ``KNN ... AS <score_field>``.
+        If the model has an indexed field with the same name, RediSearch
+        rejects the query (and the schema, when both are present at index
+        time) with ``Property '...' already exists in schema``.
+
+        With class-level ``index=True``, fields without an explicit
+        ``Field(index=False)`` get auto-indexed, which can silently trip
+        this collision. Call this method at query construction time to
+        surface a helpful error pointing the user at the fix.
+        """
+        score_name = self.score_field
+        # Walk the model's fields and any embedded fields, looking for a
+        # field whose flat schema alias matches ``score_name``. The score
+        # field is synthesised at the top level (under the same name the
+        # user passed), so we only need to check the top-level model fields.
+        # Thread the model's class-level ``index=True`` default through so
+        # fields that are auto-indexed by it are still detected as indexed.
+        class_index_default = bool(
+            getattr(getattr(model_cls, "_meta", None), "index_enabled", False)
+        )
+        for field_name, field_info in model_cls.model_fields.items():
+            if field_name != score_name:
+                continue
+            # The field exists. If it's indexed, that's a collision.
+            if should_index_field(field_info, class_index_default):
+                raise RedisModelError(
+                    f"KNN score_field {score_name!r} on {model_cls.__name__} "
+                    f"would collide with the indexed field of the same name. "
+                    f"RediSearch synthesises the score field at query time "
+                    f"via `KNN ... AS {score_name}`, so the schema cannot "
+                    f"contain a field with the same name. Either:\n"
+                    f"  1. Mark the field as `Field(index=False)`, or\n"
+                    f"  2. Use `score_field=Model._{score_name}` or another "
+                    f"name that doesn't collide with a schema field.\n"
+                    f"See the docs section on KNN for details."
+                )
+            return  # Field exists but isn't indexed — no collision
+        # Field doesn't exist on the model — KNN synthesises it; no collision.
 
 
 ExpressionOrNegated = Union[Expression, NegatedExpression]
@@ -1200,6 +1245,14 @@ class FindQuery:
         else:
             self.sort_fields = []
 
+        # Fail fast if the user passed a KNN score_field that would collide
+        # with an indexed schema field on the model. RediSearch rejects the
+        # query at runtime with an opaque ``Property '...' already exists in
+        # schema`` error, so we surface a friendlier diagnostic at query
+        # construction time instead.
+        if self.knn is not None:
+            self.knn.validate_score_field_not_indexed(model)
+
         self._expression = None
         self._query: Optional[str] = None
         self._pagination: List[str] = []
@@ -1266,7 +1319,9 @@ class FindQuery:
         """
         if self._query:
             return self._query
-        self._query = self.resolve_redisearch_query(self.expression)
+        self._query = self.resolve_redisearch_query(
+            self.expression, self.model
+        )
         if self.knn:
             # Always wrap the filter expression in parentheses when combining
             # with KNN, unless it's the wildcard "*". This ensures OR expressions
@@ -1535,7 +1590,9 @@ class FindQuery:
                     name, field_info = aliased_field
                 if name == "pk" and is_embedded:
                     continue
-                if not getattr(field_info, "index", False):
+                # Honour class-level ``index=True`` on the embedded model.
+                embedded_index_default = _embedded_index_default(embedded_cls)
+                if not should_index_field(field_info, embedded_index_default):
                     raise QueryNotSupportedError(
                         f"You tried to query by a field ({field.alias}_{name}) "
                         f"that isn't indexed. Docs: {ERRORS_URL}#E6"
@@ -1773,11 +1830,13 @@ class FindQuery:
         return ["SORTBY", str(len(fields)), *fields]
 
     @classmethod
-    def resolve_redisearch_query(cls, expression: ExpressionOrNegated) -> str:
+    def resolve_redisearch_query(
+        cls, expression: ExpressionOrNegated, model_cls: Optional[type] = None
+    ) -> str:
         """
         Resolve an arbitrarily deep expression into a single RediSearch query string.
 
-        This method is complex. Note the following:
+        This method is complex. Note that:
 
         1. This method makes a recursive call to itself when it finds that
            either the left or right operand contains another expression.
@@ -1794,6 +1853,12 @@ class FindQuery:
            With an IN or NOT_IN operator, the right operand can be a sequence
            type, but otherwise, sequence types are rejected to surface likely
            user errors (e.g. accidentally passing a list to an equality check).
+
+        ``model_cls`` is the Redis OM model class that owns the FindQuery (used
+        for resolving the class-level ``index=True`` default when validating
+        that queried fields are indexed).  When ``None``, the caller doesn't
+        have a model in scope (e.g. tests that call this method directly);
+        class-level indexing is then not inferred.
         """
         field_type = None
         field_name = None
@@ -1833,7 +1898,7 @@ class FindQuery:
         if isinstance(expression.left, Expression) or isinstance(
             expression.left, NegatedExpression
         ):
-            result += f"({cls.resolve_redisearch_query(expression.left)})"
+            result += f"({cls.resolve_redisearch_query(expression.left, model_cls)})"
         elif is_model_field_instance(expression.left):
             field_type = cls.resolve_field_type(expression.left, expression.op)
             field_name = expression.left.name
@@ -1842,7 +1907,15 @@ class FindQuery:
             if expression.parents:
                 prefix = "_".join([p[0] for p in expression.parents])
                 resolved_field_name = f"{prefix}_{field_name}"
-            if not field_info or not getattr(field_info, "index", None):
+            # Determine the class-level index default from the owning model.
+            # For nested queries (e.g. ``User.address.city``), ``parents``
+            # tells us which embedded model owns the field.
+            owner_index_default = _query_index_default(
+                model_cls, expression.parents
+            )
+            if not field_info or not should_index_field(
+                field_info, owner_index_default
+            ):
                 raise QueryNotSupportedError(
                     f"You tried to query by a field ({resolved_field_name}) "
                     f"that isn't indexed. Docs: {ERRORS_URL}#E6"
@@ -1851,7 +1924,12 @@ class FindQuery:
             field_type = cls.resolve_field_type(expression.left, expression.op)
             field_name = expression.left.alias
             field_info = expression.left
-            if not field_info or not getattr(field_info, "index", None):
+            owner_index_default = _query_index_default(
+                model_cls, expression.parents
+            )
+            if not field_info or not should_index_field(
+                field_info, owner_index_default
+            ):
                 raise QueryNotSupportedError(
                     f"You tried to query by a field ({field_name}) "
                     f"that isn't indexed. Docs: {ERRORS_URL}#E6"
@@ -1881,7 +1959,7 @@ class FindQuery:
                 # inner expression instead of the NegatedExpression.
                 right = right.expression
 
-            result += f"({cls.resolve_redisearch_query(right)})"
+            result += f"({cls.resolve_redisearch_query(right, model_cls)})"
         else:
             if not field_name:
                 raise QuerySyntaxError("Could not resolve field name.")
@@ -2306,12 +2384,30 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]  # ty: ignore[subclass
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
         separator = kwargs.pop("separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
+        # Track which attributes the user *explicitly* set in the ``Field()``
+        # call.  The ``index`` property has a default of ``False``, so without
+        # this bookkeeping we cannot distinguish "user did not pass ``index``"
+        # (should inherit the model's class-level ``index=True``) from "user
+        # explicitly wrote ``Field(index=False)``" (must opt out).
+        index_explicitly_set = index is not Undefined
         if primary_key and index is Undefined:
+            # Primary keys are auto-indexed even without an explicit ``index``
+            # argument.  Mark the field as explicitly indexed so downstream
+            # checks (``should_index_field``) treat it as a definite index.
             index = True
+            index_explicitly_set = True
         super().__init__(default=default, **kwargs)
         self.primary_key = primary_key
         self.sortable = sortable
         self.case_sensitive = case_sensitive
+        # Store explicitness *before* the property setter so it's not lost
+        # when the setter triggers ``json_schema_extra`` mutation.  We also
+        # persist it into the Redis OM metadata so that downstream code can
+        # distinguish "user wrote ``Field(index=False)``" from "user did not
+        # pass ``index``" even after Pydantic reconstructs this FieldInfo
+        # (which strips private attributes but preserves ``json_schema_extra``).
+        self._index_explicitly_set = index_explicitly_set
+        _set_redis_om_field_attr(self, "_index_explicitly_set", index_explicitly_set)
         self.index = index
         self.full_text_search = full_text_search
         self.vector_options = vector_options
@@ -2341,6 +2437,11 @@ REDIS_OM_FIELD_DEFAULTS = {
     "separator": SINGLE_VALUE_TAG_FIELD_SEPARATOR,
 }
 REDIS_OM_METADATA_KEY = "redis_om"
+# Sentinel for ``__init_subclass__`` to distinguish "class-level ``index`` was
+# not passed" from "``index=False`` was passed explicitly."  Must not be
+# ``Undefined`` (which has a different meaning in the Pydantic field path) or
+# ``None`` (which is a valid user value).
+_UNSET = object()
 # Redis OM stores custom field metadata in Pydantic v2's json_schema_extra so
 # inherited/copied FieldInfo instances retain ORM-specific options.
 
@@ -2399,27 +2500,185 @@ def _apply_redis_om_field_metadata(target: Any, source: Optional[Any] = None) ->
     return target
 
 
-def should_index_field(field_info: Any) -> bool:
+# When a model uses class-level ``index=True``, every unmarked field is added
+# to the RediSearch index.  Large indexes consume RAM and slow down queries,
+# so we warn once per process when a single model's schema exceeds this many
+# indexed fields.  The threshold is intentionally generous — most legitimate
+# models stay well under it — but it catches accidental ``index=True`` on a
+# model with dozens of fields.
+CLASS_INDEX_WARN_THRESHOLD = 20
+
+# Process-global set of ``(module, qualname)`` tuples for models that have
+# already triggered the class-level index-count warning.  Keeps the warning
+# to one emission per process per model, matching the user-facing contract of
+# "once on each app start / migrator run."
+_class_index_warned: Set[str] = set()
+
+
+def _field_index_explicitly_set(field_info: Any) -> bool:
+    """Return True if the field's ``index`` attribute was explicitly set.
+
+    Records the user's intent at ``Field()`` construction time
+    (``FieldInfo._index_explicitly_set``).  The ``index`` property defaults to
+    ``False`` when unset, so without this bookkeeping we cannot distinguish
+    "user did not pass ``index``" (should inherit the model's class-level
+    ``index=True``) from "user wrote ``Field(index=False)``" (must opt out).
+
+    The flag is also set when ``primary_key=True`` is passed without an
+    explicit ``index``, because primary keys are implicitly indexed.
+
+    Pydantic v2 reconstructs ``FieldInfo`` instances when subclassing or
+    merging ``Annotated`` metadata, which strips private attributes but
+    preserves ``json_schema_extra``.  We therefore persist the flag into the
+    Redis OM metadata and fall back to that.  As a last resort, any field
+    marked ``primary_key=True`` is treated as explicitly indexed.
+    """
+    if getattr(field_info, "_index_explicitly_set", False):
+        return True
+    # Fall back to the persisted metadata flag (survives Pydantic FieldInfo
+    # reconstruction on subclassing / Annotated metadata merging).
+    if _get_redis_om_field_attr(field_info, "_index_explicitly_set", False):
+        return True
+    # Primary keys are always indexed even when both markers above are gone.
+    return getattr(field_info, "primary_key", False) is True
+
+
+def should_index_field(
+    field_info: Any, class_index_default: Optional[bool] = None
+) -> bool:
     """Determine whether a field should be added to the RediSearch index.
 
-    A field is indexed if any of the following are true:
-      * ``index=True``
-      * the field has ``vector_options`` set
-      * the field is marked ``full_text_search=True``
-      * the field is marked ``sortable=True``
+    Resolution order (first match wins):
 
-    Vector, full-text-search, and sortable fields must always be indexed for
-    RediSearch to support those features, so we index them even when
-    ``index`` is not explicitly set.
+      1. **Explicit field-level ``index``** — ``Field(index=True)`` or
+         ``Field(index=False)`` always wins.  This lets you opt fields out of
+         a class-level ``index=True`` with ``Field(index=False)``.
+      2. **Primary keys** — ``primary_key=True`` fields are always indexed.
+      3. **Other index-implying attributes** — ``vector_options``,
+         ``full_text_search=True``, and ``sortable=True`` always trigger
+         indexing because RediSearch needs the field in the index to support
+         those features.
+      4. **Class-level default** — when the model is declared with
+         ``class Foo(Model, index=True)``, unmarked fields are indexed.
+      5. Otherwise the field is not indexed.
     """
-    _index = getattr(field_info, "index", None)
+    # 1. Explicit field-level decision wins over everything.
+    if _field_index_explicitly_set(field_info):
+        return getattr(field_info, "index", None) is True
 
-    index = _index is True
+    # 2. Primary keys are always indexed, even when the private marker was
+    #    lost during Pydantic's FieldInfo reconstruction on subclassing.
+    if getattr(field_info, "primary_key", False) is True:
+        return True
+
+    # 3. Other index-implying attributes always trigger indexing.
     vector_options = getattr(field_info, "vector_options", None) is not None
     full_text_search = getattr(field_info, "full_text_search", None) is True
     sortable = getattr(field_info, "sortable", None) is True
+    if vector_options or full_text_search or sortable:
+        return True
 
-    return index or vector_options or full_text_search or sortable
+    # 4. Class-level default applies to fields that are otherwise unmarked.
+    if class_index_default is True:
+        return True
+
+    return False
+
+
+def _embedded_index_default(typ: Any) -> bool:
+    """Return the class-level ``index_enabled`` setting for an embedded model.
+
+    Used during schema recursion: when we descend into an embedded model's
+    fields, we switch to *that model's* class-level index default rather than
+    the parent's.  This lets ``class Address(EmbeddedJsonModel, index=True)``
+    auto-index all of Address's fields when rolled up into the parent's
+    schema, independent of whether the parent itself uses class-level
+    indexing.
+    """
+    try:
+        if isinstance(typ, type) and issubclass(typ, RedisModel):
+            return bool(getattr(getattr(typ, "_meta", None), "index_enabled", False))
+    except TypeError:
+        pass
+    return False
+
+
+def _query_index_default(
+    model_cls: Type["RedisModel"], parents: Optional[List]
+) -> bool:
+    """Return the class-level index default for query-time validation.
+
+    For a top-level field query (``Customer.age == 30``), uses the model's
+    own ``index_enabled``.  For a nested query (``User.address.city == "X"``),
+    uses the deepest embedded model's ``index_enabled`` — that is the model
+    that owns the field being queried.
+    """
+    # The ``parents`` chain is only set when descending into embedded fields.
+    # For top-level fields it's empty, so we use the model that owns the
+    # FindQuery directly.
+    owning_cls = model_cls
+    if parents:
+        # ``parents`` is a list of ``(alias, outer_type)`` tuples walking the
+        # path from the root model down to the field's owner.  The outer_type
+        # may be a container like ``List[OrderItem]`` — in that case we need
+        # to unwrap the generic alias to find the embedded model class.
+        _alias, parent_type = parents[-1]
+        # Unwrap generic types (List[X], Optional[X], Tuple[X, ...]) to get
+        # the concrete embedded model class.
+        from typing import get_args as _typing_get_args
+        from typing import get_origin as _typing_get_origin
+
+        concrete_type = parent_type
+        try:
+            origin = _typing_get_origin(parent_type)
+            if origin is not None:
+                type_args = _typing_get_args(parent_type)
+                if type_args:
+                    concrete_type = type_args[0]
+        except Exception:
+            pass
+        try:
+            if isinstance(concrete_type, type) and issubclass(
+                concrete_type, RedisModel
+            ):
+                owning_cls = concrete_type
+        except TypeError:
+            pass
+    return bool(
+        getattr(getattr(owning_cls, "_meta", None), "index_enabled", False)
+    )
+
+
+def _warn_class_index_count(cls: Type["RedisModel"], schema_parts: List[str]) -> None:
+    """Emit a one-time warning when a class-level-indexed model is too large.
+
+    Triggers only when ``cls`` was declared with ``index=True`` AND the
+    resulting schema contains more than ``CLASS_INDEX_WARN_THRESHOLD`` indexed
+    fields.  The warning fires once per process per model, so repeated
+    ``redisearch_schema()`` calls (e.g. during ``Migrator().run()``) don't
+    spam the log.
+    """
+    if not getattr(getattr(cls, "_meta", None), "index_enabled", False):
+        return
+    # Count non-empty schema fragments — each corresponds to one indexed field.
+    indexed_count = sum(1 for part in schema_parts if part.strip())
+    if indexed_count <= CLASS_INDEX_WARN_THRESHOLD:
+        return
+    key = f"{cls.__module__}.{cls.__qualname__}"
+    if key in _class_index_warned:
+        return
+    _class_index_warned.add(key)
+    warnings.warn(
+        f"Model {cls.__name__} has {indexed_count} indexed fields (threshold: "
+        f"{CLASS_INDEX_WARN_THRESHOLD}). Class-level ``index=True`` on large "
+        "models produces a large RediSearch index, which increases memory "
+        "usage and can slow queries. Consider marking only the fields you "
+        "need to query with ``Field(index=True)`` and using ``Field("
+        "index=False)`` to exclude the rest. To suppress this warning for "
+        "this model, raise the threshold or mark fields individually.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class RelationshipInfo(Representation):
@@ -2606,6 +2865,10 @@ class BaseMeta(Protocol):
     encoding: str
     default_ttl: Optional[int]
     index_health_checked: bool
+    # True when the model was declared with ``class Foo(Model, index=True)``.
+    # When True, unmarked fields are auto-indexed unless explicitly opted out
+    # with ``Field(index=False)``.
+    index_enabled: bool
     # Bookkeeping for lazy database resolution; not part of the public API.
     _database_generated: bool
     _database_loop: Optional[asyncio.AbstractEventLoop]
@@ -2639,6 +2902,8 @@ class DefaultMeta:
     encoding: str = "utf-8"
     default_ttl: Optional[int] = None
     index_health_checked: bool = False
+    # Whether the model was declared with class-level ``index=True``.
+    index_enabled: Optional[bool] = False
     _database_generated: bool = False
     _database_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -2647,6 +2912,11 @@ class ModelMeta(ModelMetaclass):
     _meta: BaseMeta
 
     def __new__(cls, name, bases, attrs, **kwargs):  # noqa C901
+        # Capture class-level ``index=True`` before it reaches Pydantic's
+        # ``__init_subclass__``, which would reject the unknown keyword.  We
+        # store it on ``_meta`` once the meta object is created below.
+        # ``_UNSET`` distinguishes "not passed" from ``index=False``.
+        class_index = kwargs.pop("index", _UNSET)
         meta = attrs.pop("Meta", None)
         new_class: Any = super().__new__(cls, name, bases, attrs, **kwargs)
         # `super().__new__` is typed as returning `type`, but this class is
@@ -2655,7 +2925,7 @@ class ModelMeta(ModelMetaclass):
         # it to `Any` so attribute access inside this method type-checks.
 
         # The fact that there is a Meta field and _meta field is important: a
-        # user may have given us a Meta object with their configuration, while
+        # user may have given us their configuration, while
         # we might have inherited _meta from a parent class, and should
         # therefore use some of the inherited fields.
         meta = meta or getattr(new_class, "Meta", None)
@@ -2678,6 +2948,12 @@ class ModelMeta(ModelMetaclass):
                 f"{new_class.__name__}Meta", (DefaultMeta,), dict(DefaultMeta.__dict__)
             )
             new_class.Meta = new_class._meta
+
+        # Apply the class-level ``index`` flag captured above.  Must happen
+        # before ``redisearch_schema()`` is called below, since schema
+        # generation reads ``_meta.index_enabled``.
+        if class_index is not _UNSET:
+            new_class._meta.index_enabled = bool(class_index)
 
         # Create proxies for each model field so that we can use the field
         # in queries, like Model.get(Model.field_name == 1)
@@ -2847,6 +3123,13 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         return data
 
     def __init_subclass__(cls, **kwargs):
+        # Class-level ``index`` is captured by ``ModelMeta.__new__`` (which runs
+        # first and stores it on ``_meta.index_enabled``) because the schema
+        # is generated during metaclass construction, before
+        # ``__init_subclass__`` runs.  We pop it here only to prevent it from
+        # leaking to Pydantic's ``__init_subclass__``, which would raise on
+        # unrecognised keyword arguments.
+        kwargs.pop("index", None)
         super().__init_subclass__()
 
     def __init__(__pydantic_self__, **data: Any) -> None:
@@ -3680,6 +3963,7 @@ class HashModel(RedisModel, abc.ABC):
     @classmethod
     def schema_for_fields(cls):
         schema_parts = []
+        class_index_default = getattr(cls._meta, "index_enabled", False)
 
         for name, field in cls.model_fields.items():
             # ``schema_for_fields`` handles primary-key fields, indexed fields,
@@ -3713,7 +3997,7 @@ class HashModel(RedisModel, abc.ABC):
                 else:
                     redisearch_field = cls.schema_for_type(name, _type, field_info)
                 schema_parts.append(redisearch_field)
-            elif should_index_field(field_info):
+            elif should_index_field(field_info, class_index_default):
                 schema_parts.append(cls.schema_for_type(name, _type, field_info))
             elif is_subscripted_type:
                 # Ignore subscripted types (usually containers!) that we don't
@@ -3733,6 +4017,7 @@ class HashModel(RedisModel, abc.ABC):
                 schema_parts.append(cls.schema_for_type(name, embedded_cls, field_info))
             elif issubclass(_type, RedisModel):
                 schema_parts.append(cls.schema_for_type(name, _type, field_info))
+        _warn_class_index_count(cls, schema_parts)
         return schema_parts
 
     @classmethod
@@ -4122,6 +4407,7 @@ class JsonModel(RedisModel, abc.ABC):
     def schema_for_fields(cls):
         schema_parts = []
         json_path = "$"
+        class_index_default = getattr(cls._meta, "index_enabled", False)
 
         fields = dict(cls.model_fields)
 
@@ -4135,9 +4421,13 @@ class JsonModel(RedisModel, abc.ABC):
             # Call schema_for_type for both primary_key and indexed fields
             # The method handles the distinction internally
             schema_parts.append(
-                cls.schema_for_type(json_path, name, "", _type, field_info)
+                cls.schema_for_type(
+                    json_path, name, "", _type, field_info,
+                    class_index_default=class_index_default,
+                )
             )
 
+        _warn_class_index_count(cls, schema_parts)
         return schema_parts
 
     @classmethod
@@ -4149,9 +4439,10 @@ class JsonModel(RedisModel, abc.ABC):
         typ: Any,
         field_info: Union[PydanticFieldInfo, ModelField],
         parent_type: Optional[Any] = None,
+        class_index_default: Optional[bool] = False,
     ) -> str:
         typ = _unwrap_type_annotation(typ)
-        should_index = should_index_field(field_info)
+        should_index = should_index_field(field_info, class_index_default)
         is_container_type = is_supported_container_type(typ)
         parent_is_container_type = is_supported_container_type(parent_type)
 
@@ -4185,6 +4476,7 @@ class JsonModel(RedisModel, abc.ABC):
                     str,
                     field_info,
                     parent_type=field_type,
+                    class_index_default=class_index_default,
                 )
             else:
                 embedded_cls = get_args(typ)
@@ -4195,6 +4487,9 @@ class JsonModel(RedisModel, abc.ABC):
                     return ""
                 path = f"{json_path}.{name}[*]"
                 embedded_cls = embedded_cls[0]
+                # When descending into a container of models, switch to the
+                # embedded model's own class-level index setting.
+                child_default = _embedded_index_default(embedded_cls)
                 return cls.schema_for_type(
                     path,
                     name,
@@ -4202,10 +4497,13 @@ class JsonModel(RedisModel, abc.ABC):
                     embedded_cls,
                     field_info,
                     parent_type=field_type,
+                    class_index_default=child_default,
                 )
         elif field_is_model:
             name_prefix = f"{name_prefix}_{name}" if name_prefix else name
             sub_fields = []
+            # Switch to the embedded model's own class-level index setting.
+            child_default = _embedded_index_default(typ)
             for embedded_name, field in typ.model_fields.items():
                 # Skip the inherited pk field on embedded models — it is
                 # not a real indexed field and should not appear in the
@@ -4235,6 +4533,7 @@ class JsonModel(RedisModel, abc.ABC):
                         get_outer_type(field),
                         field_info,
                         parent_type=typ,
+                        class_index_default=child_default,
                     )
                 )
             return " ".join(filter(None, sub_fields))
