@@ -2,7 +2,7 @@ name: CodSpeed
 
 # Continuous performance regression tracking for redis-om-python.
 #
-# Runs the benchmark suite under CodSpeed's walltime instrument on every
+# Runs the benchmark suite under CodSpeed's CPU simulation instrument on every
 # push to main and every pull request.  Results are uploaded to CodSpeed,
 # which compares them against the baseline and posts a comment on PRs when
 # a regression is detected.
@@ -69,5 +69,5 @@ jobs:
             - name: Run benchmarks
               uses: CodSpeedHQ/action@v4
               with:
-                  mode: walltime
+                  mode: simulation
                   run: uv run pytest tests/test_performance_benchmark.py --codspeed -v
