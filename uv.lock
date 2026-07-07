@@ -1381,7 +1381,7 @@ wheels = [
 
 [[package]]
 name = "pyredis-om"
-version = "0.10.1"
+version = "0.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

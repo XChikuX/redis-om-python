@@ -98,9 +98,22 @@ Save and load paths recursively convert datetime/date values, bytes/base64 value
 
 **Recommendation:** Investigate field-aware conversion plans generated from model metadata, or combine compatible conversion passes to reduce traversal count.
 
-**Status (2026-07-07): Investigated — viable, not yet implemented.** A prototype was built and benchmarked against the current recursive approach. Results show meaningful speedups, especially on the load path:
+**Status (2026-07-08): Implemented.** A field-aware `ConversionPlan` system has been integrated into the save/load hot paths of both `HashModel` and `JsonModel`. The legacy recursive converters (`convert_datetime_to_timestamp`, `convert_bytes_to_base64`, `convert_dataclasses_to_dicts`, `convert_timestamp_to_datetime`, `convert_base64_to_bytes`, `convert_empty_strings_to_none`) remain available for callers that lack a model class (notably `JsonModel._convert_sub_value` used by `get_value()`) and as the public API imported by tests.
 
-| Benchmark | Current | Planned | Speedup |
+**Implementation** (`aredis_om/model/model.py`):
+
+- `ConversionPlan` dataclass: pre-computed per model class, cached in a `WeakKeyDictionary` (`_CONVERSION_PLAN_CACHE`). Records per-field metadata via `_FieldPlan` entries (field kind, target type, nested plan, `is_optional`).
+- `build_conversion_plan(model_cls)` / `get_conversion_plan(model_cls)`: build and cache the plan by walking `model_fields`. Detects scalar/list datetime, scalar/list bytes, `Coordinates`/dataclass, and nested-model fields (single + list).
+- `planned_save_conversions(document, plan)`: single-pass save-side conversion (datetime→timestamp, bytes→base64, Coordinates→str, dataclass→dict, nested-model recursion). Replaces the three sequential recursive passes.
+- `planned_load_conversions(document, plan, for_hash=)`: single-pass load-side conversion. `for_hash=True` applies empty-string→None + base64→bytes (HashModel); `for_hash=False` applies timestamp→datetime + base64→bytes (JsonModel). HashModel load intentionally skips timestamp→datetime — Pydantic's `model_validate` handles it from the HGETALL string (producing tz-aware UTC datetimes, matching the legacy path).
+- Models with no convertible fields (`needs_conversion=False`) skip the conversion passes entirely (fast path).
+- `JsonModel.save` now calls `jsonable_encoder` after `planned_save_conversions` (same as `HashModel.save` already did) to handle `Decimal`/`UUID`/`Enum`/`PurePath`/`set` that the plan intentionally doesn't track — these are far less common than datetime/bytes, so a second lightweight pass is cheaper than bloating the per-field plan.
+
+**Call sites updated:** `HashModel.save/get/get_many`, `JsonModel.save/get/get_many`, `RedisModel.from_redis` (both RESP3 and legacy RESP2 paths, JSON + hash branches).
+
+**Profiling results** (from the pre-implementation prototype; conversion-only, excluding Redis I/O and Pydantic `model_dump()`):
+
+| Benchmark | Legacy recursive | Planned | Speedup |
 | --- | --- | --- | --- |
 | `save_json` (12 fields, nested models) | 102.2 µs | 69.2 µs | **1.48x** |
 | `save_hash` (8 fields) | 31.4 µs | 20.5 µs | **1.53x** |
@@ -108,13 +121,13 @@ Save and load paths recursively convert datetime/date values, bytes/base64 value
 | `load_hash` (8 fields) | 5.5 µs | 3.1 µs | **1.77x** |
 | `save_simple` (3 fields, no conversion) | 15.6 µs | 9.8 µs | **1.60x** |
 
-Conversion-only speedup (excluding Pydantic's `model_dump()` overhead of ~57 µs): save_json conversions drop from ~45 µs to ~12 µs (**3.75x**). `isinstance` calls per iteration drop from 769→397 (save_json) and 289→19 (load_json).
+Conversion-only speedup (excluding `model_dump()` overhead of ~57 µs): save_json conversions drop from ~45 µs to ~12 µs (**3.75x**). `isinstance` calls per iteration drop from 769→397 (save_json) and 289→19 (load_json).
 
-**Design:** Pre-compute a `ConversionPlan` per model class at class-creation time (cached on `_meta` or a module-level dict). The plan records which fields need datetime↔timestamp, bytes↔base64, dataclass→dict, set→list, and nested-model recursion. The save/load paths then make a single pass over the document, consulting the plan to skip fields that need no conversion. Models with no convertible fields (`needs_conversion=False`) skip the conversion passes entirely.
-
-**Why not implemented yet:** This is a medium-sized refactor that touches the hot save/load paths of both `HashModel` and `JsonModel`. The conversion functions are also used by `get_value()`, `get_many()`, and the `Migrator`. Correctness is critical — the current functions handle edge cases (Optional fields, `List[bytes]`, nested models with their own conversion needs, `Coordinates` as dataclass) that the plan must replicate exactly. The prototype validates the approach; integration requires careful edge-case testing and sync-generation (`make sync`).
+**Correctness gate:** `tests/test_conversion_edge_cases.py` (34 tests) covers every edge case the legacy recursive converters handled: scalar/Optional/List datetime+date, scalar/Optional/List bytes, `Coordinates`, empty-string→None for HashModel Optionals, naive datetime UTC round-trip, embedded models with datetime/bytes/Coordinates, `List[EmbeddedModel]`, `get_value()`, `get_many()`, pipeline save, and no-conversion fast-path models. All 34 pass unchanged against the new implementation. Full async + sync test suites (1406 + 1395 tests) also pass.
 
 **Residual profiling note:** `strip_null_embedded_pks` (called during `model_dump()`) also shows up in profiles (~4 calls per iteration for nested models). It's part of the Pydantic dump path and would need a separate optimisation effort if it becomes material.
+
+**Future optimisation:** `JsonModel.save` still calls `jsonable_encoder` after `planned_save_conversions` to handle `Decimal`/`UUID`/`Enum`/`set`/`PurePath`. A future enhancement could add field kinds for these types to the plan and skip `jsonable_encoder` entirely when none are present (flag: `needs_jsonable_encoder`). Deferred — the current 2-pass approach is still faster than the legacy 3-pass approach.
 
 ### P2 — Benchmarks record timings but do not enforce regressions
 
@@ -276,7 +289,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 3. **Addressed** — Schema/index command construction is positional in both single-node and cluster paths; trusted-configuration boundary is now documented in `docs/migrations.mdx`.
 4. **Addressed** — HashModel null/empty-string ambiguity is documented in `docs/models.mdx`.
 5. **Open** — Reduce file-level mypy suppressions in core model code.
-6. **Investigated — viable, not yet implemented** — Field-aware conversion plans prototyped and benchmarked: 1.5–4.8x speedup on save/load conversions (see P2 finding above for details). Integration is a medium-sized refactor touching hot save/load paths; deferred until a contributor can dedicate focused time to edge-case testing + sync generation.
+6. **Addressed** — Field-aware conversion plans implemented in `aredis_om/model/model.py`. `ConversionPlan` is pre-computed per model class (cached in `WeakKeyDictionary`); `planned_save_conversions` / `planned_load_conversions` make a single pass over the document. 1.5–4.8x speedup on conversion-only work (see P2 finding above for details). All 34 conversion edge-case tests + full async/sync suites pass.
 
 ### P3 — Defense-in-depth
 

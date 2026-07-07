@@ -80,10 +80,10 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 
 ### Data Pipelines
 
-* **Save (Hash):** `model_dump()` → Date(time) to timestamp → Bytes to base64 → Dataclass to dict → `jsonable_encoder()` → Redis hash.
-* **Save (Json):** `model_dump()` → Date(time) to timestamp → Bytes to base64 → Dataclass to dict → Redis JSON.
-* **Load (Hash):** Empty strings to `None` (for optionals) → base64 to Bytes → Pydantic validation.
-* **Load (Json):** Timestamp to Date(time) → base64 to Bytes → Pydantic validation.
+* **Save (Hash):** `model_dump()` → `planned_save_conversions()` (datetime→timestamp, bytes→base64, Coordinates→str, dataclass→dict, nested-model recursion in a single field-aware pass) → `jsonable_encoder()` (Decimal/UUID/Enum/set) → Redis hash.
+* **Save (Json):** `model_dump()` → `planned_save_conversions()` (single pass) → `jsonable_encoder()` (Decimal/UUID/Enum/set) → Redis JSON.
+* **Load (Hash):** `planned_load_conversions(for_hash=True)` (empty strings→None for optionals, base64→bytes) → Pydantic validation (handles timestamp→datetime from HGETALL strings).
+* **Load (Json):** `planned_load_conversions(for_hash=False)` (timestamp→datetime, base64→bytes) → Pydantic validation.
 
 ### Query Path
 
@@ -169,7 +169,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 ### Performance
 
 * **Strengths:** Async-first, generated sync parity, lazy connections, query-string caching.
-* **Bottleneck Risks:** `FindQuery.copy()` (rebuilds via dict; profile on large sets). Datetime/bytes conversions deeply walk nested structures — **investigated** (field-aware conversion plan prototype shows 1.5–4.8x speedup on save/load; integration deferred).
+* **Bottleneck Risks:** `FindQuery.copy()` (rebuilds via dict; profile on large sets). ~~Datetime/bytes conversions deeply walk nested structures~~ — **addressed** (field-aware `ConversionPlan` system: `planned_save_conversions` / `planned_load_conversions` make a single pass using pre-computed per-field metadata; 1.5–4.8x speedup on conversion-only work). Legacy recursive converters remain for `get_value()` and test API.
 * **Memory Risk:** `FindQuery.execute(exhaust_results=True)` paginates without max limits.
 * **CI Gap:** ~~Benchmarks run but lack enforced regression thresholds.~~ Addressed — `.github/workflows/codspeed.yml` runs the benchmark suite under `pytest-codspeed` walltime mode on every push/PR with CodSpeed regression tracking.
 
