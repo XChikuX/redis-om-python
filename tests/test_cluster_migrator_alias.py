@@ -133,7 +133,7 @@ for _key, _val in list(model_registry.items()):
         or _name.startswith("_LegacyModel")
         or _name.startswith("_ClusterPerson")
     ):
-        _ALL_TEST_MODELS[cast(str, _key)] = _val
+        _ALL_TEST_MODELS[_key] = _val
 
 
 # ── Registry isolation helpers ───────────────────────────────────────
@@ -147,18 +147,16 @@ def _isolate_registry(*keep: Type) -> Dict[str, Type]:
     """Remove all cluster-person models except those in ``keep``."""
     snapshot: Dict[str, Type] = {}
     for key in list(model_registry.keys()):
-        str_key = cast(str, key)
-        if str_key in _ALL_TEST_MODELS:
-            snapshot[str_key] = cast(Type, model_registry.pop(key))
+        if key in _ALL_TEST_MODELS:
+            snapshot[key] = cast(Type, model_registry.pop(key))
     for cls in keep:
-        model_registry[cast(type, _qualname_key(cls))] = cls
+        model_registry[_qualname_key(cls)] = cls
     return snapshot
 
 
 def _restore_registry(snapshot: Dict[str, Type]) -> None:
     for key in list(model_registry.keys()):
-        str_key = cast(str, key)
-        if str_key in _ALL_TEST_MODELS:
+        if key in _ALL_TEST_MODELS:
             model_registry.pop(key, None)
     for key, cls in snapshot.items():
         model_registry[key] = cls

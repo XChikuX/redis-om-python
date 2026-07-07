@@ -177,4 +177,4 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 
 * **Mitigations:** `TokenEscaper` sanitizes strings. Vector queries utilize `PARAMS`. Pydantic handles primary data boundaries.
 * **Tooling:** CodeQL active; `ruff` + `mypy` for lint/type-checking. `uv.lock` is committed for reproducible installs.
-* **State / Risks:** Global mutable state for command caches/registries (safe at import, unsafe for runtime mutation). Local Cluster compose uses unprotected host networking (dev only). Schema migration `FT.CREATE` construction remains an internal-only path.
+* **State / Risks:** `model_registry` is protected by `_model_registry_lock` (`threading.RLock`) and documented as import-time-only mutation. Command capability caches use `WeakKeyDictionary` (safe at import). Local Cluster compose uses unprotected host networking (dev only). Schema migration `FT.CREATE` construction remains an internal-only path. CI actions are pinned to immutable SHAs with Dependabot monitoring.

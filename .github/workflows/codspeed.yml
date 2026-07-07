@@ -44,18 +44,18 @@ jobs:
             REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
             # CodSpeed requires the Python interpreter to be installed via
             # actions/setup-python (not ``uv python install``) for tracing
             # to work correctly.
             - name: Setup Python
-              uses: actions/setup-python@v6.3.0
+              uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
               with:
                   python-version: "3.12"
 
             - name: Setup uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
@@ -67,7 +67,7 @@ jobs:
               run: make sync
 
             - name: Run benchmarks
-              uses: CodSpeedHQ/action@v4
+              uses: CodSpeedHQ/action@3516a8ab05637406d21ae753c1093d4f435cb460 # v4
               with:
                   mode: simulation
                   run: uv run pytest tests/test_performance_benchmark.py --codspeed -v

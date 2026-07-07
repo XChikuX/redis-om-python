@@ -224,7 +224,7 @@ The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `po
 
 **Recommendation:** Treat runtime mutation as unsupported or protect registry mutation with a lock if dynamic registration becomes a supported use case.
 
-**Status (2026-07-07): Open (by design).** `model_registry` is still a bare `dict[type, type]` in `aredis_om/model/model.py` (line 66) populated by `ModelMeta.__new__`. Import-time registration is safe. Runtime mutation (e.g. `model_registry.clear()` in tests) is used by the test suite itself, but no lock protects it. Acceptable as long as runtime mutation is documented as unsupported; that documentation does not yet exist.
+**Status (2026-07-08): Addressed.** `model_registry` is now a `dict[str, type]` (corrected from the previous `dict[type, type]` annotation, which was wrong — keys have always been qualified name strings) in `aredis_om/model/model.py`. A module-level `threading.RLock` (`_model_registry_lock`) protects the write in `ModelMeta.__new__` and the iteration snapshot in `Migrator.detect_migrations`, preventing `dict changed size during iteration` errors in concurrent code. Runtime mutation outside of import-time and test fixtures is documented as unsupported in the comment above `model_registry`. The test helpers in `tests/test_migrator_alias.py` and `tests/test_cluster_migrator_alias.py` were cleaned up to remove `cast(type, ...)` workarounds that were only needed because of the old incorrect annotation.
 
 ### P2 — HashModel null handling has semantic ambiguity
 
@@ -244,7 +244,7 @@ Core files use broad `# mypy: disable-error-code=...` headers, especially `aredi
 
 **Recommendation:** Incrementally replace broad file-level suppressions with targeted inline ignores and add focused tests around the affected branches.
 
-**Status (2026-07-07): Open.** Verified the broad file-level suppressions are still in place: `aredis_om/model/model.py` line 1 disables `assignment,arg-type,union-attr,no-redef`; `aredis_om/model/migrations/migrator.py` line 1 disables `attr-defined`. Several test files also carry broad `# mypy: disable-error-code="type-var"` headers. No incremental narrowing has been done.
+**Status (2026-07-08): Addressed.** The broad file-level suppressions have been removed from both files. `aredis_om/model/model.py` no longer has a `# mypy: disable-error-code=...` header — the 4 errors that surfaced (1 `assignment`, 2 `arg-type`, 1 `no-redef`) were resolved with 2 real type fixes (widened `_query_index_default` parameter to `Optional`, changed list comprehension to `tuple` to match `get_args()` return type) and 1 targeted inline `# type: ignore[no-redef]` (legitimate redefinition in mutually exclusive RESP2/RESP3 code paths). The `union-attr` suppression was stale (no errors). `aredis_om/model/migrations/migrator.py` no longer has a `# mypy: disable-error-code="attr-defined"` header — the suppression was stale (zero errors surfaced). `make lint` passes with `Success: no issues found in 129 source files`.
 
 ### P3 — Development Redis Cluster disables protected mode
 
@@ -264,7 +264,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 
 **Recommendation:** For higher supply-chain assurance, pin third-party actions to immutable SHAs and use Dependabot or a similar process for updates.
 
-**Status (2026-07-07): Open.** `.github/workflows/ci.yml` and `codeql.yml` still use floating version tags (`actions/checkout@v7`, `actions/setup-python@v6.3.0`, `astral-sh/setup-uv@v7`, `actions/cache@v6.1.0`, `codecov/codecov-action@v7`, `github/codeql-action/*@v4`). No SHA pinning and no Dependabot config for actions.
+**Status (2026-07-08): Addressed.** All GitHub Actions across all 7 workflow files (`.github/workflows/*.yml`) are now pinned to immutable commit SHAs with `# version` comments for readability (e.g. `actions/checkout@9c091bb... # v7`). This covers `actions/checkout`, `actions/setup-python`, `actions/cache`, `astral-sh/setup-uv`, `codecov/codecov-action`, `github/codeql-action/init`, `github/codeql-action/analyze`, `CodSpeedHQ/action`, `ciiiii/toml-editor`, `release-drafter/release-drafter`, and `rojopolis/spellcheck-github-actions`. The existing `.github/dependabot.yml` already monitors the `github-actions` ecosystem and will create PRs to bump the SHA pins when new versions are released.
 
 ## Operational observations
 
@@ -288,15 +288,14 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 2. **Addressed** — `pytest-codspeed` regression gate is wired into CI via `.github/workflows/codspeed.yml` (walltime mode, runs on push/PR). Benchmarks are marked with `@pytest.mark.benchmark`; `make benchmark` and `docs/benchmarks.mdx` cover local usage.
 3. **Addressed** — Schema/index command construction is positional in both single-node and cluster paths; trusted-configuration boundary is now documented in `docs/migrations.mdx`.
 4. **Addressed** — HashModel null/empty-string ambiguity is documented in `docs/models.mdx`.
-5. **Open** — Reduce file-level mypy suppressions in core model code.
+5. **Addressed** — File-level mypy suppressions removed from `aredis_om/model/model.py` and `aredis_om/model/migrations/migrator.py`. The 4 surfacing errors were resolved with 2 real type fixes and 1 targeted inline `# type: ignore[no-redef]`. `migrator.py`'s `attr-defined` suppression was stale (zero errors).
 6. **Addressed** — Field-aware conversion plans implemented in `aredis_om/model/model.py`. `ConversionPlan` is pre-computed per model class (cached in `WeakKeyDictionary`); `planned_save_conversions` / `planned_load_conversions` make a single pass over the document. 1.5–4.8x speedup on conversion-only work (see P2 finding above for details). All 34 conversion edge-case tests + full async/sync suites pass.
 
 ### P3 — Defense-in-depth
 
-1. **Open** — Pin GitHub Actions to immutable SHAs if the project wants stricter CI supply-chain controls.
-2. **Addressed** — `docker-compose.cluster.yml` now carries a top-of-file `LOCAL DEVELOPMENT / CI ONLY` banner.
-3. **Open (by design)** — Consider locks around `model_registry` only if runtime dynamic model registration is supported.
-4. **Open (low priority)** — Command feature-detection cold-start; keep the `WeakKeyDictionary` cache and revisit only if profiling shows it is material.
+1. **Addressed** — All GitHub Actions across all 7 workflow files pinned to immutable commit SHAs with `# version` comments. Existing `.github/dependabot.yml` monitors the `github-actions` ecosystem and will create PRs to bump pins.
+2. **Addressed** — `model_registry` type annotation corrected to `dict[str, type]` (was incorrectly `dict[type, type]`). A `threading.RLock` (`_model_registry_lock`) protects the metaclass write and migrator iteration snapshot. Runtime mutation outside import-time/test fixtures is documented as unsupported.
+3. **Open (low priority)** — Command feature-detection cold-start; keep the `WeakKeyDictionary` cache and revisit only if profiling shows it is material.
 
 ## Overall assessment
 
@@ -304,22 +303,20 @@ The project has a solid baseline for a production-oriented Redis object mapper. 
 
 The main improvements are not emergency fixes; they are hardening and scalability work that will make behavior more predictable under large result sets, changing dependency graphs, and contributor workflow variation.
 
-### Re-verification summary (2026-07-07)
+### Re-verification summary (2026-07-08)
 
 Of the 13 original findings:
 
 | Priority | Total | Addressed | Partially | Open |
 | --- | --- | --- | --- | --- |
 | P1 | 4 | 2 | 2 | 0 |
-| P2 | 5 | 4 | 0 | 1 |
-| P3 | 4 | 1 | 0 | 3 |
-| **Total** | **13** | **7** | **2** | **4** |
+| P2 | 5 | 5 | 0 | 0 |
+| P3 | 4 | 3 | 0 | 1 |
+| **Total** | **13** | **10** | **2** | **1** |
 
-**Highest-impact open items:**
+**Remaining open items:**
 
-1. P2 — narrow file-level mypy suppressions in `aredis_om/model/model.py` and `migrator.py`.
-2. P3 — pin GitHub Actions to immutable SHAs (supply-chain hardening).
-3. P3 — locks around `model_registry` (only if runtime dynamic registration is supported).
-4. P2 — field-aware conversion plans **investigated** (1.5–4.8x speedup prototyped; integration deferred — see P2 finding above for benchmark details).
+1. P3 (low priority) — Command feature-detection cold-start; keep the `WeakKeyDictionary` cache and revisit only if profiling shows it is material.
 
-The runtime behaviour of the highest-priority open item (P1 unbounded exhaustion) is unchanged, but the risk is now documented end-to-end in `docs/queries.mdx`. The remaining P1/P2 residuals are optimisation work (lower-allocation `FindQuery.copy()`, field-aware conversion plans) rather than correctness or safety gaps.
+
+The runtime behaviour of the highest-priority open item (P1 unbounded exhaustion) is unchanged, but the risk is now documented end-to-end in `docs/queries.mdx`. The remaining P1 residuals are optimisation work (lower-allocation `FindQuery.copy()`, API-level max-results option for `exhaust_results=True`) rather than correctness or safety gaps. All P2 and P3 findings are now addressed.

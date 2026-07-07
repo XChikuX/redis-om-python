@@ -24,13 +24,13 @@ jobs:
         timeout-minutes: 5
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
             - name: Setup Python 3.10+
-              uses: actions/setup-python@v6.3.0
+              uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
               with:
                   python-version: ${{env.pythonversion}}
             - name: Setup uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
@@ -39,7 +39,7 @@ jobs:
               #----------------------------------------------
             - name: Load cached venv
               id: cached-venv
-              uses: actions/cache@v6.1.0
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: .venv
                   key: venv-${{ runner.os }}-${{ env.pythonversion }}-${{ hashFiles('uv.lock') }}
@@ -90,13 +90,13 @@ jobs:
             OS: ${{ matrix.os }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
             - name: Setup Python ${{ matrix.pyver }}
-              uses: actions/setup-python@v6.3.0
+              uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
               with:
                   python-version: ${{ matrix.pyver }}
             - name: Setup uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
@@ -105,7 +105,7 @@ jobs:
               #----------------------------------------------
             - name: Load cached venv
               id: cached-venv
-              uses: actions/cache@v6.1.0
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: .venv
                   key: venv-${{ runner.os }}-${{ matrix.pyver }}-${{ hashFiles('uv.lock') }}
@@ -132,7 +132,7 @@ jobs:
                   make test
                   uv run coverage xml
             - name: Upload coverage
-              uses: codecov/codecov-action@v7
+              uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
               with:
                   token: ${{ secrets.CODECOV_TOKEN }}
                   flags: unit
@@ -152,19 +152,19 @@ jobs:
             REDIS_OM_URL: "redis://localhost:6380?decode_responses=True"
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
             - name: Setup Python ${{ matrix.pyver }}
-              uses: actions/setup-python@v6.3.0
+              uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
               with:
                   python-version: ${{ matrix.pyver }}
             - name: Setup uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
             - name: Load cached venv
               id: cached-venv
-              uses: actions/cache@v6.1.0
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: .venv
                   key: venv-${{ runner.os }}-${{ matrix.pyver }}-${{ hashFiles('uv.lock') }}
@@ -186,7 +186,7 @@ jobs:
                   make test_cluster
                   uv run coverage xml
             - name: Upload coverage
-              uses: codecov/codecov-action@v7
+              uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
               with:
                   token: ${{ secrets.CODECOV_TOKEN }}
                   flags: cluster

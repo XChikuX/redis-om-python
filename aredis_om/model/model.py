@@ -1,5 +1,3 @@
-# mypy: disable-error-code="assignment,arg-type,union-attr,no-redef"
-
 import abc
 import asyncio
 import base64
@@ -12,6 +10,7 @@ import hmac
 import json
 import logging
 import operator
+import threading
 import types
 import warnings
 import weakref
@@ -66,7 +65,16 @@ from .resp3_shim import (
 from .token_escaper import TokenEscaper
 from .types import Coordinates, GeoFilter
 
-model_registry: dict[type, type] = {}
+# ``model_registry`` maps qualified class names (``module.QualName``) to
+# model classes.  It is populated by ``ModelMeta.__new__`` at import time (i.e.
+# when a model class is defined).  Import-time mutation is safe under the GIL.
+#
+# Runtime mutation (e.g. ``model_registry.clear()`` outside of test fixtures) is
+# **not supported**.  If a future use case requires dynamic model registration at
+# runtime, callers must hold ``_model_registry_lock`` for both reads and writes
+# to avoid ``dict changed size during iteration`` errors in concurrent code.
+model_registry: dict[str, type] = {}
+_model_registry_lock = threading.RLock()
 _T = TypeVar("_T")
 Model = TypeVar("Model", bound="RedisModel")
 log = logging.getLogger(__name__)
@@ -142,7 +150,7 @@ def _unwrap_type_annotation(annotation: Any) -> Any:
         if args:
             return _unwrap_type_annotation(args[0])
     if _is_union_type(annotation):
-        args = [arg for arg in get_args(annotation) if arg is not types.NoneType]
+        args = tuple(arg for arg in get_args(annotation) if arg is not types.NoneType)
         if args:
             return _unwrap_type_annotation(args[0])
     return annotation
@@ -3070,7 +3078,7 @@ def _embedded_index_default(typ: Any) -> bool:
 
 
 def _query_index_default(
-    model_cls: Type["RedisModel"], parents: Optional[List]
+    model_cls: Optional[Type["RedisModel"]], parents: Optional[List]
 ) -> bool:
     """Return the class-level index default for query-time validation.
 
@@ -3533,7 +3541,8 @@ class ModelMeta(ModelMetaclass):
         # Migrator create indexes for it.
         if abc.ABC not in bases and not getattr(new_class._meta, "embedded", False):
             key = f"{new_class.__module__}.{new_class.__qualname__}"
-            model_registry[key] = new_class
+            with _model_registry_lock:
+                model_registry[key] = new_class
 
         return new_class
 
@@ -3973,7 +3982,7 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         for i in range(1, len(res), step):
             if res[i + offset] is None:
                 continue
-            fields: Dict[str, str] = dict(
+            fields: Dict[str, str] = dict(  # type: ignore[no-redef]
                 zip(
                     map(to_string, res[i + offset][::2]),
                     map(to_string, res[i + offset][1::2]),

@@ -1,59 +1,59 @@
 name: Publish Pypi
 on:
-  release:
-    types: [ published ]
+    release:
+        types: [published]
 
 jobs:
-  pytest:
-    name: Publish to PyPi
-    runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
-    steps:
-      - uses: actions/checkout@master
+    pytest:
+        name: Publish to PyPi
+        runs-on: ubuntu-latest
+        env:
+            ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+        steps:
+            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: get version from tag
-        id: get_version
-        run: |
-          realversion="${GITHUB_REF/refs\/tags\//}"
-          realversion="${realversion//v/}"
-          echo "::set-output name=VERSION::$realversion"
+            - name: get version from tag
+              id: get_version
+              run: |
+                  realversion="${GITHUB_REF/refs\/tags\//}"
+                  realversion="${realversion//v/}"
+                  echo "::set-output name=VERSION::$realversion"
 
-      - name: Set the version for publishing
-        uses: ciiiii/toml-editor@1.0.0
-        with:
-          file: "pyproject.toml"
-          key: "tool.poetry.version"
-          value: "${{ steps.get_version.outputs.VERSION }}"
+            - name: Set the version for publishing
+              uses: ciiiii/toml-editor@29f312b4557fdbbb1fc356a7042f85307d244345 # 1.0.0
+              with:
+                  file: "pyproject.toml"
+                  key: "tool.poetry.version"
+                  value: "${{ steps.get_version.outputs.VERSION }}"
 
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v6.3.0
-        with:
-          python-version: 3.9
+            - name: Set up Python 3.12
+              uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+              with:
+                  python-version: 3.12
 
-      - name: Cache Poetry virtualenv
-        uses: actions/cache@v6.1.0
-        id: cache
-        with:
-          path: ~/.virtualenvs
-          key: poetry-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: |
-            poetry-${{ hashFiles('**/poetry.lock') }}
+            - name: Cache Poetry virtualenv
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              id: cache
+              with:
+                  path: ~/.virtualenvs
+                  key: poetry-${{ hashFiles('**/poetry.lock') }}
+                  restore-keys: |
+                      poetry-${{ hashFiles('**/poetry.lock') }}
 
-      - name: Set Poetry config
-        run: |
-          pip install --upgrade pip poetry
-          poetry config virtualenvs.in-project false
-          poetry config virtualenvs.path ~/.virtualenvs
-          poetry export --dev --without-hashes -o requirements.txt
-          pip install -r requirements.txt
+            - name: Set Poetry config
+              run: |
+                  pip install --upgrade pip poetry
+                  poetry config virtualenvs.in-project false
+                  poetry config virtualenvs.path ~/.virtualenvs
+                  poetry export --dev --without-hashes -o requirements.txt
+                  pip install -r requirements.txt
 
-      - name: Make sync version of library (redis_om)
-        run: make sync
+            - name: Make sync version of library (redis_om)
+              run: make sync
 
-      - name: Install
-        run: poetry install --no-interaction
+            - name: Install
+              run: poetry install --no-interaction
 
-      - name: Publish to PyPI
-        run: |
-          poetry publish -u __token__ -p ${{ secrets.PYPI_TOKEN }} --build
+            - name: Publish to PyPI
+              run: |
+                  poetry publish -u __token__ -p ${{ secrets.PYPI_TOKEN }} --build

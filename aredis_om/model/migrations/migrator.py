@@ -1,5 +1,3 @@
-# mypy: disable-error-code="attr-defined"
-
 import asyncio
 import hashlib
 import importlib
@@ -583,7 +581,7 @@ class Migrator:
 
         # Import this at run-time to avoid triggering import-time side effects,
         # e.g. checks for RedisJSON, etc.
-        from aredis_om.model.model import model_registry
+        from aredis_om.model.model import _model_registry_lock, model_registry
 
         # When no connection is given (bare ``Migrator().run()``), skip models
         # marked ``_test_only = True``. This prevents module-level test model
@@ -599,7 +597,13 @@ class Migrator:
         # each migration runs.
         skip_test_only = self.conn is None
 
-        for name, cls in model_registry.items():
+        # Snapshot the registry under the lock to avoid
+        # ``dict changed size during iteration`` if another thread defines a
+        # new model class while we're iterating.
+        with _model_registry_lock:
+            entries = list(model_registry.items())
+
+        for name, cls in entries:
             if skip_test_only and getattr(cls.Meta, "_test_only", False):
                 continue
             use_alias = bool(getattr(cls.Meta, "zero_downtime_migrations", False))
