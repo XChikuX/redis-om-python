@@ -296,3 +296,66 @@ def extract_key_from_row(row: Sequence[Any]) -> Optional[str]:
         if name == "__key":
             return _decode_text(row[i + 1])
     return None
+
+
+def _parse_flat_list(raw: Any) -> Dict[str, Any]:
+    """Convert a flat alternating key-value list into a dict.
+
+    Used for Valkey search's ``FT.INFO`` RESP3 response, which returns
+    ``[k1, v1, k2, v2, ...]`` instead of the nested dict that redis-py
+    expects.
+
+    List values whose first element is a string are treated as sub-lists
+    of key-value pairs (e.g. ``index_definition``, ``attributes``) and
+    parsed recursively. Plain list values (e.g. ``stop_words``) are
+    returned as-is.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return {}
+    result: Dict[str, Any] = {}
+    i = 0
+    while i < len(raw) - 1:
+        key = _decode_text(raw[i])
+        val = raw[i + 1]
+        i += 2
+
+        if isinstance(val, (list, tuple)) and val and isinstance(val[0], str):
+            # Nested flat key-value list — recursively parse each element
+            # (which may itself be a flat key-value list, e.g. attributes).
+            parsed: List[Dict[str, Any]] = []
+            for elem in val:
+                if isinstance(elem, (list, tuple)):
+                    parsed.append(_parse_flat_list(elem))
+                else:
+                    parsed.append({str(elem): elem})
+            result[key] = parsed
+        else:
+            result[key] = val
+
+    return result
+
+
+def parse_ft_info_response(raw: Any) -> Dict[str, Any]:
+    """Normalise an ``FT.INFO`` response into a dict both Valkey and Redis return.
+
+    Redis (and redis-py) returns ``FT.INFO`` as a properly nested dict in
+    RESP3, which needs no transformation.  Valkey search returns a flat
+    alternating ``[k1, v1, k2, v2, ...]`` list in RESP3, which
+    ``_parse_flat_list`` converts to a nested dict.
+
+    Valkey also uses ``backfill_complete_percent`` where Redis uses
+    ``percent_indexed``; this function normalises that field name so
+    callers can use the Redis field name transparently.
+    """
+    if isinstance(raw, dict):
+        info: Dict[str, Any] = raw
+    elif isinstance(raw, (list, tuple)):
+        info = _parse_flat_list(raw)
+    else:
+        info = {}
+
+    # Valkey → Redis field name compatibility.
+    if "backfill_complete_percent" in info and "percent_indexed" not in info:
+        info["percent_indexed"] = info["backfill_complete_percent"]
+
+    return info

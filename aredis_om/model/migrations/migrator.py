@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 from ... import redis
+from ..resp3_shim import parse_ft_info_response
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +94,21 @@ async def _create_index_cluster(
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
+async def _ft_info(conn, index_name: str) -> Dict[str, Any]:
+    """Call ``FT.INFO`` and return a normalised dict regardless of server flavour.
+
+    Valkey search returns ``FT.INFO`` as a flat alternating list in RESP3,
+    which redis-py's high-level ``Search.info()`` cannot parse (it expects a
+    nested dict and calls ``.get()`` on list elements).  This helper bypasses
+    the ``Search`` layer and uses ``execute_command`` directly, then normalises
+    the response through the RESP3 shim so callers receive a consistent dict.
+    """
+    raw = await conn.execute_command("FT.INFO", index_name)
+    return parse_ft_info_response(raw)
+
+
 async def _wait_for_index(conn, index_name: str, timeout: float = 3.0) -> None:
-    """Poll FT.INFO until the index reports it is fully indexed.
+    """Poll ``FT.INFO`` until the index reports it is fully indexed.
 
     Redis 8.8+ introduced asynchronous background indexing for existing
     documents, which means ``FT.CREATE`` can return before previously
@@ -117,7 +131,7 @@ async def _wait_for_index(conn, index_name: str, timeout: float = 3.0) -> None:
 
     while asyncio.get_event_loop().time() < deadline:
         try:
-            info = await conn.ft(index_name).info()
+            info = await _ft_info(conn, index_name)
         except redis.ResponseError as exc:
             # Index not visible yet (race with a concurrent creator). Keep
             # polling until it appears or we time out.
@@ -239,7 +253,7 @@ async def _resolve_alias_or_index(conn, name: str) -> tuple[bool, Optional[str]]
     We use that distinction to tell them apart.
     """
     try:
-        info = await conn.ft(name).info()
+        info = await _ft_info(conn, name)
     except redis.ResponseError:
         return (False, None)
     underlying = info.get("index_name")
