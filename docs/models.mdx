@@ -181,6 +181,55 @@ This works exactly the same way as it does with Pydantic. Check out the [Pydanti
 
 So, in short, if you want to use container types, use `JsonModel`.
 
+#### Null vs. empty-string semantics
+
+Redis Hashes cannot store a native `null`. To support `Optional[...]`
+fields, `HashModel` encodes `None` as an empty string (`""`) on save
+and converts empty strings back to `None` on load — but **only for
+optional fields**. This has one consequence you should know about:
+
+If an optional `str` field is set to `""` (an explicit empty string),
+loading the model will return `None` rather than `""`.
+
+```python
+from typing import Optional
+
+from redis_om import HashModel, JsonModel
+
+
+class Customer(HashModel):
+    note: Optional[str] = None
+
+
+c = Customer(note="")
+await c.save()
+loaded = await Customer.get(c.pk)
+print(loaded.note)  # None — the empty string is indistinguishable from null
+```
+
+If you need to distinguish an explicit empty string from a missing
+value, use `JsonModel`: JSON supports native `null`, so the round-trip
+is exact.
+
+```python
+from typing import Optional
+
+from redis_om import JsonModel
+
+
+class Customer(JsonModel):
+    note: Optional[str] = None
+
+
+c = Customer(note="")
+await c.save()
+loaded = await Customer.get(c.pk)
+print(loaded.note)  # "" — preserved
+```
+
+Required (non-optional) fields are unaffected: an empty string stays
+an empty string because there is no `None` to map it to.
+
 ### With JsonModel
 
 Good news! Container types _are_ supported with `JsonModel`.

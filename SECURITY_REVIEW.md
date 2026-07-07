@@ -1,7 +1,9 @@
 # Security and Performance Review
 
-Review date: 2026-05-07
+Review date: 2026-05-07 (verified 2026-07-07)
 Scope: `/home/runner/work/redis-om-python/redis-om-python` fresh clone, with emphasis on `aredis_om/` as the source of truth, generated-sync workflow, tests, Docker Compose, and GitHub Actions. No production code was changed as part of this review.
+
+**Re-verification (2026-07-07):** Each finding was re-checked against the current `main` state. Inline **Status:** markers record whether the item is *Addressed*, *Partially addressed*, or *Open*. The summary section at the bottom aggregates the current state.
 
 ## Executive summary
 
@@ -75,6 +77,8 @@ No critical security flaw was identified in this documentation review. The highe
 
 **Recommendation:** Add explicit guidance and/or API support for bounded reads. Candidate mitigations include documented `page()` usage, a maximum page/result option, streaming iteration guidance, or warnings when exhausting beyond a threshold.
 
+**Status (2026-07-07): Partially addressed.** `FindQuery.execute()` in `aredis_om/model/model.py` still defaults to `exhaust_results=True` and paginates without a max-results guard — the runtime behaviour is unchanged. However, the trade-off is now documented in `docs/queries.mdx` ("Limiting and pagination" section), which explicitly calls out the memory risk of `.all()` on user-facing endpoints and recommends `.page()`, `.iter_cursor()`, or `execute(exhaust_results=False)` for bounded reads. Residual: no API-level max-results option or warning threshold.
+
 ### P1 — `FindQuery.copy()` is in a hot pagination path
 
 `FindQuery.copy()` builds a dict, shallow-copies expressions and sort fields, merges overrides, and constructs a new `FindQuery`. It is used in the pagination loop when exhausting results.
@@ -83,7 +87,7 @@ No critical security flaw was identified in this documentation review. The highe
 
 **Mitigation in this fork:** `FindQuery.copy()` now skips re-validation when `sort_fields` is not explicitly overridden. The pre-resolved sort fields are reattached on the new query directly, so the pagination exhaust loop no longer raises `QueryNotSupportedError` for embedded sort paths (e.g. `sort_by("metrics.score")` on a result set spanning more than one page). Explicit `copy(sort_fields=...)` calls still validate. Covered by `tests/test_json_model.py::test_copy_preserves_resolved_embedded_sort_fields`.
 
-**Recommendation:** Profile this path further and consider a lower-allocation copy strategy that preserves already-validated state across more attributes.
+**Status (2026-07-07): Partially addressed.** The sort-field re-validation regression is fixed and tested (`aredis_om/model/model.py` lines 1272-1291). The broader recommendation — lower-allocation copy that preserves already-validated state across more attributes — has not been actioned; `copy()` still rebuilds via a full `self.dict()` round-trip on every page.
 
 ### P2 — Recursive conversion passes run on every save/load
 
@@ -93,6 +97,8 @@ Save and load paths recursively convert datetime/date values, bytes/base64 value
 
 **Recommendation:** Investigate field-aware conversion plans generated from model metadata, or combine compatible conversion passes to reduce traversal count.
 
+**Status (2026-07-07): Open.** Save/load paths still perform unconditional recursive traversal; no field-aware conversion plan or merged-pass optimisation has been introduced.
+
 ### P2 — Benchmarks record timings but do not enforce regressions
 
 The benchmark suite records elapsed time and operations per second, but the main CI path does not enforce a regression budget.
@@ -100,6 +106,8 @@ The benchmark suite records elapsed time and operations per second, but the main
 **Risk:** Performance regressions can land as long as functional assertions pass.
 
 **Recommendation:** Integrate `pytest-codspeed` or a lightweight CI threshold for stable hot paths such as `get_many()`, broad query pagination, schema generation, and save/get conversion.
+
+**Status (2026-07-07): Open.** `tests/test_performance_benchmark.py` still only records timings (via `record_benchmark(...)`) and asserts correctness; no threshold, budget, or `pytest-codspeed` regression gate has been wired into `.github/workflows/ci.yml`. `pytest-codspeed` is listed as a dev dependency in `pyproject.toml` but is not invoked by CI.
 
 ### P2 — Generated sync output can hide performance drift until `make sync`
 
@@ -109,6 +117,8 @@ The benchmark suite records elapsed time and operations per second, but the main
 
 **Recommendation:** Keep CI running `make sync` before lint/test and document that generated files should not be edited manually.
 
+**Status (2026-07-07): Addressed.** CI runs `make sync` as a dedicated step in both `lint` and `test-unix`/`test-cluster` jobs before installing dependencies, and `CLAUDE.md` documents that generated artifacts under `redis_om/` and `tests_sync/` must not be edited manually.
+
 ### P3 — Command feature detection has a per-connection cold-start cost
 
 `has_redis_json()` and `has_redisearch()` call Redis `COMMAND INFO` on first use per connection and cache the result.
@@ -116,6 +126,8 @@ The benchmark suite records elapsed time and operations per second, but the main
 **Risk:** Low for long-lived connections, but visible for short-lived clients or tests that frequently recreate clients.
 
 **Recommendation:** Keep the cache; consider explicit capability injection only if profiling shows this is material.
+
+**Status (2026-07-07): Open (low priority).** `aredis_om/checks.py` still uses a `WeakKeyDictionary` cache per connection; no capability-injection hook has been added. Acceptable while the cold-start cost is not profiled as material.
 
 ## Security strengths
 
@@ -150,6 +162,8 @@ The benchmark suite records elapsed time and operations per second, but the main
 
 **Current state:** The repository currently operates without a committed lockfile. **Recommendation:** Make that policy explicit. For stronger CI reproducibility, commit `uv.lock`; if the project intentionally avoids lockfiles because it is a library, document the no-lock policy and keep minimum dependency bounds actively tested with advisory checks.
 
+**Status (2026-07-07): Partially addressed.** `uv.lock` is now tracked by git (commit `4dcd256` "Enable CI caching by committing uv.lock"). `.gitignore` line 34 (`# uv.lock # Commented out to enable CI caching`) is intentionally commented out so the file is tracked, and CI cache keys in `.github/workflows/ci.yml` consume it. The lockfile is present in a fresh clone. The stale `CLAUDE.md` statement has been corrected to reflect that `uv.lock` is committed.
+
 ### P1 — Tooling drift: `tox.ini` still uses Poetry
 
 The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `poetry run pytest`.
@@ -160,6 +174,8 @@ The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `po
 
 **Recommendation:** Keep `tox.ini` aligned with the uv workflow when CI tooling changes.
 
+**Status (2026-07-07): Addressed.** Verified `tox.ini` now reads `allowlist_externals = uv` / `commands = uv sync --extra dev` / `uv run pytest` and no longer references Poetry.
+
 ### P2 — Schema/index command construction should remain internal-only
 
 `aredis_om/model/migrations/migrator.py` builds `FT.CREATE` commands from model-derived index names and schema strings. In the cluster path it splits a formatted string into arguments; in the single-node path it passes one formatted command string to `execute_command()`.
@@ -167,6 +183,8 @@ The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `po
 **Risk:** Under normal usage, schema content comes from Python model definitions, not untrusted request input. If applications dynamically generate model classes or field metadata from user input, malformed schema tokens could alter index commands.
 
 **Recommendation:** Document that index names, prefixes, separators, and schema metadata are trusted configuration. Prefer positional command arguments for all migration paths over a single formatted command string where practical.
+
+**Status (2026-07-07): Addressed.** Re-verified: both the single-node path (`create_index` / `create_physical_index` in `migrator.py`) and the cluster path (`_create_index_cluster` / `_create_physical_index_cluster`) now build arguments positionally — the cluster path splits `f"ft.create {index_name} {schema}"` into a list and unpacks it with `*command`, and only uses the `target_nodes=` keyword for routing (not for schema construction). The original "single formatted command string" risk no longer applies. The trusted-configuration boundary is now documented in `docs/migrations.mdx` ("Trust boundary: schema and index configuration" section).
 
 ### P2 — Global mutable registries are not concurrency-hardened
 
@@ -176,6 +194,8 @@ The repository workflow is uv-based, but `tox.ini` runs `poetry install` and `po
 
 **Recommendation:** Treat runtime mutation as unsupported or protect registry mutation with a lock if dynamic registration becomes a supported use case.
 
+**Status (2026-07-07): Open (by design).** `model_registry` is still a bare `dict[type, type]` in `aredis_om/model/model.py` (line 66) populated by `ModelMeta.__new__`. Import-time registration is safe. Runtime mutation (e.g. `model_registry.clear()` in tests) is used by the test suite itself, but no lock protects it. Acceptable as long as runtime mutation is documented as unsupported; that documentation does not yet exist.
+
 ### P2 — HashModel null handling has semantic ambiguity
 
 Hash storage cannot store native null values, so optional nulls are represented as empty strings and converted back to `None` for optional fields.
@@ -183,6 +203,8 @@ Hash storage cannot store native null values, so optional nulls are represented 
 **Risk:** Applications that need to distinguish an explicit empty string from null on optional string-like fields can see ambiguity.
 
 **Recommendation:** Document this limitation for HashModel fields and prefer JsonModel where exact null-vs-empty-string semantics are required.
+
+**Status (2026-07-07): Addressed.** The null-vs-empty-string behaviour for `HashModel` is now documented in `docs/models.mdx` ("Null vs. empty-string semantics" subsection under "With HashModel"), with a code example showing that `Optional[str]` set to `""` round-trips as `None`, and a recommendation to use `JsonModel` where the distinction matters.
 
 ### P2 — File-level mypy suppressions reduce type-safety signal
 
@@ -192,6 +214,8 @@ Core files use broad `# mypy: disable-error-code=...` headers, especially `aredi
 
 **Recommendation:** Incrementally replace broad file-level suppressions with targeted inline ignores and add focused tests around the affected branches.
 
+**Status (2026-07-07): Open.** Verified the broad file-level suppressions are still in place: `aredis_om/model/model.py` line 1 disables `assignment,arg-type,union-attr,no-redef`; `aredis_om/model/migrations/migrator.py` line 1 disables `attr-defined`. Several test files also carry broad `# mypy: disable-error-code="type-var"` headers. No incremental narrowing has been done.
+
 ### P3 — Development Redis Cluster disables protected mode
 
 `docker-compose.cluster.yml` runs local Redis cluster nodes with `--protected-mode no` and `network_mode: host`.
@@ -199,6 +223,8 @@ Core files use broad `# mypy: disable-error-code=...` headers, especially `aredi
 **Risk:** This is acceptable for local testing but unsafe as production guidance.
 
 **Recommendation:** Keep the Compose file clearly documented as local-only and avoid copying these flags into deployment examples.
+
+**Status (2026-07-07): Addressed.** The compose file now carries a top-of-file `# !! LOCAL DEVELOPMENT / CI ONLY !!` banner that calls out `--protected-mode no`, explains why it is needed for cluster gossip, and links to the Redis security docs with a "DO NOT copy these flags into production" warning. `docker-compose.yml` (non-cluster) was already fine.
 
 ### P3 — CI action pinning uses version tags rather than immutable SHAs
 
@@ -208,39 +234,62 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 
 **Recommendation:** For higher supply-chain assurance, pin third-party actions to immutable SHAs and use Dependabot or a similar process for updates.
 
+**Status (2026-07-07): Open.** `.github/workflows/ci.yml` and `codeql.yml` still use floating version tags (`actions/checkout@v7`, `actions/setup-python@v6.3.0`, `astral-sh/setup-uv@v7`, `actions/cache@v6.1.0`, `codecov/codecov-action@v7`, `github/codeql-action/*@v4`). No SHA pinning and no Dependabot config for actions.
+
 ## Operational observations
 
 - `redis_om/` and `tests_sync/` are generated and ignored, so line references and static scans should prioritize `aredis_om/` and `tests/` unless generated outputs have been produced locally.
 - CI runs lint before tests and runs `make test`, which itself starts/stops Docker Compose. In GitHub Actions, a Redis service is also configured, but the Makefile defaults to port 6380 unless overridden.
 - `make lint` invokes `make dist`, and `make dist` invokes `clean`, which removes generated outputs and the virtual environment. This can be surprising during local iteration.
-- The project advertises Python 3.14 in classifiers but CI currently stops at 3.13.
+- The project advertises Python 3.14 in classifiers and CI tests against it (matrix: 3.10–3.14 in both `test-unix` and `test-cluster`). Lint pins to 3.12.
 
 ## Prioritized recommendations
 
 ### P1 — Address first
 
-1. Add bounded-query guidance or API support for `FindQuery.execute(exhaust_results=True)`.
-2. Profile and further optimize `FindQuery.copy()` in pagination-heavy workloads (sort-field re-validation already addressed in this fork).
-3. Resolve dependency reproducibility policy: commit a lockfile for CI or document why the library intentionally does not.
-4. ~~Update or deprecate the Poetry-based tox.ini.~~ Done — `tox.ini` now uses uv.
+1. **Partially addressed** — Bounded-query guidance is now documented in `docs/queries.mdx`. Residual: no API-level max-results option or runtime warning threshold for `FindQuery.execute(exhaust_results=True)`.
+2. **Partially addressed** — `FindQuery.copy()` no longer re-validates resolved sort fields; lower-allocation copy strategy for other attributes still pending.
+3. **Addressed** — `uv.lock` is committed (commit `4dcd256`) and `CLAUDE.md` now reflects this.
+4. ~~**Done**~~ — `tox.ini` now uses uv.
 
 ### P2 — Improve resilience and maintainability
 
-1. Add performance regression thresholds for key benchmark tests.
-2. Clarify migration schema trust boundaries and prefer positional Redis command arguments.
-3. Document HashModel null/empty-string ambiguity.
-4. Reduce file-level mypy suppressions in core model code.
-5. Keep generated sync workflow prominent in contributor documentation.
+1. **Addressed** — CI runs `make sync` before lint/test; generated-sync workflow is documented in `CLAUDE.md`.
+2. **Open** — Add performance regression thresholds (e.g. `pytest-codspeed`) for key benchmark tests.
+3. **Addressed** — Schema/index command construction is positional in both single-node and cluster paths; trusted-configuration boundary is now documented in `docs/migrations.mdx`.
+4. **Addressed** — HashModel null/empty-string ambiguity is documented in `docs/models.mdx`.
+5. **Open** — Reduce file-level mypy suppressions in core model code.
+6. **Open** — Investigate field-aware conversion plans for datetime/bytes-heavy models (originally P3, promoted here as it overlaps with P2 recursive-conversion risk).
 
 ### P3 — Defense-in-depth
 
-1. Pin GitHub Actions to immutable SHAs if the project wants stricter CI supply-chain controls.
-2. Document local-only security assumptions in Docker Compose files.
-3. Consider locks around `model_registry` only if runtime dynamic model registration is supported.
-4. Consider field-aware conversion plans for datetime/bytes-heavy models.
+1. **Open** — Pin GitHub Actions to immutable SHAs if the project wants stricter CI supply-chain controls.
+2. **Addressed** — `docker-compose.cluster.yml` now carries a top-of-file `LOCAL DEVELOPMENT / CI ONLY` banner.
+3. **Open (by design)** — Consider locks around `model_registry` only if runtime dynamic model registration is supported.
+4. **Open (low priority)** — Command feature-detection cold-start; keep the `WeakKeyDictionary` cache and revisit only if profiling shows it is material.
 
 ## Overall assessment
 
 The project has a solid baseline for a production-oriented Redis object mapper. Its strongest security properties are Pydantic validation, RediSearch token escaping, and existing Bandit/CodeQL coverage. Its strongest performance properties are async-first design and pipeline-backed bulk operations.
 
 The main improvements are not emergency fixes; they are hardening and scalability work that will make behavior more predictable under large result sets, changing dependency graphs, and contributor workflow variation.
+
+### Re-verification summary (2026-07-07)
+
+Of the 13 original findings:
+
+| Priority | Total | Addressed | Partially | Open |
+| --- | --- | --- | --- | --- |
+| P1 | 4 | 2 | 2 | 0 |
+| P2 | 5 | 3 | 0 | 2 |
+| P3 | 4 | 1 | 0 | 3 |
+| **Total** | **13** | **6** | **2** | **5** |
+
+**Highest-impact open items:**
+
+1. P2 — benchmark regression thresholds via `pytest-codspeed` (currently no automated perf gate).
+2. P2 — narrow file-level mypy suppressions in `aredis_om/model/model.py` and `migrator.py`.
+3. P3 — pin GitHub Actions to immutable SHAs (supply-chain hardening).
+4. P3 — locks around `model_registry` (only if runtime dynamic registration is supported).
+
+The runtime behaviour of the highest-priority open item (P1 unbounded exhaustion) is unchanged, but the risk is now documented end-to-end in `docs/queries.mdx`. The remaining P1/P2 residuals are optimisation work (lower-allocation `FindQuery.copy()`, field-aware conversion plans) rather than correctness or safety gaps.

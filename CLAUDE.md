@@ -18,7 +18,7 @@ Object mapping library for Redis built on Pydantic v2, utilizing Redis Search an
 * **Version / Python:** `pyproject.toml` is authoritative. Python `>=3.10,<4.0` (CI tests 3.10–3.14).
 * **Source of Truth:** All manual edits belong in `aredis_om/` or `tests/`.
 * **Generated Artifacts:** `redis_om/` and `tests_sync/` (generated via `make sync`; git-ignored).
-* **Tooling:** `uv` manages dependencies/workflows. No committed `uv.lock` (treat resolution as unconstrained).
+* **Tooling:** `uv` manages dependencies/workflows. `uv.lock` is committed (commit `4dcd256`) to enable CI caching; treat it as the source of truth for reproducible installs and bump it via `uv lock` when `pyproject.toml` changes.
 * **Test Dependencies:** `pytest`, `pytest-asyncio`, `pytest-xdist`, `pytest-cov`, `pytest-codspeed`, `bandit`, `mypy`, `black`, `isort`, `flake8` (via `uv sync --extra dev`).
 * **Redis Targets:** * Local: `redis:8-alpine` (6380), `valkey/valkey:9-alpine` (6381) via Compose.
 * CI: `redis:8-alpine` (6379).

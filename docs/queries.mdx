@@ -91,16 +91,45 @@ results = await Customer.find().sort_by("last_name", "-age").all()
 ## Limiting and pagination
 
 `.all()` returns everything (paginated transparently under the hood).
-For explicit offsets, use `.page(offset, limit)`:
+Internally, `FindQuery.execute()` defaults to `exhaust_results=True`,
+which issues repeated `FT.SEARCH` calls — increasing the offset by the
+page size each time — until no more results come back, and accumulates
+**every** matching model in memory.
+
+That is convenient for small result sets, but **unsafe for user-facing
+endpoints** where a filter can match far more rows than you expect.
+For example, an admin "list all customers" endpoint that calls
+`.all()` on a `Customer.find(...)` with no selective filter will load
+the entire table into memory.
+
+For bounded reads, prefer one of:
 
 ```python
-# Skip the first 10 customers, take the next 5
+# 1. Explicit offset/limit — a single FT.SEARCH, no transparent paging.
 page = await Customer.find(Customer.last_name == "Brookins").page(
     offset=10, limit=5
 )
+
+# 2. Cursor pagination — streams results from Redis without loading
+#    everything at once. Ideal for large or unbounded result sets.
+cursor = await Customer.find(Customer.last_name == "Brookins").iter_cursor()
+while not cursor.exhausted:
+    batch = await cursor.read()
+    for customer in batch:
+        ...
+
+# 3. Drop the exhaust loop entirely — pass exhaust_results=False for a
+#    single-page read at the current offset/limit.
+first_page = await Customer.find(Customer.last_name == "Brookins").execute(
+    exhaust_results=False
+)
 ```
 
-For large result sets, use cursor pagination — see
+Use `.all()` only when you can prove the result set is bounded (for
+example, behind a strict tenant-scoped filter, or for back-office
+scripts that intentionally export everything).
+
+For more on cursor pagination, see
 [Cursor pagination](#cursor-pagination) below.
 
 ## `IN` and `NOT IN`

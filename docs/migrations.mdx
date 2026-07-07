@@ -50,6 +50,29 @@ await Migrator().run()
 > as well as the new index to be available near-simultaneously
 > during the rebuild.
 
+## Trust boundary: schema and index configuration
+
+The migrator builds `FT.CREATE` commands from values derived from your
+Python model definitions:
+
+- `Meta.index_name` and `Meta.global_key_prefix` / `model_key_prefix`
+- `Meta.key_separator`
+- Field index options (`index=True`, `full_text_search=True`, `separator=`, ...)
+- Schema strings produced by `Model.redisearch_schema()`
+
+These are treated as **trusted configuration**, not untrusted user
+input. Both the single-node and cluster migration paths pass these
+values to Redis as positional command arguments (the cluster path uses
+`target_nodes=` only for routing, never to construct schema).
+
+If your application dynamically generates model classes or field
+metadata from request data — for example, building a model class from a
+user-supplied schema — you are responsible for validating index names,
+prefixes, separators, and field options before defining the class.
+Malformed values in those slots could alter the resulting `FT.CREATE`
+command. Under normal usage (static model definitions in your codebase)
+this is not a concern.
+
 ## Zero-downtime migrations (alias mode)
 
 Alias mode uses `FT.ALIASUPDATE` to swap RediSearch indexes atomically

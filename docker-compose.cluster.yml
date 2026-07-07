@@ -1,3 +1,19 @@
+# !! LOCAL DEVELOPMENT / CI ONLY !!
+#
+# This compose file brings up a 6-node Redis Cluster for testing
+# redis-om-python against real cluster routing. It deliberately uses:
+#
+#   * `--protected-mode no`     — so cluster nodes can talk to each other
+#                               and to the host without Redis refusing
+#                               commands from non-loopback clients.
+#   * `host.docker.internal`    — Docker Desktop / WSL2 host gateway, so
+#                               cluster gossip works on Linux CI runners.
+#
+# DO NOT copy these flags into production deployments. Production Redis
+# should bind to private interfaces, keep `protected-mode yes`, and use
+# proper TLS / ACLs. See:
+#   https://redis.io/docs/latest/operate/oss_and_stack/management/security/
+#
 services:
     redis-cluster-7001:
         container_name: redis-cluster-7001
