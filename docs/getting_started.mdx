@@ -88,6 +88,16 @@ The command to start Redis with Docker depends on the image you've chosen to use
 
     $ docker run -d -p 6379:6379 redis:8-alpine
 
+#### Docker with the `valkey/valkey:9-alpine` image
+
+For a lean deployment without search modules (HashModel only, no rich queries):
+
+    $ docker run -d -p 6379:6379 valkey/valkey:9-alpine
+
+With ValkeySearch + ValkeyJSON for full feature parity:
+
+    $ docker run -d -p 6379:6379 valkey/valkey:9-alpine --loadmodule /usr/lib/valkey/modules/valkeyjson.so --loadmodule /usr/lib/valkey/modules/valkeysearch.so
+
 ### Docker with the `redis` image
 
     $ docker run -d -p 6379:6379 redis

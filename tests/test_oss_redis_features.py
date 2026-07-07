@@ -7,7 +7,7 @@ from typing import Optional
 import pytest
 import pytest_asyncio
 
-from aredis_om import HashModel, Migrator, NotFoundError, RedisModelError
+from aredis_om import HashModel, NotFoundError, RedisModelError
 from tests._compat import ValidationError
 
 from .conftest import py_test_mark_asyncio
@@ -36,8 +36,6 @@ async def m(key_prefix, redis):
         class Meta:
             model_key_prefix = "member"
             primary_key_pattern = ""
-
-    await Migrator().run()
 
     return namedtuple("Models", ["BaseHashModel", "Order", "Member"])(
         BaseHashModel, Order, Member

@@ -148,6 +148,23 @@ If you need these features today:
 Once the integration lands, both will share the same `Meta.database`
 connection.
 
+## Valkey Module Support
+
+[Valkey](https://valkey.io/) is the open-source Redis fork and is already supported as a backend:
+
+- **`valkey/valkey:9-alpine`** (no modules): Fully supported for `HashModel` CRUD, validation, and pipelines. `JsonModel` works for flat documents.
+- **With ValkeyJSON + ValkeySearch**: Full feature parity with Redis — `JsonModel` with embedded models, rich queries, full-text search.
+
+The existing `has_redis_json()` and `has_redisearch()` checks work against Valkey deployments because the module commands (`JSON.SET`, `FT.SEARCH`) are identical.
+
+What's pending / under development:
+
+- **Automatic Valkey module detection**: The library already detects modules via `COMMAND INFO` which works on Valkey. No changes needed.
+- **Valkey Search alias support**: ValkeySearch uses the same `FT.*` commands as RediSearch, so existing query code is compatible.
+- **RESP3 shim**: Already works with Valkey 9's RESP3 implementation.
+
+See [Redis Modules](/redis_modules) for setup instructions with Valkey.
+
 ## Related
 
 - [RedisVL Integration (Coming Soon)](/redisvl) — overview and

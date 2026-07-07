@@ -14,9 +14,11 @@ These modules are the "magic" behind the scenes:
 
 ## Why this is important
 
-Without RediSearch or RedisJSON installed, you can still use Redis OM to create declarative models backed by Redis.
+Without RediSearch or RedisJSON, you can still use Redis OM to create declarative models backed by Redis.
 
 We'll store your model data in Redis as Hashes, and you can retrieve models using their primary keys. You'll also get all the validation features from Pydantic.
+
+> **Valkey is fully supported.** [Valkey](https://valkey.io/) — the open-source Redis fork — is supported with or without modules. `HashModel` works completely (CRUD, validation, pipelines). `JsonModel` works for flat documents; nested embedded models require RedisJSON. Rich queries require RediSearch. Use `valkey/valkey:9-alpine` (no modules) for a lean deployment, or Valkey with the [ValkeyJSON](https://github.com/valkey-io/valkey-json) and [ValkeySearch](https://github.com/valkey-io/valkey-search) modules for full feature parity.
 
 So, what won't work without these modules?
 
