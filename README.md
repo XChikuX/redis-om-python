@@ -20,6 +20,7 @@
 [![License][license-image]][license-url]
 [![Build Status][ci-svg]][ci-url]
 [![Codecov][codecov-svg]][codecov-url]
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/XChikuX/redis-om-python?utm_source=badge)
 
 **Redis OM Python** makes it easy to model Redis data in your Python applications.
 
