@@ -311,7 +311,10 @@ async def test_bench_hash_all_pks(hash_models):
     pks = [pk async for pk in await m.SimpleHash.all_pks(count=100)]
     elapsed = time.perf_counter() - start
     record_benchmark("hash_all_pks_count_100", elapsed, ops=len(pks))
-    assert len(pks) == 200
+    # CodSpeed re-runs the benchmark body multiple times against the same
+    # fixture, so records accumulate across invocations; assert at least the
+    # 200 saved by this run rather than an exact count.
+    assert len(pks) >= 200
 
 
 @py_test_mark_asyncio
@@ -620,7 +623,10 @@ async def test_bench_json_all_pks(json_models):
     pks = [pk async for pk in await m.SimpleJson.all_pks(count=100)]
     elapsed = time.perf_counter() - start
     record_benchmark("json_all_pks_count_100", elapsed, ops=len(pks))
-    assert len(pks) == 200
+    # CodSpeed re-runs the benchmark body multiple times against the same
+    # fixture, so records accumulate across invocations; assert at least the
+    # 200 saved by this run rather than an exact count.
+    assert len(pks) >= 200
 
 
 @py_test_mark_asyncio
@@ -921,7 +927,10 @@ async def test_bench_geo_json_large_radius(json_models):
     ).all()
     elapsed = time.perf_counter() - start
     record_benchmark("geo_json_5000km_us", elapsed, ops=len(results))
-    assert len(results) == 10
+    # A 5000km radius covers the whole US, so all 10 cities are returned.
+    # CodSpeed re-runs the body multiple times against the same fixture, so
+    # cities accumulate across invocations; assert at least the full set.
+    assert len(results) >= 10
 
 
 # ══════════════════════════════════════════════════════════════════════
