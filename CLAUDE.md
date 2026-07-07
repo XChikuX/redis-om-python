@@ -169,7 +169,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 ### Performance
 
 * **Strengths:** Async-first, generated sync parity, lazy connections, query-string caching.
-* **Bottleneck Risks:** `FindQuery.copy()` (rebuilds via dict; profile on large sets). Datetime/bytes conversions deeply walk nested structures.
+* **Bottleneck Risks:** `FindQuery.copy()` (rebuilds via dict; profile on large sets). Datetime/bytes conversions deeply walk nested structures — **investigated** (field-aware conversion plan prototype shows 1.5–4.8x speedup on save/load; integration deferred).
 * **Memory Risk:** `FindQuery.execute(exhaust_results=True)` paginates without max limits.
 * **CI Gap:** ~~Benchmarks run but lack enforced regression thresholds.~~ Addressed — `.github/workflows/codspeed.yml` runs the benchmark suite under `pytest-codspeed` walltime mode on every push/PR with CodSpeed regression tracking.
 
