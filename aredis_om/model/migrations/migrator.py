@@ -808,7 +808,7 @@ class Migrator:
         target_exists = target_physical in all_indexes
 
         if not target_exists and not self.allow_forward_swap:
-            log.info(
+            log.error(
                 "Alias %s points at %s but target %s does not exist. "
                 "Refusing to create+swap because allow_forward_swap=False "
                 "(rolling-deploy safety). Run the migrator with "
@@ -822,7 +822,7 @@ class Migrator:
 
         if target_exists:
             # target exists but alias points elsewhere → newer migration won.
-            log.info(
+            log.warning(
                 "Alias %s points at %s but target %s already exists; a "
                 "newer migration has already run. Not swapping back "
                 "(rolling-deploy safety).",
