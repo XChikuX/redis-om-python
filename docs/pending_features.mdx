@@ -150,20 +150,44 @@ connection.
 
 ## Valkey Module Support
 
-[Valkey](https://valkey.io/) is the open-source Redis fork and is already supported as a backend:
+[Valkey](https://valkey.io/) is the open-source Redis fork. pyredis-om runs
+against it today for `HashModel` CRUD and a subset of query features, but
+**Valkey is not a drop-in replacement for Redis Stack** — valkey-search has
+several intentional design differences from RediSearch that affect query
+behaviour.
 
-- **`valkey/valkey:9-alpine`** (no modules): Fully supported for `HashModel` CRUD, validation, and pipelines. `JsonModel` works for flat documents.
-- **With ValkeyJSON + ValkeySearch**: Full feature parity with Redis — `JsonModel` with embedded models, rich queries, full-text search.
+**What works:**
 
-The existing `has_redis_json()` and `has_redisearch()` checks work against Valkey deployments because the module commands (`JSON.SET`, `FT.SEARCH`) are identical.
+- **`valkey/valkey:9-alpine`** (no modules): `HashModel` CRUD, validation,
+  pipelines.
+- **`valkey/valkey-bundle:alpine`** (with modules): `JsonModel` CRUD,
+  `FT.CREATE` with `NUMERIC`/`TAG`/`TEXT`/`VECTOR`, explicit-filter queries,
+  plain `FT.AGGREGATE`, KNN vector search.
+- The existing `has_redis_json()` and `has_redisearch()` checks work against
+  Valkey because the module commands (`JSON.SET`, `FT.SEARCH`) are identical.
+- The RESP3 `FT.INFO` shim handles Valkey's flat-list response shape.
 
-What's pending / under development:
+**What does NOT work (empirically verified against valkey-search 1.2.0):**
 
-- **Automatic Valkey module detection**: The library already detects modules via `COMMAND INFO` which works on Valkey. No changes needed.
-- **Valkey Search alias support**: ValkeySearch uses the same `FT.*` commands as RediSearch, so existing query code is compatible.
-- **RESP3 shim**: Already works with Valkey 9's RESP3 implementation.
+- `FT.SEARCH '*'` (match-all query) is rejected by design — see
+  [valkey-search #283](https://github.com/valkey-io/valkey-search/pull/283).
+  This breaks every `Model.find()` with no filter arguments.
+- Dual `TAG` + `TEXT` on the same source field (used by
+  `Field(index=True, full_text_search=True)`) is rejected as a duplicate.
+- `GEO` field type (used by `Coordinates`) is not supported.
+- `FT.ALIASUPDATE` and the entire zero-downtime migration path are not
+  supported.
+- `FT.AGGREGATE WITHCURSOR` (used by `FindQuery.iter_cursor()`) is not
+  supported.
+- Several aggregation reducers (`QUANTILE`, `TOLIST`, `matched_terms`,
+  `FIRST_VALUE`, `RANDOM_SAMPLE`, `COUNT_DISTINCTISH`) are not supported.
 
-See [Redis Modules](/redis_modules) for setup instructions with Valkey.
+Switching to `valkey-py` does **not** fix any of these — they are
+server-side limitations.
+
+See [Upcoming Valkey Support](/upcoming_valkey) for the full empirically
+verified findings, reproduction commands, and the open design decisions for
+handling each gap.
 
 ## Related
 

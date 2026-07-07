@@ -1,0 +1,364 @@
+---
+title: Upcoming Valkey Support
+description: Empirically verified compatibility between pyredis-om and Valkey (valkey-search 1.2.0), with documented limitations and planned workarounds.
+---
+
+# Upcoming Valkey Support
+
+> **Status: IN PROGRESS.** pyredis-om runs against [Valkey](https://valkey.io/)
+> today for `HashModel` CRUD and a subset of query features. This page
+> documents the **empirically verified** gaps against valkey-search 1.2.0
+> (the version shipped in `valkey/valkey-bundle:alpine`) and the planned
+> handling for each. Nothing on this page is yet implemented as automatic
+> behaviour — it is the spec we are working from.
+
+Every claim below was verified by running the exact command against a live
+`valkey/valkey-bundle:alpine` container (valkey-search **1.2.0**, module
+version `66048`) and cross-checked against the official command reference at
+[valkey.io/commands](https://valkey.io/commands/). Where the docs and the
+server disagreed, the server won.
+
+## Test environment
+
+```bash
+# docker-compose.yml
+valkey:
+  image: "valkey/valkey-bundle:alpine"
+  ports:
+    - "6381:6379"
+```
+
+```bash
+docker exec redis-om-python-valkey-1 valkey-cli MODULE LIST
+# name=search ver=66048 path=/usr/lib/valkey/libsearch.so
+# name=json   ver=10002 path=/usr/lib/valkey/libjson.so
+# name=bf     ver=10001 path=/usr/lib/valkey/libvalkey_bloom.so
+# name=ldap   ver=16843007 path=/usr/lib/valkey/libvalkey_ldap.so
+# name=lua    ver=1      path=lua
+```
+
+Module version `66048` decodes as `(1 << 16) | (2 << 8) | 0` → **valkey-search
+1.2.0**, which is the release that [added TEXT indexing and
+search](https://github.com/valkey-io/valkey-search/releases/tag/1.2.0).
+
+## What works today
+
+These were tested against the live container and pass:
+
+| Feature | Notes |
+| --- | --- |
+| `HashModel` CRUD (`save`, `get`, `update`, `delete`, `all_pks`) | No modules required; works on plain Valkey too |
+| `JsonModel` CRUD with flat documents | Requires ValkeyJSON (bundled) |
+| `FT.CREATE` with `NUMERIC`, `TAG`, `TEXT`, `VECTOR` field types | All four supported as of 1.2.0 |
+| `FT.SEARCH` with explicit filters (`@field:{tag}`, `@field:[min max]`) | Works |
+| `FT.AGGREGATE` plain (no cursor) — `GROUPBY`, `REDUCE`, `SORTBY`, `LIMIT`, `APPLY`, `FILTER` | [Docs](https://valkey.io/commands/ft.aggregate/); supported since 1.1.0 |
+| Reducers: `COUNT`, `COUNT_DISTINCT`, `SUM`, `MIN`, `MAX`, `AVG`, `STDDEV` | Full list per the FT.AGGREGATE docs |
+| `FT.DROPINDEX`, `FT.INFO`, `FT._LIST` | All present |
+| KNN vector queries with `PARAMS` | Works |
+| `redis-py` as the client | Works; `valkey-py` also works but offers no advantage (see below) |
+
+## Empirically verified limitations
+
+Each row below was reproduced against the live server. The "Error" column is
+the literal server response.
+
+### 1. `FT.SEARCH '*'` is rejected — no "match all" query
+
+<Alert type="warning">
+  **This is the highest-impact gap.** Every <code>Model.find()</code> call
+  with no filter arguments defaults to the RediSearch <code>*</code> query
+  and will fail on Valkey.
+</Alert>
+
+**Server response:**
+
+```
+FT.SEARCH idx '*'
+# => Invalid query string syntax
+```
+
+**Why:** This is intentional, not a bug. [valkey-search PR
+#283](https://github.com/valkey-io/valkey-search/pull/283) ("Reject queries
+when no valid pre-filter and no vector filter is provided") made a filter
+expression **mandatory**. Valkey-search's query model requires at least one
+predicate; there is no universal "match all documents" syntax.
+
+**Workarounds that DO work:**
+
+| Query | Result |
+| --- | --- |
+| `*` (RediSearch standard) | ❌ `Invalid query string syntax` |
+| `''` (empty string) | ❌ `Invalid query string syntax` |
+| `@field:{*}` | ❌ `Tag string '*' is too short for prefix wildcard` |
+| `@numeric_field:[-inf +inf]` | ✅ Matches all docs with that field |
+| `@tag_field:{known_value}` | ✅ Matches docs with that tag |
+
+The only reliable "match all" workaround requires an indexed `NUMERIC` field
+to range over. That is not something every model has.
+
+**Planned handling:** Open design question — see
+[Design decisions](#design-decisions-pending) below.
+
+### 2. Dual `TAG` + `TEXT` on the same source field is rejected
+
+A field declared `Field(index=True, full_text_search=True)` currently emits
+**both** a `TAG` and a `TEXT` index entry pointing at the same source:
+
+```
+bio TAG SEPARATOR | bio AS bio_fts TEXT
+```
+
+Valkey rejects this:
+
+```
+FT.CREATE idx ON HASH PREFIX 1 t: SCHEMA bio TAG SEPARATOR | bio AS bio_fts TEXT
+# => Duplicate field in schema - bio
+```
+
+RediSearch tolerates the duplication; valkey-search does not.
+
+**Affected code:** `HashModel.schema_for_type` and
+`JsonModel.schema_for_type` in `aredis_om/model/model.py` (the
+`full_text_search=True` branches). Every test fixture using `bio: str =
+Field(index=True, full_text_search=True)` fails at index creation time.
+
+**Planned handling:** Open design question — see
+[Design decisions](#design-decisions-pending) below.
+
+### 3. `GEO` field type is not supported
+
+`Coordinates`-typed fields emit `GEO` in the schema:
+
+```
+FT.CREATE idx ON HASH PREFIX 1 t: SCHEMA location GEO
+# => Invalid field type for field `location`: Unknown argument `GEO`
+```
+
+The [FT.CREATE docs](https://valkey.io/commands/ft.create/) list only four
+field types: `NUMERIC`, `TAG`, `TEXT`, `VECTOR`. `GEO` is absent.
+
+**Affected code:** The `elif typ is Coordinates:` branches in
+`HashModel.schema_for_type` and `JsonModel.schema_for_type`.
+
+**Planned handling:** Open design question — see
+[Design decisions](#design-decisions-pending) below.
+
+### 4. `FT.ALIASUPDATE` is not supported
+
+```
+FT.CREATE idx_src ON HASH PREFIX 1 t: SCHEMA name TAG    # OK
+FT.ALIASUPDATE idx_target idx_src
+# => ERR unknown command 'FT.ALIASUPDATE', with args beginning with: 'idx_target' 'idx_src'
+```
+
+The valkey-search [command list](https://github.com/valkey-io/valkey-search/blob/main/COMMANDS.md)
+is: `FT.CREATE`, `FT.DROPINDEX`, `FT.INFO`, `FT._LIST`, `FT.SEARCH`,
+`FT.AGGREGATE`. **No alias commands exist.** There is no equivalent of
+`FT.ALIASADD` / `FT.ALIASUPDATE` / `FT.ALIASDEL`.
+
+**Affected code:** The entire zero-downtime migration path
+(`MigrationAction.ALIAS_LINK`, `ALIAS_ADOPT`, `ALIAS_SWAP`) in
+`aredis_om/model/migrations/migrator.py`. The legacy DROP+CREATE path
+(`MigrationAction.CREATE` / `DROP`) works fine.
+
+**Planned handling:** Detect Valkey and skip alias-mode migrations, falling
+back to DROP+CREATE. See [Design decisions](#design-decisions-pending)
+below.
+
+### 5. `FT.AGGREGATE WITHCURSOR` is not supported
+
+```
+FT.AGGREGATE idx '@name:{alice}' WITHCURSOR COUNT 10
+# => Unexpected argument `WITHCURSOR`
+```
+
+Plain `FT.AGGREGATE` works (since valkey-search 1.1.0), but the `WITHCURSOR`
+clause documented by RediSearch is not in the [Valkey FT.AGGREGATE usage
+syntax](https://valkey.io/commands/ft.aggregate/).
+
+**Affected code:** `FindQuery.iter_cursor()` in
+`aredis_om/model/model.py`, which issues `FT.AGGREGATE ... WITHCURSOR` for
+cursor-based pagination. Non-cursor pagination (`FindQuery.execute()` with
+`limit` / `offset`) works because it uses plain `FT.SEARCH`.
+
+**Planned handling:** Raise a clear `QueryNotSupportedError` on Valkey when
+`iter_cursor()` is called, pointing users at offset-based pagination.
+
+### 6. Limited aggregation reducers
+
+The Valkey [FT.AGGREGATE reducer list](https://valkey.io/commands/ft.aggregate/)
+is a strict subset of RediSearch's:
+
+| Reducer | RediSearch | Valkey |
+| --- | --- | --- |
+| `COUNT`, `COUNT_DISTINCT` | ✅ | ✅ |
+| `SUM`, `MIN`, `MAX`, `AVG`, `STDDEV` | ✅ | ✅ |
+| `QUANTILE`, `TOLIST`, `FIRST_VALUE`, `RANDOM_SAMPLE`, `COUNT_DISTINCTISH` | ✅ | ❌ |
+| `matched_terms` (function) | ✅ | ❌ |
+
+Any user query (or internal code path) that uses one of the missing reducers
+will get an "unknown function" error from the server.
+
+**Planned handling:** Document the supported subset. No automatic rewrite is
+possible since the missing reducers have no Valkey equivalent.
+
+## What does NOT help
+
+These were tried and do **not** fix any of the limitations above, because the
+limitations are server-side:
+
+### Switching from `redis-py` to `valkey-py`
+
+`valkey-py` is the official Valkey client and is API-compatible with
+`redis-py`. We already have an opportunistic import shim in
+`aredis_om/async_redis.py` that prefers `valkey.asyncio` when installed.
+However:
+
+- The dual TAG+TEXT, GEO, `FT.ALIASUPDATE`, and `WITHCURSOR` rejections come
+  from the **server**, not the client. No client library can work around
+  them.
+- `valkey-py`'s built-in `FT.INFO` parser (`dict(zip(it, it))`) handles the
+  flat-list RESP3 shape natively, but we already have a
+  `parse_ft_info_response()` shim in `aredis_om/model/resp3_shim.py` that
+  covers the same ground for `redis-py`.
+- Empirically, running the full test suite with `valkey-py` produced
+  *slightly worse* results than `redis-py` (more failures), because
+  `redis-py`'s RESP3 shims mask a few additional edge cases.
+
+**Recommendation:** Keep `redis-py` as the primary client. `valkey-py`
+remains an opportunistic fallback for users who prefer it.
+
+### Setting `protocol=3` in the URL
+
+Valkey returns `FT.INFO` as a flat alternating list regardless of the
+negotiated RESP version. The `parse_ft_info_response()` shim in
+`aredis_om/model/resp3_shim.py` is required with either protocol. Setting
+`protocol=3` does not fix any of the limitations above.
+
+## Docker image notes
+
+- **`valkey/valkey-bundle:alpine`** is the correct image. It bundles
+  valkey-search, valkey-json, valkey-bloom, valkey-ldap, and lua.
+- The `9-alpine` and `unstable` tags had corrupt CloudFront layers during
+  testing and failed to pull. Use `alpine`.
+- The equivalent Redis Stack image is `redis/redis-stack-server`. The bundle
+  is the Valkey-side analogue.
+
+## Design decisions (pending)
+
+These are the open questions that must be answered before implementing
+automatic Valkey-aware behaviour. Each has user-visible consequences.
+
+### A. `full_text_search=True` on Valkey
+
+The dual TAG+TEXT schema is rejected. We must pick one:
+
+- **Option 1: Emit `TEXT` only.** Preserves full-text `LIKE` queries. Loses
+  exact-match (`==`), `IN`, `NOT_IN`, and `CONTAINS` on that field, because
+  those compile to TAG queries. Breaks every test doing
+  `Member.find(Member.bio == "x")`.
+- **Option 2: Emit `TAG` only.** Preserves exact-match / `IN` / `NOT_IN`.
+  Loses full-text search. `LIKE` queries raise at compile time. Breaks every
+  test doing `Member.find(Member.bio % "x")`.
+- **Option 3: Detect at query time.** Emit both in the schema string, then
+  have the Migrator strip one based on server flavour before `FT.CREATE`.
+  Most flexible but most invasive.
+
+### B. `Coordinates` / `GEO` on Valkey
+
+- **Option 1: Raise `RedisModelError` at class creation.** Loud, fails fast,
+  but prevents the model from being defined at all on Valkey.
+- **Option 2: Skip indexing the field with a warning.** The field still
+  stores and round-trips; it just isn't queryable. Quieter, but users may
+  not notice the silent degradation.
+
+### C. `FT.SEARCH '*'` rejection (the big one)
+
+This affects every `Model.find()` with no filter arguments. Options:
+
+- **Option 1: Document as unsupported.** Users must always pass a filter on
+  Valkey. Simplest, but breaks a lot of existing code and tests.
+- **Option 2: Auto-inject a hidden indexed field.** Add a synthetic
+  `NUMERIC` field to every model and rewrite `*` → `@__synthetic:[-inf
+  +inf]`. Works transparently but adds schema bloat.
+- **Option 3: Detect Valkey and raise a clear error.** Tells the user
+  exactly why `find()` with no args doesn't work and what to do instead.
+
+### D. `FT.ALIASUPDATE` (zero-downtime migrations)
+
+- **Option 1: Fall back to DROP+CREATE.** Detect Valkey and ignore
+  `Meta.zero_downtime_migrations = True`, using the legacy migration path
+  instead. Loses the zero-downtime guarantee but keeps migrations working.
+- **Option 2: Raise.** Refuse to run alias-mode migrations on Valkey.
+
+### E. `FT.AGGREGATE WITHCURSOR` (cursor pagination)
+
+- **Option 1: Raise `QueryNotSupportedError`.** Clear error pointing at
+  offset-based pagination.
+- **Option 2: Fall back to offset pagination.** Transparently use
+  `FT.SEARCH` with `LIMIT` instead of cursor. Loses the streaming
+  efficiency but keeps the API working.
+
+## Detection strategy
+
+To make any of the conditional behaviour above work, pyredis-om needs to
+know at runtime whether it is talking to Valkey. The schema-generation path
+runs at class definition time (no connection available), so detection must
+happen either:
+
+1. **In the Migrator** (async, has a connection) — transform the schema
+   string before `FT.CREATE`, and skip alias actions. This is the
+   recommended path because it's where the connection is available.
+2. **Via an environment variable** (e.g. `REDIS_OM_SEARCH_BACKEND=valkey`) —
+   for users who want to pin behaviour at import time.
+
+Detection via `MODULE LIST` is reliable: the search module's `path` field is
+`/usr/lib/valkey/libsearch.so` on Valkey vs. the Redis Stack path on Redis.
+The version (`66048` = 1.2.0) is also a strong signal.
+
+## Verification commands
+
+Every claim on this page can be reproduced with these one-liners against a
+running `valkey/valkey-bundle:alpine` container:
+
+```bash
+# 1. Dual TAG+TEXT
+valkey-cli FT.CREATE t1 ON HASH PREFIX 1 k: SCHEMA bio TAG SEPARATOR \| bio AS bio_fts TEXT
+# => Duplicate field in schema - bio
+
+# 2. GEO
+valkey-cli FT.CREATE t2 ON HASH PREFIX 1 k: SCHEMA loc GEO
+# => Invalid field type for field `loc`: Unknown argument `GEO`
+
+# 3. FT.ALIASUPDATE
+valkey-cli FT.CREATE t3 ON HASH PREFIX 1 k: SCHEMA name TAG
+valkey-cli FT.ALIASUPDATE t3_alias t3
+# => ERR unknown command 'FT.ALIASUPDATE'
+
+# 4. FT.SEARCH '*'
+valkey-cli HSET k:1 name alice age 30
+valkey-cli FT.CREATE t4 ON HASH PREFIX 1 k: SCHEMA name TAG age NUMERIC
+valkey-cli FT.SEARCH t4 '*'
+# => Invalid query string syntax
+
+# 5. FT.AGGREGATE WITHCURSOR
+valkey-cli FT.AGGREGATE t4 '@name:{alice}' WITHCURSOR COUNT 10
+# => Unexpected argument `WITHCURSOR`
+
+# 6. matched_terms reducer
+valkey-cli FT.AGGREGATE t4 '@name:{alice}' APPLY matched_terms() AS mt
+# => (unknown function error)
+```
+
+## Related
+
+- [Pending Features (RedisVL)](/pending_features) — note that the existing
+  Valkey section there overstates compatibility; this page is the
+  authoritative reference.
+- [Migrations](/migrations) — the DROP+CREATE vs. alias-mode paths.
+- [Queries and Vector Search](/queries) — `find()`, KNN, pagination,
+  cursors.
+- [Geospatial Queries](/geo_queries) — `Coordinates`, `GeoFilter` (will need
+  Valkey notes once a decision is made).
+- [Protocol Selection](/protocol) — RESP2/RESP3 notes; Valkey's `FT.INFO`
+  shape is protocol-independent.
