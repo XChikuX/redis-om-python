@@ -20,7 +20,7 @@ Object mapping library for Redis built on Pydantic v2, utilizing Redis Search an
 * **Generated Artifacts:** `redis_om/` and `tests_sync/` (generated via `make sync`; git-ignored).
 * **Tooling:** `uv` manages dependencies/workflows. No committed `uv.lock` (treat resolution as unconstrained).
 * **Test Dependencies:** `pytest`, `pytest-asyncio`, `pytest-xdist`, `pytest-cov`, `pytest-codspeed`, `bandit`, `mypy`, `black`, `isort`, `flake8` (via `uv sync --extra dev`).
-* **Redis Targets:** * Local: `redis:8-alpine` (6380), OSS `redis:latest` (6381) via Compose.
+* **Redis Targets:** * Local: `redis:8-alpine` (6380), `valkey/valkey:9-alpine` (6381) via Compose.
 * CI: `redis:8-alpine` (6379).
 
 
@@ -127,7 +127,25 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 
 * **TODO Cleanup:** All TODOs resolved and documented inline (Sets explicitly unsupported, Geos use `Coordinates`, bytes in TAG are base64, `*` negation rejected, Non-IN right-hands raise `QueryNotSupportedError`, `Meta.key_separator` defaults to `:`, `verify_pipeline_response` intentionally minimal).
 
-## 6. Audit Findings: Bug Fixes (2026-07)
+## 6. Class-Level `index=True`
+
+`class Foo(Model, index=True)` enables "index everything" mode on a model. All fields default to `index=True` unless explicitly overridden with `Field(index=False)`.
+
+**Resolution order (most specific wins):**
+
+1. `Field(index=False)` on a specific field
+2. Class-level `index=True` / `index=False`
+3. Model-level defaults (numeric/date/bool → index; str without `full_text_search=True` → no index; embedded → recursive)
+
+**Key mechanics:**
+- `ModelMeta.__new__` pops `index` kwarg before calling `redisearch_schema()` so `__init_subclass__` runs after schema is frozen.
+- `_meta.index_enabled = bool(class_index)` applied BEFORE `redisearch_schema()` so recursive schema generation sees it.
+- `_index_explicitly_set` marker persisted via `json_schema_extra` to survive Pydantic's `FieldInfo` reconstruction on subclassing.
+- `_field_index_explicitly_set()` falls back to `primary_key=True` if marker lost (Pydantic strips private attrs on subclass).
+- `CLASS_INDEX_WARN_THRESHOLD = 20`: emitting `UserWarning` once per process when class-indexed model produces >20 indexed fields.
+- **KNN score field collision:** `class JsonModel(index=True)` auto-indexes `embeddings_score: Optional[float] = None` as NUMERIC, but KNN query-time synthesis creates a field with the same name → `Property 'embeddings_score' already exists in schema`. Fix: mark the field `Field(index=False)` + `KNNExpression.validate_score_field_not_indexed()` runtime check raises `RedisModelError` with friendly message.
+
+## 7. Audit Findings: Bug Fixes (2026-07)
 
 * **`checks.py`:** `has_redisearch` strictly checks `ft.search`, removing false positives on standalone RedisJSON.
 * **Pagination/Loops:** Fixed `__getitem__` cache off-by-one (`>=` to `>`). Pagination offset increments by `limit` instead of `page_size`. `FindQueryCursor.__anext__` upgraded to O(1) `collections.deque`.
@@ -143,8 +161,9 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 
 * **JSON Scanning:** `JsonModel.all_pks()` falls back from `_type="ReJSON-RL"` to `_type="JSON"` for modern Redis 8 compatibility.
 * **Error Handling:** `FindQuery.delete()` now logs swallowed `ResponseError`s as `WARNING` for easier Cluster slot-debugging.
+* **Valkey OSS Support:** `tests/test_oss_redis_features.py` fixture removed `Migrator().run()` (calls `FT.CREATE` which requires search modules absent on plain Valkey 9). The 9 HashModel CRUD tests now pass on both Redis and Valkey without modules.
 
-## 7. Audits (Performance & Security)
+## 8. Audits (Performance & Security)
 
 ### Performance
 

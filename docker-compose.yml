@@ -1,12 +1,12 @@
 services:
     redis:
-        image: "redis:8-alpine"
+        image: "redis:alpine"
         restart: always
         ports:
             - "6380:6379"
 
     valkey:
-        image: "valkey/valkey:9-alpine"
+        image: "valkey/valkey-bundle:alpine"
         restart: always
         ports:
             - "6381:6379"
