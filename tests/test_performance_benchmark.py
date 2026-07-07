@@ -46,7 +46,13 @@ if not has_redisearch() or not has_redis_json():
 else:
     # Run all benchmark tests in the same xdist worker so BENCHMARK_RESULTS
     # (a module-level dict) is fully populated before test_zzz_print_benchmark_results.
-    pytestmark = pytest.mark.xdist_group("benchmark_single_instance")
+    # The ``benchmark`` marker lets ``pytest --codspeed`` measure each test for
+    # continuous regression tracking via CodSpeed.  Without ``--codspeed`` the
+    # marker is a no-op and the tests run as normal functional tests.
+    pytestmark = [
+        pytest.mark.xdist_group("benchmark_single_instance"),
+        pytest.mark.benchmark,
+    ]
 
 # ── Global benchmark storage ──────────────────────────────────────────
 

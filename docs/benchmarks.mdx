@@ -1,0 +1,175 @@
+---
+title: Performance Benchmarks
+description: Continuous performance regression tracking with pytest-codspeed and CodSpeed.
+---
+
+# Performance Benchmarks
+
+`pyredis-om` ships a benchmark suite in
+`tests/test_performance_benchmark.py` that covers the hot paths of the
+library: single and bulk CRUD, query execution, pagination, JSON and
+hash model save/load, embedded models, GEO filtering, full-text search,
+and pipeline operations.
+
+The suite doubles as a **continuous performance regression gate** via
+[`pytest-codspeed`](https://codspeed.io/docs/benchmarks/python) and the
+[CodSpeed](https://codspeed.io) platform.  Every push to `main` and
+every pull request triggers the
+[`CodSpeed` workflow](https://github.com/XChikuX/redis-om-python/blob/main/.github/workflows/codspeed.yml),
+which runs the benchmarks under a walltime instrument and compares the
+results against the baseline.  If a regression is detected, CodSpeed
+posts a comment on the pull request.
+
+## How it works
+
+Each benchmark test is marked with `@pytest.mark.benchmark` (applied at
+the module level via `pytestmark`).  When pytest runs **without** the
+`--codspeed` flag, the marker is a no-op and the tests behave as
+ordinary functional tests — they record timings with
+`time.perf_counter()` for human-readable output and assert correctness.
+
+When pytest runs **with** `--codspeed`, the CodSpeed plugin wraps each
+marked test in a measurement loop, runs it multiple times, and reports
+statistical results (best time, relative standard deviation, iterations)
+to the CodSpeed platform.
+
+```python
+# tests/test_performance_benchmark.py (simplified)
+pytestmark = [
+    pytest.mark.xdist_group("benchmark_single_instance"),
+    pytest.mark.benchmark,  # ← CodSpeed picks this up
+]
+
+
+@py_test_mark_asyncio
+async def test_bench_hash_single_save(hash_models):
+    m = hash_models
+    model = m.SimpleHash(name="bench_single", value=42)
+    result = await model.save()
+    assert result.pk is not None
+```
+
+## Running benchmarks locally
+
+### Prerequisites
+
+Start a local Redis with RediSearch and RedisJSON modules:
+
+```sh
+docker compose up -d
+export REDIS_OM_URL="redis://localhost:6380?decode_responses=True"
+```
+
+### With CodSpeed (local validation)
+
+The `make benchmark` target runs the suite under CodSpeed in walltime
+mode.  Locally, CodSpeed does **not** produce performance reports — it
+only verifies that the benchmarks execute without errors.  Reporting and
+regression detection happen in CI.
+
+```sh
+make benchmark
+```
+
+This is equivalent to:
+
+```sh
+uv run pytest tests/test_performance_benchmark.py --codspeed -v
+```
+
+### Without CodSpeed (timing printout)
+
+Running the benchmark tests as ordinary pytest tests produces a
+human-readable timing table at the end of the session:
+
+```sh
+uv run pytest tests/test_performance_benchmark.py -v
+```
+
+Output looks like:
+
+```
+================================================================================
+PERFORMANCE BENCHMARK RESULTS (Single Instance)
+================================================================================
+Benchmark                                 Elapsed (s)     Ops      Ops/sec
+--------------------------------------------------------------------------------
+hash_all_pks_count_100                    0.012345        200      16200.49
+hash_delete_many_50                       0.001234        50       40518.62
+hash_find_eq                              0.000456        1        2192.98
+...
+================================================================================
+```
+
+Results are also saved to `$TMPDIR/single_instance_benchmarks.txt` for
+comparison with cluster benchmark output.
+
+## CI integration
+
+The [CodSpeed workflow](https://github.com/XChikuX/redis-om-python/blob/main/.github/workflows/codspeed.yml)
+runs on every push to `main` and every pull request.  It:
+
+1. Starts a `redis:8-alpine` service container.
+2. Installs dependencies with `uv sync --extra dev`.
+3. Generates the sync module with `make sync`.
+4. Runs `pytest tests/test_performance_benchmark.py --codspeed` under
+   the `CodSpeedHQ/action@v4` GitHub Action with `mode: walltime`.
+5. Uploads results to CodSpeed, which compares against the baseline and
+   comments on PRs when regressions are detected.
+
+### Why walltime mode?
+
+The benchmarks hit a real Redis instance (network I/O), so CPU simulation
+mode (Valgrind) would be impractically slow and the measurements would be
+dominated by I/O wait.  Walltime mode measures real elapsed time with
+statistical methods to handle variance, which is the right trade-off for
+I/O-bound benchmarks.
+
+## What is measured
+
+The benchmark suite covers:
+
+| Category | Benchmarks |
+| --- | --- |
+| **Hash CRUD** | single save/get, bulk save (50), get_many (50), delete, delete_many (50), update |
+| **Hash queries** | equality, range, sort, page, count, OR, NOT-equal, full-text search, GEO filter |
+| **Hash bulk** | all_pks (200 keys, count=100), optional fields |
+| **JSON CRUD** | single save/get, bulk save (50), get_many (50), delete, full model save/get |
+| **JSON queries** | equality, range, sort, page, count, full-text search, GEO filter, embedded model query |
+| **JSON bulk** | all_pks, get_value (single field vs full document) |
+| **Pipeline** | pipeline save (50), pipeline get_many (50) |
+
+Each benchmark records both the elapsed wall-clock time and the
+operations-per-second rate.  Under CodSpeed, the entire test function is
+measured (including fixture setup), which gives a realistic picture of
+the end-to-end cost of each operation from the application's perspective.
+
+## Adding a new benchmark
+
+1. Add a test function to `tests/test_performance_benchmark.py` with the
+   `@py_test_mark_asyncio` decorator.
+2. Use `record_benchmark(name, elapsed, ops)` to record the timing for
+   the human-readable printout.
+3. Assert correctness on the result.
+4. The module-level `pytest.mark.benchmark` marker automatically makes
+   the new test visible to CodSpeed — no extra annotation needed.
+
+```python
+@py_test_mark_asyncio
+async def test_bench_my_new_feature(hash_models):
+    m = hash_models
+    model = m.SimpleHash(name="test", value=42)
+    await model.save()
+
+    start = time.perf_counter()
+    result = await m.SimpleHash.get(model.pk)
+    elapsed = time.perf_counter() - start
+
+    record_benchmark("my_new_feature_get", elapsed)
+    assert result.name == "test"
+```
+
+> **Sync parity:** Benchmark tests live in `tests/` (async).  The sync
+> mirror in `tests_sync/` is generated by `make sync` but is not
+> benchmarked separately — the async suite is the source of truth for
+> performance tracking.

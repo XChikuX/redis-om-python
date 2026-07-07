@@ -1,0 +1,73 @@
+name: CodSpeed
+
+# Continuous performance regression tracking for redis-om-python.
+#
+# Runs the benchmark suite under CodSpeed's walltime instrument on every
+# push to main and every pull request.  Results are uploaded to CodSpeed,
+# which compares them against the baseline and posts a comment on PRs when
+# a regression is detected.
+#
+# The benchmarks live in tests/test_performance_benchmark.py and are marked
+# with ``@pytest.mark.benchmark`` (via the module-level ``pytestmark``).
+# Running ``pytest --codspeed`` activates the CodSpeed measurement engine;
+# without ``--codspeed`` the same tests run as ordinary functional tests.
+
+on:
+    push:
+        branches:
+            - main
+    pull_request:
+    # Allows CodSpeed to trigger backtest performance analysis to generate
+    # initial baseline data.
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    id-token: write # OpenID Connect auth with CodSpeed
+
+jobs:
+    codspeed:
+        name: Run benchmarks
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        services:
+            redis:
+                image: redis:8-alpine
+                ports:
+                    - 6379:6379
+                options: >-
+                    --health-cmd "redis-cli ping"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        env:
+            REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            # CodSpeed requires the Python interpreter to be installed via
+            # actions/setup-python (not ``uv python install``) for tracing
+            # to work correctly.
+            - name: Setup Python
+              uses: actions/setup-python@v6.3.0
+              with:
+                  python-version: "3.12"
+
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+
+            - name: Install dependencies
+              run: uv sync --extra dev
+
+            - name: Generate sync module
+              run: make sync
+
+            - name: Run benchmarks
+              uses: CodSpeedHQ/action@v4
+              with:
+                  mode: walltime
+                  run: uv run pytest tests/test_performance_benchmark.py --codspeed -v

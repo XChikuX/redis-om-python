@@ -19,6 +19,7 @@ help:
 	@echo "  test        run async tests against redis:8-alpine"
 	@echo "  test_full   run async + sync tests against redis:8-alpine"
 	@echo "  test_oss    run async tests against redis:latest (OSS)"
+	@echo "  benchmark   run benchmark suite under CodSpeed (local validation)"
 	@echo "  shell       open a uv shell"
 	@echo "  redis       start a Redis instance with Docker"
 	@echo "  sync        generate modules redis_om, tests_sync from aredis_om, tests respectively"
@@ -85,6 +86,14 @@ test_oss: $(INSTALL_STAMP) sync redis
 	# instead have a matrix of Docker images.
 	REDIS_OM_URL=redis://localhost:6381?decode_responses=True $(UV) run pytest -n auto -vv ./tests/ --cov-report term-missing --cov $(NAME)
 
+
+.PHONY: benchmark
+benchmark: $(INSTALL_STAMP) sync redis
+	# Run the benchmark suite under CodSpeed for local validation.
+	# No performance data is reported locally — use the CodSpeed CI
+	# workflow (.github/workflows/codspeed.yml) for regression tracking.
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest tests/test_performance_benchmark.py --codspeed -v
+	$(DOCKER_COMPOSE) down
 
 .PHONY: shell
 shell: $(INSTALL_STAMP)

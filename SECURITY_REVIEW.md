@@ -107,7 +107,7 @@ The benchmark suite records elapsed time and operations per second, but the main
 
 **Recommendation:** Integrate `pytest-codspeed` or a lightweight CI threshold for stable hot paths such as `get_many()`, broad query pagination, schema generation, and save/get conversion.
 
-**Status (2026-07-07): Open.** `tests/test_performance_benchmark.py` still only records timings (via `record_benchmark(...)`) and asserts correctness; no threshold, budget, or `pytest-codspeed` regression gate has been wired into `.github/workflows/ci.yml`. `pytest-codspeed` is listed as a dev dependency in `pyproject.toml` but is not invoked by CI.
+**Status (2026-07-07): Addressed.** `pytest-codspeed` is now wired into CI via a dedicated `.github/workflows/codspeed.yml` workflow that runs `tests/test_performance_benchmark.py --codspeed` with `mode: walltime` on every push to `main` and every pull request. The benchmark tests are marked with `@pytest.mark.benchmark` (via module-level `pytestmark`), so CodSpeed measures each test and compares against the baseline, posting regression comments on PRs. A `make benchmark` Makefile target and `docs/benchmarks.mdx` documentation page cover local usage and how to add new benchmarks. `pytest-codspeed` was already listed as a dev dependency in `pyproject.toml`; it is now actually invoked by CI.
 
 ### P2 — Generated sync output can hide performance drift until `make sync`
 
@@ -255,7 +255,7 @@ Workflows use versioned actions such as `actions/checkout@v6`, `actions/setup-py
 ### P2 — Improve resilience and maintainability
 
 1. **Addressed** — CI runs `make sync` before lint/test; generated-sync workflow is documented in `CLAUDE.md`.
-2. **Open** — Add performance regression thresholds (e.g. `pytest-codspeed`) for key benchmark tests.
+2. **Addressed** — `pytest-codspeed` regression gate is wired into CI via `.github/workflows/codspeed.yml` (walltime mode, runs on push/PR). Benchmarks are marked with `@pytest.mark.benchmark`; `make benchmark` and `docs/benchmarks.mdx` cover local usage.
 3. **Addressed** — Schema/index command construction is positional in both single-node and cluster paths; trusted-configuration boundary is now documented in `docs/migrations.mdx`.
 4. **Addressed** — HashModel null/empty-string ambiguity is documented in `docs/models.mdx`.
 5. **Open** — Reduce file-level mypy suppressions in core model code.
@@ -281,15 +281,15 @@ Of the 13 original findings:
 | Priority | Total | Addressed | Partially | Open |
 | --- | --- | --- | --- | --- |
 | P1 | 4 | 2 | 2 | 0 |
-| P2 | 5 | 3 | 0 | 2 |
+| P2 | 5 | 4 | 0 | 1 |
 | P3 | 4 | 1 | 0 | 3 |
-| **Total** | **13** | **6** | **2** | **5** |
+| **Total** | **13** | **7** | **2** | **4** |
 
 **Highest-impact open items:**
 
-1. P2 — benchmark regression thresholds via `pytest-codspeed` (currently no automated perf gate).
-2. P2 — narrow file-level mypy suppressions in `aredis_om/model/model.py` and `migrator.py`.
-3. P3 — pin GitHub Actions to immutable SHAs (supply-chain hardening).
-4. P3 — locks around `model_registry` (only if runtime dynamic registration is supported).
+1. P2 — narrow file-level mypy suppressions in `aredis_om/model/model.py` and `migrator.py`.
+2. P3 — pin GitHub Actions to immutable SHAs (supply-chain hardening).
+3. P3 — locks around `model_registry` (only if runtime dynamic registration is supported).
+4. P2 — investigate field-aware conversion plans for datetime/bytes-heavy models (perf optimisation).
 
 The runtime behaviour of the highest-priority open item (P1 unbounded exhaustion) is unchanged, but the risk is now documented end-to-end in `docs/queries.mdx`. The remaining P1/P2 residuals are optimisation work (lower-allocation `FindQuery.copy()`, field-aware conversion plans) rather than correctness or safety gaps.

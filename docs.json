@@ -233,6 +233,11 @@
                     "icon": "server"
                 },
                 {
+                    "title": "Performance Benchmarks",
+                    "href": "/benchmarks",
+                    "icon": "gauge-high"
+                },
+                {
                     "title": "Redis Modules",
                     "href": "/redis_modules",
                     "icon": "puzzle-piece"

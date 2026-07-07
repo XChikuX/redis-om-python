@@ -52,6 +52,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 * Verify: `make sync`, `make lint` (runs `make dist` → isort, black, flake8, mypy, bandit).
 * Test: `make test` (starts Compose → async/sync + coverage → stops Compose).
 * Cluster Test: `make test_cluster` (starts both Compose files → cluster tests).
+* Benchmark: `make benchmark` (runs `tests/test_performance_benchmark.py --codspeed` for local validation; CI regression tracking via `.github/workflows/codspeed.yml`).
 * Direct Pytest: `uv run pytest tests/test_hash_model.py -vv` (use `-k` for filtering).
 
 
@@ -170,7 +171,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 * **Strengths:** Async-first, generated sync parity, lazy connections, query-string caching.
 * **Bottleneck Risks:** `FindQuery.copy()` (rebuilds via dict; profile on large sets). Datetime/bytes conversions deeply walk nested structures.
 * **Memory Risk:** `FindQuery.execute(exhaust_results=True)` paginates without max limits.
-* **CI Gap:** Benchmarks run but lack enforced regression thresholds.
+* **CI Gap:** ~~Benchmarks run but lack enforced regression thresholds.~~ Addressed — `.github/workflows/codspeed.yml` runs the benchmark suite under `pytest-codspeed` walltime mode on every push/PR with CodSpeed regression tracking.
 
 ### Security
 
