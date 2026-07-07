@@ -1319,9 +1319,7 @@ class FindQuery:
         """
         if self._query:
             return self._query
-        self._query = self.resolve_redisearch_query(
-            self.expression, self.model
-        )
+        self._query = self.resolve_redisearch_query(self.expression, self.model)
         if self.knn:
             # Always wrap the filter expression in parentheses when combining
             # with KNN, unless it's the wildcard "*". This ensures OR expressions
@@ -1910,9 +1908,7 @@ class FindQuery:
             # Determine the class-level index default from the owning model.
             # For nested queries (e.g. ``User.address.city``), ``parents``
             # tells us which embedded model owns the field.
-            owner_index_default = _query_index_default(
-                model_cls, expression.parents
-            )
+            owner_index_default = _query_index_default(model_cls, expression.parents)
             if not field_info or not should_index_field(
                 field_info, owner_index_default
             ):
@@ -1924,9 +1920,7 @@ class FindQuery:
             field_type = cls.resolve_field_type(expression.left, expression.op)
             field_name = expression.left.alias
             field_info = expression.left
-            owner_index_default = _query_index_default(
-                model_cls, expression.parents
-            )
+            owner_index_default = _query_index_default(model_cls, expression.parents)
             if not field_info or not should_index_field(
                 field_info, owner_index_default
             ):
@@ -2644,9 +2638,7 @@ def _query_index_default(
                 owning_cls = concrete_type
         except TypeError:
             pass
-    return bool(
-        getattr(getattr(owning_cls, "_meta", None), "index_enabled", False)
-    )
+    return bool(getattr(getattr(owning_cls, "_meta", None), "index_enabled", False))
 
 
 def _warn_class_index_count(cls: Type["RedisModel"], schema_parts: List[str]) -> None:
@@ -4422,7 +4414,11 @@ class JsonModel(RedisModel, abc.ABC):
             # The method handles the distinction internally
             schema_parts.append(
                 cls.schema_for_type(
-                    json_path, name, "", _type, field_info,
+                    json_path,
+                    name,
+                    "",
+                    _type,
+                    field_info,
                     class_index_default=class_index_default,
                 )
             )

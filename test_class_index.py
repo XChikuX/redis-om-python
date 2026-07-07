@@ -1,4 +1,5 @@
 """Empirical verification of class-level index=True support."""
+
 import warnings
 from typing import Optional, List
 
@@ -181,6 +182,7 @@ banner("TEST 9: Warning when too many fields indexed")
 
 # Clear the warned set to make this test deterministic
 from aredis_om.model import model as _model_mod
+
 _model_mod._class_index_warned.clear()
 
 

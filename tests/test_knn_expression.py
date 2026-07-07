@@ -316,7 +316,9 @@ def test_knn_default_score_field_no_collision(key_prefix):
     vectors = [0.1 for _ in range(DIMENSIONS)]
     ref = struct.pack(f"<{len(vectors)}f", *vectors)
 
-    knn = KNNExpression(k=1, vector_field=DefaultDocument.embedding, reference_vector=ref)
+    knn = KNNExpression(
+        k=1, vector_field=DefaultDocument.embedding, reference_vector=ref
+    )
 
     # Default score field name is "__embedding_score" — doesn't collide.
     q = DefaultDocument.find(knn=knn)

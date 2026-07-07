@@ -15,10 +15,11 @@ import datetime
 import decimal
 import warnings
 from collections import namedtuple
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import pytest
 import pytest_asyncio
+from pydantic import StringConstraints
 
 from aredis_om import (
     EmbeddedJsonModel,
@@ -30,6 +31,7 @@ from aredis_om import (
     RedisModelError,
 )
 from aredis_om.model.model import CLASS_INDEX_WARN_THRESHOLD
+from tests._compat import ValidationError
 from tests._sync_redis import has_redis_json
 
 from .conftest import py_test_mark_asyncio
@@ -133,8 +135,12 @@ async def test_class_index_field_false_opt_out(key_prefix, redis):
 async def test_class_index_queries_work(json_fixtures):
     """Queries via class-level indexed fields succeed."""
     M = json_fixtures.IndexedCustomer
-    await M(first_name="Alice", last_name="Smith", email="a@x.com", age=30, bio="dev").save()
-    await M(first_name="Bob", last_name="Jones", email="b@x.com", age=25, bio="pm").save()
+    await M(
+        first_name="Alice", last_name="Smith", email="a@x.com", age=30, bio="dev"
+    ).save()
+    await M(
+        first_name="Bob", last_name="Jones", email="b@x.com", age=25, bio="pm"
+    ).save()
 
     results = await M.find(M.first_name == "Alice").all()
     assert len(results) == 1
@@ -152,7 +158,9 @@ async def test_class_index_queries_work(json_fixtures):
 async def test_plain_model_cannot_query_unindexed(json_fixtures):
     """Querying an unindexed field on a plain model raises QueryNotSupportedError."""
     M = json_fixtures.PlainCustomer
-    await M(first_name="Alice", last_name="Smith", email="a@x.com", age=30, bio="dev").save()
+    await M(
+        first_name="Alice", last_name="Smith", email="a@x.com", age=30, bio="dev"
+    ).save()
     with pytest.raises(QueryNotSupportedError):
         await M.find(M.first_name == "Alice").all()
 
@@ -161,7 +169,9 @@ async def test_plain_model_cannot_query_unindexed(json_fixtures):
 async def test_pk_always_queryable_on_plain_model(json_fixtures):
     """Primary key queries work even on a model without class-level index."""
     M = json_fixtures.PlainCustomer
-    c = await M(first_name="Test", last_name="User", email="t@x.com", age=1, bio="x").save()
+    c = await M(
+        first_name="Test", last_name="User", email="t@x.com", age=1, bio="x"
+    ).save()
     pk = c.pk
     found = await M.get(pk)
     assert found.first_name == "Test"
@@ -462,6 +472,7 @@ async def test_warning_once_per_process(key_prefix):
     class _LargeWarningModel(JsonModel, index=True):
         class Meta:
             global_key_prefix = key_prefix
+
         f01: str = ""
         f02: str = ""
         f03: str = ""
@@ -816,3 +827,176 @@ async def test_all_fields_explicitly_opted_out(key_prefix, redis):
     indexed = [p for p in schema.split("|") if "AS" in p]
     assert len(indexed) == 1
     assert "pk" in indexed[0]
+
+
+# ---------------------------------------------------------------------------
+# Annotated + Field combinations: full_text_search with Pydantic constraints
+# ---------------------------------------------------------------------------
+#
+# These tests lock in the supported pattern of combining Pydantic constraints
+# (``Annotated``, ``max_length``, ``StringConstraints``) with Redis OM
+# attributes (``full_text_search=True``).  ``full_text_search=True`` implies
+# indexing, so the field works regardless of whether the model uses
+# class-level ``index=True`` or per-field ``Field(index=True)``.
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_with_fts_and_field_index(key_prefix, redis):
+    """``List[Annotated[str, ...]]`` with ``Field(full_text_search=True)``
+    on a plain (non class-indexed) model: FTS implies indexing, so the
+    field is queryable."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Doc(BaseJsonModel):
+        interests: List[Annotated[str, StringConstraints(max_length=20)]] = Field(
+            ...,
+            full_text_search=True,
+            max_length=10,
+            title="Interests",
+            description="List of interests. Upto 10 items, 20 character max",
+        )
+
+    # Schema should include both TAG and TEXT fields for the list
+    schema = Doc.redisearch_schema()
+    assert "$.interests[*] AS interests" in schema
+    assert "$.interests[*] AS interests_fts" in schema
+    assert "TEXT" in schema  # the _fts variant
+
+    # Pydantic constraints fire: 11 items rejected (max_length=10)
+    with pytest.raises(ValidationError):
+        Doc(interests=["a"] * 11)
+
+    # StringConstraints fire: 21-char string rejected
+    with pytest.raises(ValidationError):
+        Doc(interests=["x" * 21])
+
+    # Valid case
+    d = Doc(interests=["coding", "music", "hiking"])
+    assert d.interests == ["coding", "music", "hiking"]
+
+    await Migrator().run()
+    await d.save()
+
+    loaded = await Doc.get(d.pk)
+    assert loaded.interests == ["coding", "music", "hiking"]
+
+    # FTS query: finds the doc whose interests contain the term
+    results = await Doc.find(Doc.interests % "music").all()
+    assert len(results) == 1
+    assert results[0].pk == d.pk
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_with_fts_and_class_index(key_prefix, redis):
+    """Same field pattern but with class-level ``index=True``: FTS still
+    implies indexing, so the field is queryable just like before."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Doc(BaseJsonModel, index=True):
+        name: str
+        interests: List[Annotated[str, StringConstraints(max_length=20)]] = Field(
+            ...,
+            full_text_search=True,
+            max_length=10,
+            title="Interests",
+            description="List of interests. Upto 10 items, 20 character max",
+        )
+
+    # Schema contains: pk, name (class-index), interests TAG, interests_fts TEXT
+    schema = Doc.redisearch_schema()
+    assert "$.pk AS pk" in schema
+    assert "$.name AS name" in schema
+    assert "$.interests[*] AS interests" in schema
+    assert "$.interests[*] AS interests_fts" in schema
+
+    # Pydantic constraints still fire even with class-level index
+    with pytest.raises(ValidationError):
+        Doc(name="x", interests=["a"] * 11)
+    with pytest.raises(ValidationError):
+        Doc(name="x", interests=["y" * 21])
+
+    # Valid case
+    d = Doc(name="Alice", interests=["coding", "music"])
+    assert d.interests == ["coding", "music"]
+
+    await Migrator().run()
+    await d.save()
+
+    loaded = await Doc.get(d.pk)
+    assert loaded.interests == ["coding", "music"]
+    assert loaded.name == "Alice"
+
+    # Tag query (exact match) on the list field
+    results = await Doc.find(Doc.interests == "music").all()
+    assert len(results) == 1
+    assert results[0].name == "Alice"
+
+    # Full-text search query on the list field
+    results = await Doc.find(Doc.interests % "music").all()
+    assert len(results) == 1
+    assert results[0].name == "Alice"
+
+    # Class-level indexed field is also queryable
+    results = await Doc.find(Doc.name == "Alice").all()
+    assert len(results) == 1
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_with_fts_round_trip_preserves_constraints(
+    key_prefix, redis
+):
+    """End-to-end: constraints validate on every save, not just construction."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Doc(BaseJsonModel):
+        tags: List[Annotated[str, StringConstraints(max_length=10)]] = Field(
+            default_factory=list,
+            full_text_search=True,
+            max_length=5,
+        )
+
+    d = Doc(tags=["ok", "fine"])
+    await Migrator().run()
+    await d.save()
+
+    # Mutating past the constraint should fail on the next save/validate
+    d.tags = ["toolongtagvalue"]
+    with pytest.raises(ValidationError):
+        await d.save()
+
+
+@py_test_mark_asyncio
+async def test_list_annotated_with_fts_index_false_overrides(key_prefix, redis):
+    """``Field(index=False, full_text_search=True)`` — the explicit
+    ``index=False`` wins even though ``full_text_search`` implies indexing."""
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class Doc(BaseJsonModel):
+        # Class-level default would index this, but explicit index=False wins.
+        tags: List[Annotated[str, StringConstraints(max_length=10)]] = Field(
+            default_factory=list,
+            index=False,
+            full_text_search=True,
+            max_length=5,
+        )
+
+    schema = Doc.redisearch_schema()
+    # index=False wins — neither TAG nor TEXT field should appear.
+    assert "$.tags[*] AS tags" not in schema
+    assert "$.tags[*] AS tags_fts" not in schema

@@ -433,6 +433,33 @@ match wins:
    field is indexed.
 5. Otherwise the field is not indexed.
 
+> **NOTE — ``full_text_search=True``, ``sortable=True``, and ``vector_options`` always auto-index.**
+> These three attributes imply indexing regardless of whether the model
+> uses class-level ``index=True``. They are the way to mark a field as
+> queryable *and* configure how it can be queried in a single ``Field()``
+> call. The same goes for ``Annotated[...]`` constraints — they are
+> Pydantic-side validation and do not affect the index type or whether
+> the field is indexed.
+>
+> ```python
+> from typing import Annotated, List
+> from pydantic import StringConstraints
+> from redis_om import Field, JsonModel
+>
+> class Doc(JsonModel):
+>     # full_text_search=True auto-indexes; StringConstraints validates input.
+>     interests: List[Annotated[str, StringConstraints(max_length=20)]] = Field(
+>         ...,
+>         full_text_search=True,
+>         max_length=10,                     # max 10 items in the list
+>         title="Interests",
+>     )
+> ```
+>
+> The field above is queryable (TAG + TEXT fields) without any explicit
+> ``index=True`` on the field or on the model — ``full_text_search=True``
+> alone is enough.
+
 ### RediSearch field types
 
 Each indexed field maps to one of the following RediSearch field types.
@@ -441,8 +468,9 @@ The mapping is determined by the field's Python type:
 | Python type                         | RediSearch type | Notes                                                                                                |
 | ----------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
 | `str`                               | `TAG`           | Exact-match equality and `IN`/`NOT_IN`/`STARTSWITH`/`ENDSWITH`/`CONTAINS` queries. Custom separator supported. |
-| `Annotated[str, ...]` constraints   | `TAG`           | Same as `str` — the constraint validates input but does not change the index type.                  |
-| `str` + `Field(full_text_search=True)` | `TEXT`       | Adds a separate `<field>_fts TEXT` field alongside the `TAG` for full-text search.                   |
+| `Annotated[str, ...]` constraints   | `TAG`           | Same as `str` — the constraint validates input but does not change the index type or whether the field is indexed.                  |
+| `str` + `Field(full_text_search=True)` | `TEXT`       | Adds a separate `<field>_fts TEXT` field alongside the `TAG` for full-text search. **Auto-indexes** even without class-level `index=True`. |
+| `List[Annotated[str, ...]]` + `Field(full_text_search=True)` | `TAG` + `TEXT` | Each element is a separate TAG value, joined by the field's separator. The `<field>_fts TEXT` field enables full-text search over the list. **Auto-indexes.** |
 | `int`, `float`, `decimal.Decimal`   | `NUMERIC`       | Range queries (`>`, `<`, `>=`, `<=`, `==`).                                                          |
 | `datetime.date`, `datetime.datetime` | `NUMERIC`      | Stored as a Unix timestamp; range-queryable.                                                         |
 | `bool`                              | `TAG`           | Always stored as the string `"True"` / `"False"`.                                                     |
