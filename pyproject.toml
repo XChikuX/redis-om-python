@@ -1,9 +1,9 @@
 [project]
 name = "pyredis-om"
-version = "0.10.3"
-description = "A drop-in replacement for `redis-om`, built out of frustration."
+version = "0.10.4"
+description = "An unoffical (and better) drop-in replacement for `redis-om`, built out of frustration."
 authors = [
-    { name = "Redis OSS", email = "oss@redis.com" },
+    { name = "Srikanth", email = "oss@psync.club" },
 ]
 maintainers = [
     { name = "Srikanth", email = "oss@psync.club" },
@@ -18,7 +18,6 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Database",
     "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -36,9 +35,9 @@ dependencies = [
 ]
 
 [project.urls]
-Code = "https://github.com/xchikux/redis-om-python"
-Repository = "https://github.com/xchikux/redis-om-python"
-"Issue tracker" = "https://github.com/xchikux/redis-om-python/issues"
+Code = "https://github.com/XChikuX/redis-om-python"
+Repository = "https://github.com/XChikuX/redis-om-python"
+"Issue tracker" = "https://github.com/XChikuX/redis-om-python/issues"
 "Documentation" = "https://docs.page/XChikuX/redis-om-python"
 
 [project.scripts]

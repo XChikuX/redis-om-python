@@ -1379,7 +1379,7 @@ def _load_convert_scalar(kind: int, value: Any, target_type: Any) -> Any:
     if kind == _KIND_BYTES:
         if isinstance(value, str):
             try:
-                return base64.b64decode(value)
+                return base64.b64decode(value, validate=True)
             except (ValueError, TypeError):
                 return value
         return value
