@@ -10,7 +10,7 @@
 
 <p align="center">
     <p align="center">
-        Object mapping, and more, for Redis and Python
+        Object mapping, and more, for Redis, Valkey and Python
     </p>
 </p>
 

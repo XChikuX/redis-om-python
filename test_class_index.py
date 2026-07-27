@@ -3,7 +3,13 @@
 import warnings
 from typing import Optional, List
 
-from aredis_om import EmbeddedJsonModel, JsonModel, Field, HashModel
+from aredis_om import (
+    EmbeddedJsonModel,
+    JsonModel,
+    Field,
+    HashModel,
+    model as _model_mod,
+)
 
 
 def banner(name):
@@ -179,9 +185,6 @@ print("  [PASS] HashModel class-level index works")
 # ── Test 9: Warning on too many indexed fields ────────────────────────────────────────────────────────────────────────────────
 banner("TEST 9: Warning when too many fields indexed")
 
-
-# Clear the warned set to make this test deterministic
-from aredis_om.model import model as _model_mod
 
 _model_mod._class_index_warned.clear()
 
