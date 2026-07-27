@@ -357,6 +357,36 @@ def search_smith_or_jones(min_age: Optional[int] = None):
     return Customer.find(*conditions).all()
 ```
 
+Alternatively, `FindQuery` supports chaining `.find()` calls to build up conditions
+incrementally — the same way you would with a Django `QuerySet` or SQLAlchemy
+query:
+
+```python
+def search_customers(
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
+    city: Optional[str] = None,
+) -> Sequence[Customer]:
+    query = Customer.find()
+    if min_age is not None:
+        query = query.find(Customer.age >= min_age)
+    if max_age is not None:
+        query = query.find(Customer.age <= max_age)
+    if city:
+        query = query.find(Customer.city == city)
+
+    return query.sort_by("-age").all()
+```
+
+`.filter()` is also available as an alias for `.find()`, matching the
+`QuerySet.filter()` API:
+
+```python
+query = Customer.find(Customer.city == "Portland")
+query = query.filter(Customer.age >= 21)
+results = query.all()
+```
+
 ## Embedded models
 
 `JsonModel` can have embedded `EmbeddedJsonModel` fields. Queries descend
