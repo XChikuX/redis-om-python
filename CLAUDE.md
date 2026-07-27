@@ -13,6 +13,10 @@ Object mapping library for Redis built on Pydantic v2, utilizing Redis Search an
 * **Docs:** Use Context7 if available.
 * **Web Search:** Limit to one `brave-web-search` call at a time to avoid rate limits (fallback to standard fetch).
 
+#### When editing files:
+
+"Before calling `edit_file`, call `read_file`. Copy `old_text` verbatim from the output **after the tab character on each line** — never the line numbers. Match indentation exactly. For multi-line `old_text`, join lines with `\n` in the JSON string. If `old_text` appears more than once in the file, include enough surrounding context to make it unique."
+
 ### Repository Facts
 
 * **Version / Python:** `pyproject.toml` is authoritative. Python `>=3.10,<4.0` (CI tests 3.10–3.14).

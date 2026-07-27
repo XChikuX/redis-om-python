@@ -1157,3 +1157,131 @@ async def test_explicit_and_with_in_operator_end_to_end(members, m):
     ).all()
     pks = {member.pk for member in found}
     assert pks == {member1.pk, member3.pk}
+
+
+# ---------------------------------------------------------------------------
+# Chaining ``FindQuery.find()`` / ``FindQuery.filter()`` (issue #780)
+# ---------------------------------------------------------------------------
+# Dynamic query building should work Django/SQLAlchemy-style by chaining
+# ``.find()`` calls on an existing FindQuery. ``.filter()`` is provided as a
+# Django-compatible alias.
+
+
+@py_test_mark_asyncio
+async def test_find_chain_combines_expressions(m, members):
+    """``query.find(...)`` ANDs new expressions onto the existing query.
+
+    Reproduces the exact pattern from issue #780 that previously raised
+    ``AttributeError: 'FindQuery' object has no attribute 'find'``.
+    """
+    member1, member2, member3 = members
+    # Andrew (38, Brookins), Kim (34, Brookins), Andrew (100, Smith)
+    query = m.Member.find(m.Member.last_name == "Brookins")
+    chained = query.find(m.Member.age > 35)
+    found = await chained.all()
+    pks = {member.pk for member in found}
+    # Only member1 (Andrew, 38, Brookins) satisfies both.
+    assert pks == {member1.pk}
+
+
+@py_test_mark_asyncio
+async def test_find_chain_can_be_called_multiple_times(m, members):
+    """Multiple ``.find()`` calls accumulate conditions with AND semantics."""
+    member1, member2, member3 = members
+    query = (
+        m.Member.find(m.Member.last_name == "Brookins")
+        .find(m.Member.first_name == "Andrew")
+        .find(m.Member.age > 50)
+    )
+    found = await query.all()
+    pks = {member.pk for member in found}
+    # member1 is Andrew Brookins age 38 — excluded by age>50.
+    # member3 is Andrew age 100 but last_name Smith — excluded by Brookins.
+    assert pks == set()
+
+
+@py_test_mark_asyncio
+async def test_filter_is_alias_for_find(m, members):
+    """`.filter()` accepts the same expressions and ANDs them in."""
+    member1, member2, member3 = members
+    query = m.Member.find(m.Member.last_name == "Brookins").filter(
+        m.Member.first_name == "Kim"
+    )
+    found = await query.all()
+    pks = {member.pk for member in found}
+    assert pks == {member2.pk}
+
+
+@py_test_mark_asyncio
+async def test_find_chain_with_or_group(m, members):
+    """Chained expressions may themselves be OR groups."""
+    member1, member2, member3 = members
+    base = m.Member.find(m.Member.last_name == "Brookins")
+    or_group = (m.Member.first_name == "Kim") | (m.Member.age >= 100)
+    found = await base.find(or_group).all()
+    pks = {member.pk for member in found}
+    # Only Brookins members: Kim (member2). Andrew 100 has last_name Smith.
+    assert pks == {member2.pk}
+
+
+@py_test_mark_asyncio
+async def test_find_chain_does_not_mutate_original(m, members):
+    """Chaining returns a new query; the original query is unchanged.
+
+    This preserves the immutability contract documented on
+    ``FindQuery.query``: "all mutations of FindQuery through public APIs
+    return a new FindQuery instance."
+    """
+    member1, member2, member3 = members
+    original = m.Member.find(m.Member.last_name == "Brookins")
+    original_expression_count = len(original.expressions)
+
+    chained = original.find(m.Member.age > 35)
+
+    # Original is untouched.
+    assert len(original.expressions) == original_expression_count
+    # New query carries the additional expression.
+    assert len(chained.expressions) == original_expression_count + 1
+
+    # Executing both proves they produce different result sets.
+    original_pks = {member.pk for member in await original.all()}
+    chained_pks = {member.pk for member in await chained.all()}
+    assert original_pks == {member1.pk, member2.pk}
+    assert chained_pks == {member1.pk}
+
+
+@py_test_mark_asyncio
+async def test_find_chain_empty_call_returns_same_instance(m, members):
+    """`.find()` with no args returns the same query (no-op)."""
+    query = m.Member.find(m.Member.last_name == "Brookins")
+    assert query.find() is query
+    assert query.filter() is query
+
+
+@py_test_mark_asyncio
+async def test_find_chain_then_sort_by_and_page(m, members):
+    """Chained `.find()` composes with the other builder methods."""
+    member1, member2, member3 = members
+    query = (
+        m.Member.find(m.Member.last_name == "Brookins")
+        .find(m.Member.age > 30)
+        .sort_by("-age")
+    )
+    found = await query.all()
+    # member1 (38), member2 (34) — sorted descending by age.
+    assert [member.pk for member in found] == [member1.pk, member2.pk]
+
+
+@py_test_mark_asyncio
+async def test_find_chain_renders_same_query_as_anded_expressions(m, members):
+    """`find(a).find(b)` must render identically to `find(a, b)`."""
+    chained_idx, chained_q = (
+        await m.Member.find(m.Member.last_name == "Brookins")
+        .find(m.Member.age > 35)
+        .get_query()
+    )
+    flat_idx, flat_q = await m.Member.find(
+        m.Member.last_name == "Brookins", m.Member.age > 35
+    ).get_query()
+    assert chained_idx == flat_idx  # same index name
+    assert chained_q[2] == flat_q[2]  # same rendered RediSearch query string

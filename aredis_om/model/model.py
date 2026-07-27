@@ -2702,6 +2702,28 @@ class FindQuery:
             exhaust_results=False
         )
 
+    def find(self, *expressions: ExpressionOrNegated) -> "FindQuery":
+        """Add conditions to this query, returning a new ``FindQuery``.
+
+        This enables Django/SQLAlchemy-style chaining for dynamic query
+        building.  Each call creates a new query whose expressions are the
+        AND-combination of the previous and new expressions, so the
+        original query is never mutated::
+
+            query = Product.find(Product.category == "electronics")
+            query = query.find(Product.price > 100)
+            query = query.find(Product.in_stock == True)
+            results = await query.all()
+        """
+        if not expressions:
+            return self
+        combined = list(self.expressions) + list(expressions)
+        return self.copy(expressions=combined)
+
+    def filter(self, *expressions: ExpressionOrNegated) -> "FindQuery":
+        """Alias for :meth:`find`, matching Django ``QuerySet.filter`` semantics."""
+        return self.find(*expressions)
+
     def sort_by(self, *fields: str):
         if not fields:
             return self
