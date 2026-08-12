@@ -15,13 +15,17 @@ However, if you configured Redis to run on a different port, or if you're using 
 
 The `REDIS_OM_URL` environment variable follows the redis-py URL format:
 
-    redis://[[username]:[password]]@localhost:6379/[database number]
+```text
+redis://[[username]:[password]]@localhost:6379/[database number]
+```
 
 **NOTE:** The square brackets indicate an optional value and are not part of the URL format.
 
 The default connection is equivalent to the following `REDIS_OM_URL` environment variable:
 
-    redis://localhost:6379
+```text
+redis://localhost:6379
+```
 
 **Note:** Indexing only works for data stored in Redis logical database 0.  If you are using a different database number when connecting to Redis, you can expect the code to raise a `MigrationError` when you run the migrator.
 
@@ -31,11 +35,15 @@ Redis can be configured with password protection and a "default" user, in which 
 
 You can do so with Redis OM like this:
 
-    redis://:your-password@localhost:6379
+```text
+redis://:your-password@localhost:6379
+```
 
 If your Redis instance requires both a username and a password, you would include both in the URL:
 
-    redis://your-username:your-password@localhost:6379
+```text
+redis://your-username:your-password@localhost:6379
+```
 
 ### Database Number
 
@@ -47,13 +55,17 @@ Redis databases are numbered, and the default is 0. You can leave off the databa
 
 Use the "rediss" prefix for SSL connections:
 
-    rediss://[[username]:[password]]@localhost:6379/0
+```text
+rediss://[[username]:[password]]@localhost:6379/0
+```
 
 ### Unix Domain Sockets
 
 Use the "unix" prefix to connect to Redis over Unix domain sockets:
 
-    unix://[[username]:[password]]@/path/to/socket.sock?db=0
+```text
+unix://[[username]:[password]]@/path/to/socket.sock?db=0
+```
 
 ### To Learn More
 
