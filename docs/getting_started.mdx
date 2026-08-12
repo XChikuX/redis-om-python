@@ -68,15 +68,21 @@ The command to start Redis will depend on how you installed it.
 
 If you installed Redis using `apt`, start it with the `systemctl` command:
 
-    $ sudo systemctl restart redis.service
+```sh
+$ sudo systemctl restart redis.service
+```
 
 Otherwise, you can start the server manually:
 
-    $ redis-server start
+```sh
+$ redis-server start
+```
 
 ### MacOS with Homebrew
 
-    $ brew services start redis
+```sh
+$ brew services start redis
+```
 
 ### Docker
 
@@ -86,40 +92,56 @@ The command to start Redis with Docker depends on the image you've chosen to use
 
 #### Docker with the `redis:8-alpine` image (recommended)
 
-    $ docker run -d -p 6379:6379 redis:8-alpine
+```sh
+$ docker run -d -p 6379:6379 redis:8-alpine
+```
 
 #### Docker with the `valkey/valkey:9-alpine` image
 
 For a lean deployment without search modules (HashModel only, no rich queries):
 
-    $ docker run -d -p 6379:6379 valkey/valkey:9-alpine
+```sh
+$ docker run -d -p 6379:6379 valkey/valkey:9-alpine
+```
 
 With ValkeySearch + ValkeyJSON for full feature parity:
 
-    $ docker run -d -p 6379:6379 valkey/valkey:9-alpine --loadmodule /usr/lib/valkey/modules/valkeyjson.so --loadmodule /usr/lib/valkey/modules/valkeysearch.so
+```sh
+$ docker run -d -p 6379:6379 valkey/valkey:9-alpine --loadmodule /usr/lib/valkey/modules/valkeyjson.so --loadmodule /usr/lib/valkey/modules/valkeysearch.so
+```
 
 ### Docker with the `redis` image
 
-    $ docker run -d -p 6379:6379 redis
+```sh
+$ docker run -d -p 6379:6379 redis
+```
 
 ## Installing Redis OM
 
 The recommended way to install Redis OM is with [uv](https://docs.astral.sh/uv/),
 which is what the project itself uses for dependency management and CI:
 
-    $ uv add pyredis-om
+```sh
+$ uv add pyredis-om
+```
 
 If you're using Poetry, the command is:
 
-    $ poetry add pyredis-om
+```sh
+$ poetry add pyredis-om
+```
 
 If you're using Pipenv:
 
-    $ pipenv install pyredis-om
+```sh
+$ pipenv install pyredis-om
+```
 
 Finally, you can install Redis OM with `pip`:
 
-    $ pip install pyredis-om
+```sh
+$ pip install pyredis-om
+```
 
 **TIP:** If you aren't using a project manager and are instead installing
 directly with `pip`, we recommend that you install Redis OM in a virtual
@@ -137,11 +159,15 @@ However, if you configured Redis to run on a different port, or if you're using 
 
 The `REDIS_OM_URL` environment variable follows the redis-py URL format:
 
-    redis://[[username]:[password]]@localhost:6379/[database number]
+```text
+redis://[[username]:[password]]@localhost:6379/[database number]
+```
 
 The default connection is equivalent to the following `REDIS_OM_URL` environment variable:
 
-    redis://@localhost:6379
+```text
+redis://@localhost:6379
+```
 
 **TIP:** Redis databases are numbered, and the default is 0. You can leave off the database number to use the default database.
 
@@ -149,8 +175,10 @@ The default connection is equivalent to the following `REDIS_OM_URL` environment
 
 Other supported prefixes include "rediss" for SSL connections and "unix" for Unix domain sockets:
 
-    rediss://[[username]:[password]]@localhost:6379/0
-    unix://[[username]:[password]]@/path/to/socket.sock?db=0
+```text
+rediss://[[username]:[password]]@localhost:6379/0
+unix://[[username]:[password]]@/path/to/socket.sock?db=0
+```
 
 ## Defining a Model
 

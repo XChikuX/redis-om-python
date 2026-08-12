@@ -277,35 +277,45 @@ async def startup():
 
 You should install the app's dependencies first. This example uses [uv](https://docs.astral.sh/uv/) (the same dependency manager used by redis-om-python itself):
 
-    $ pip install uv
-    $ uv sync
+```sh
+$ pip install uv
+$ uv sync
+```
 
 Next, start the server:
 
-    $ uv run uvicorn --reload main:app
+```sh
+$ uv run uvicorn --reload main:app
+```
 
 If you prefer Poetry:
 
-    $ pip install poetry
-    $ poetry install
-    $ poetry run uvicorn --reload main:app
+```sh
+$ pip install poetry
+$ poetry install
+$ poetry run uvicorn --reload main:app
+```
 
 Then, in another shell, create a customer:
-```
-    $ curl -X POST  "http://localhost:8000/customer" -H 'Content-Type: application/json' -d '{"first_name":"Andrew","last_name":"Brookins","email":"a@example.com","age":"38","join_date":"2020
--01-02"}'
-    {"pk":"01FM2G8EP38AVMH7PMTAJ123TA","first_name":"Andrew","last_name":"Brookins","email":"a@example.com","join_date":"2020-01-02","age":38,"bio":""}
+
+```sh
+$ curl -X POST  "http://localhost:8000/customer" -H 'Content-Type: application/json' -d '{"first_name":"Andrew","last_name":"Brookins","email":"a@example.com","age":"38","join_date":"2020-01-02"}'
+{"pk":"01FM2G8EP38AVMH7PMTAJ123TA","first_name":"Andrew","last_name":"Brookins","email":"a@example.com","join_date":"2020-01-02","age":38,"bio":""}
 ```
 
 Get a copy of the value for "pk," which is the model's primary key, and make another request to get that customer:
 
-    $ curl "http://localhost:8000/customer/01FM2G8EP38AVMH7PMTAJ123TA"
-    {"pk":"01FM2G8EP38AVMH7PMTAJ123TA","first_name":"Andrew","last_name":"Brookins","email":"a@example.com","join_date":"2020-01-02","age":38,"bio":""}
+```sh
+$ curl "http://localhost:8000/customer/01FM2G8EP38AVMH7PMTAJ123TA"
+{"pk":"01FM2G8EP38AVMH7PMTAJ123TA","first_name":"Andrew","last_name":"Brookins","email":"a@example.com","join_date":"2020-01-02","age":38,"bio":""}
+```
 
 You can also get a list of all customer primary keys:
 
-    $ curl "http://localhost:8000/customers"
-    {"customers":["01FM2G8EP38AVMH7PMTAJ123TA"]}
+```sh
+$ curl "http://localhost:8000/customers"
+{"customers":["01FM2G8EP38AVMH7PMTAJ123TA"]}
+```
 
 ## Redis OM with Asyncio
 
