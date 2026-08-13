@@ -100,6 +100,18 @@ POST_SYNC_FIXES = {
     "tests_sync/test_from_redis_resp3.py": {
         "from redis import asyncio as aioredis": "import redis as aioredis",
     },
+    # RedisVL integration: the async source exposes both index classes;
+    # the sync mirror only needs SearchIndex and the sync cluster client.
+    # unasync rewrites ``Async*`` → ``Sync*`` before these fixes run, so
+    # they target the Sync* spellings. Order matters — the specific
+    # import lines are rewritten before the general class-name ones.
+    "redis_om/redisvl.py": {
+        "from redis.asyncio.cluster import RedisCluster as SyncRedisCluster": "from redis.cluster import RedisCluster",
+        "from redisvl.index import SyncSearchIndex, SearchIndex": "from redisvl.index import SearchIndex",
+        "from redisvl.index import SyncSearchIndex": "from redisvl.index import SearchIndex",
+        "SyncRedisCluster": "RedisCluster",
+        "SyncSearchIndex": "SearchIndex",
+    },
 }
 
 # Deduplicate `import pytest` lines that unasync may produce when
