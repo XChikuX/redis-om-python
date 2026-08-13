@@ -24,8 +24,11 @@ def get_sync_redis_connection(url=None):
 def has_command(cmd, url=None):
     conn = get_sync_redis_connection(url)
     try:
-        return all(conn.execute_command("command", "info", cmd))
-    except (AuthenticationError, ConnectionError, OSError):
+        result = conn.execute_command("command", "info", cmd)
+        # redis-py 7.4.1 crashes with TypeError when command info returns nil
+        # (command not available / no modules loaded) as it tries to subscript None
+        return bool(result and all(result))
+    except (AuthenticationError, ConnectionError, OSError, TypeError):
         return False
 
 

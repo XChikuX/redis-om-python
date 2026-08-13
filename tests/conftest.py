@@ -2,6 +2,7 @@ import asyncio
 import random
 
 import pytest
+from importlib.metadata import version as _pkg_version
 
 from aredis_om import get_redis_connection
 from aredis_om.model.model import model_registry
@@ -9,6 +10,34 @@ from aredis_om.model.model import model_registry
 from ._sync_redis import get_sync_redis_connection
 
 TEST_PREFIX = "redis-om:testing"
+
+
+def _split_version(version: str):
+    parts = []
+    for piece in str(version).split(".")[:2]:
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    return (parts + [0, 0])[:2]
+
+
+# RESP3 auto-negotiation and unified dict responses (``legacy_responses=False``)
+# are redis-py 8.0+ features. On redis-py < 8.0 (e.g. 7.4.1, forced by redisvl's
+# ``redis<8.0`` constraint) these code paths cannot be exercised.
+def _redis_py_at_least(major: int, minor: int = 0) -> bool:
+    # Read the installed distribution version to avoid clashes with modules
+    # that rebind the top-level ``redis`` name (e.g. aredis_om.redis).
+    return _split_version(_pkg_version("redis")) >= [major, minor]
+
+
+REDIS_PY_LT_8 = not _redis_py_at_least(8)
+
+# Skip a test when running against redis-py < 8.0.
+skip_redis_py_lt_8 = pytest.mark.skipif(
+    REDIS_PY_LT_8,
+    reason="requires redis-py >= 8.0 (RESP3 auto-negotiation / unified responses)",
+)
 
 
 def py_test_mark_asyncio(f):

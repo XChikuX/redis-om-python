@@ -32,7 +32,7 @@ help:
 install: $(INSTALL_STAMP)
 $(INSTALL_STAMP): pyproject.toml
 	@if [ -z $(UV) ]; then echo "uv could not be found. See https://docs.astral.sh/uv/"; exit 2; fi
-	$(UV) sync --extra dev
+	$(UV) sync --group dev
 	touch $(INSTALL_STAMP)
 
 .PHONY: clean
@@ -54,7 +54,7 @@ dist: $(INSTALL_STAMP) clean sync
 
 .PHONY: sync
 sync: $(INSTALL_STAMP)
-	$(UV) sync --extra dev
+	$(UV) sync --group dev
 	$(UV) run python make_sync.py
 	$(UV) run ruff format $(SYNC_NAME)
 

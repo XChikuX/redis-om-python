@@ -13,7 +13,7 @@ import pytest
 from aredis_om import Field, HashModel, JsonModel, Migrator, get_redis_connection
 from aredis_om.model.model import model_registry
 
-from .conftest import py_test_mark_asyncio
+from .conftest import py_test_mark_asyncio, skip_redis_py_lt_8
 
 
 @pytest.fixture(autouse=True)
@@ -332,6 +332,7 @@ class TestAggregateCtParity:
 
 
 class TestUnifiedResponsesHashParity:
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_save_and_get_unified_resp2(
         self, key_prefix, legacy_false_resp2_redis
@@ -390,6 +391,7 @@ class TestUnifiedResponsesHashParity:
 
 
 class TestUnifiedResponsesJsonParity:
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_save_and_get_unified_resp3(
         self, key_prefix, legacy_false_resp3_redis

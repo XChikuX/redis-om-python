@@ -22,7 +22,7 @@ from aredis_om import Field, HashModel, JsonModel
 from aredis_om.connections import get_redis_connection
 from tests._sync_redis import has_redisearch as sync_has_redisearch
 
-from .conftest import py_test_mark_asyncio
+from .conftest import py_test_mark_asyncio, skip_redis_py_lt_8
 
 HAS_REDISEARCH = sync_has_redisearch()
 
@@ -375,6 +375,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_resp3_decoded_works(self):
         """RESP3 wire + decode_responses=True (the default)."""
@@ -391,6 +392,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_resp3_bytes_works_regression(self):
         """RESP3 wire + decode_responses=False (the user's exact setup).
@@ -415,6 +417,7 @@ class TestLiveRespParity:
         assert docs[0].email == "lalaland7@gmail.com"
         assert docs[0].name == "Rain"
 
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_resp3_bytes_empty_results_regression(self):
         """The exact empty-results payload from the user's bug report."""

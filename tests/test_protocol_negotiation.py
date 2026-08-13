@@ -19,12 +19,13 @@ from aredis_om import connections as connections_module
 from aredis_om.connections import get_redis_connection, protocol_version
 from aredis_om.util import protocol_version as util_protocol_version
 
-from .conftest import TEST_PREFIX, py_test_mark_asyncio
+from .conftest import TEST_PREFIX, py_test_mark_asyncio, skip_redis_py_lt_8
 
 # ── protocol_version ────────────────────────────────────────────────────
 
 
 class TestProtocolVersion:
+    @skip_redis_py_lt_8
     def test_returns_3_for_auto_negotiated_connection(self, redis):
         # The pytest fixture's ``redis`` is created via ``get_redis_connection``,
         # which redis-py connects with RESP3 by default against Redis 6+.
@@ -71,12 +72,14 @@ class TestProtocolVersion:
 
 
 class TestConnectionProtocolPassthrough:
+    @skip_redis_py_lt_8
     def test_url_protocol_2_query_param(self):
         conn = get_redis_connection(
             url="redis://localhost:6380?protocol=2&decode_responses=True"
         )
         assert conn.connection_pool.connection_kwargs.get("protocol") == 2
 
+    @skip_redis_py_lt_8
     def test_url_protocol_3_query_param(self):
         conn = get_redis_connection(
             url="redis://localhost:6380?protocol=3&decode_responses=True"
@@ -128,6 +131,7 @@ class TestConnectionProtocolPassthrough:
 
 
 class TestConnectionPrecedence:
+    @skip_redis_py_lt_8
     def test_env_var_drives_url_when_no_explicit_url(self, monkeypatch):
         monkeypatch.setenv(
             "REDIS_OM_URL",
@@ -137,6 +141,7 @@ class TestConnectionPrecedence:
         assert conn.connection_pool.connection_kwargs.get("port") == 6380
         assert conn.connection_pool.connection_kwargs.get("protocol") == 2
 
+    @skip_redis_py_lt_8
     def test_explicit_url_overrides_env_var_protocol(self, monkeypatch):
         monkeypatch.setenv(
             "REDIS_OM_URL",
@@ -152,6 +157,7 @@ class TestConnectionPrecedence:
 
 
 class TestLiveProtocolHandshake:
+    @skip_redis_py_lt_8
     @py_test_mark_asyncio
     async def test_hello_returns_proto_3_by_default(self, redis):
         # ``redis`` fixture uses auto-negotiation against Redis 6+.

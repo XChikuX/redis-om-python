@@ -9,6 +9,15 @@ def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
     if "decode_responses" not in kwargs:
         kwargs["decode_responses"] = True
 
+    # redis-py >= 6.0 removed the ``legacy_responses`` connection kwarg.
+    # Translate it to the equivalent ``protocol`` setting so callers (and
+    # tests) written against redis-py 8.0 keep working on older redis-py:
+    #   legacy_responses=False => native RESP3 responses => protocol=3
+    #   legacy_responses=True  => RESP2-style flat responses => protocol=2
+    legacy = kwargs.pop("legacy_responses", None)
+    if legacy is not None:
+        kwargs.setdefault("protocol", 3 if not legacy else 2)
+
     # If someone passed in a 'url' parameter, or specified a REDIS_OM_URL
     # environment variable, we'll create the Redis client from the URL.
     url = kwargs.pop("url", os.environ.get("REDIS_OM_URL"))
@@ -50,6 +59,13 @@ def protocol_version(connection) -> int:
     falls back to introspecting an established connection. Returns 2 if the
     value cannot be determined (the historical default for redis-py).
     """
+    def _coerce(version):
+        # redis-py >= 6.0 stores the ``protocol`` kwarg as a string ("2"/"3").
+        try:
+            return int(version)
+        except (TypeError, ValueError):
+            return None
+
     # Prefer the connection pool's negotiated value when present.
     pool = getattr(connection, "connection_pool", None)
     if pool is not None:
@@ -60,6 +76,7 @@ def protocol_version(connection) -> int:
             except Exception:
                 version = None
             else:
+                version = _coerce(version)
                 if version in (2, 3):
                     return version
 
@@ -72,7 +89,7 @@ def protocol_version(connection) -> int:
             except Exception:
                 underlying = None
             else:
-                proto = getattr(underlying, "protocol", None)
+                proto = _coerce(getattr(underlying, "protocol", None))
                 if proto in (2, 3):
                     return proto
 
@@ -82,7 +99,7 @@ def protocol_version(connection) -> int:
         conn_kwargs_fn = getattr(connection, "get_connection_kwargs", None)
         if callable(conn_kwargs_fn):
             kwargs = conn_kwargs_fn()
-            version = kwargs.get("protocol")
+            version = _coerce(kwargs.get("protocol"))
             if version in (2, 3):
                 return version
             # protocol not explicitly set → redis-py defaults to RESP3
