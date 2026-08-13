@@ -933,7 +933,7 @@ class Migrator:
         """Best-effort append of a migration record to Redis history."""
         try:
             payload = json.dumps(migration.history_record())
-            await migration.conn.rpush(self.history_key, payload)
+            await migration.conn.rpush(self.history_key, payload)  # type: ignore[misc]
         except Exception:  # pragma: no cover - history is best effort
             log.warning(
                 "Failed to record migration history for %s",

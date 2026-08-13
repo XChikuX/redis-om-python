@@ -99,6 +99,25 @@ def test_parse_resp3_dict_wrapped_in_list():
     assert "sample-ratio" in snap.raw
 
 
+def test_parse_resp2_flat_wrapped_in_list():
+    # redis-py 7.4.1 wraps the RESP2 flat pair list in a one-element outer
+    # list: [["tracking-active", 0, "sample-ratio", 1, ...]]. This is the
+    # shape produced by a live Redis 8.8.0 server under redis-py 7.4.1 with
+    # ``decode_responses=True`` (protocol 2 / default).
+    snap = _parse_snapshot([_resp2_flat()])
+    assert isinstance(snap, HotKeysSnapshot)
+    assert snap.tracking_active is False
+    assert snap.sample_ratio == 1
+    assert snap.duration_ms == 1000
+    assert snap.total_cpu_user_ms == 23
+    assert snap.total_cpu_sys_ms == 7
+    assert snap.total_net_bytes == 2038
+    assert snap.top_by_cpu == [("hotkey_001_counter", 29), ("hotkey_001", 25)]
+    assert snap.top_by_net == [("hotkey_001", 446), ("hotkey_002", 328)]
+    assert "sample-ratio" in snap.raw
+    assert "collection-duration-ms" in snap.raw
+
+
 @pytest.mark.parametrize("empty", [None, [], {}])
 def test_parse_empty_reply_returns_default(empty):
     snap = _parse_snapshot(empty)

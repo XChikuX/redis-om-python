@@ -257,9 +257,21 @@ def _parse_snapshot(raw: Any) -> HotKeysSnapshot:
         return snap
 
     # The reply is either a dict (RESP3 / redis-py 8) or a flat RESP2 list
-    # of pairs. redis-py 8 sometimes wraps the dict in a one-element list.
-    if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
-        raw = raw[0]
+    # of pairs. Wrapping cases observed across redis-py versions:
+    #   * redis-py 8 with RESP3 sometimes wraps the dict in a 1-element list.
+    #   * redis-py 7.4.1 wraps the RESP2 flat pair list in a 1-element list:
+    #     [["tracking-active", 0, "sample-ratio", 1, ...]]. Without unwrapping,
+    #     the outer pair loop sees only one element and produces an empty dict.
+    if isinstance(raw, list) and len(raw) == 1:
+        inner = raw[0]
+        if isinstance(inner, dict):
+            raw = inner
+        elif (
+            isinstance(inner, list)
+            and inner
+            and isinstance(inner[0], (str, bytes, bytearray))
+        ):
+            raw = inner
 
     if isinstance(raw, dict):
         data = {k: v for k, v in raw.items()}

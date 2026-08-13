@@ -59,6 +59,7 @@ def protocol_version(connection) -> int:
     falls back to introspecting an established connection. Returns 2 if the
     value cannot be determined (the historical default for redis-py).
     """
+
     def _coerce(version):
         # redis-py >= 6.0 stores the ``protocol`` kwarg as a string ("2"/"3").
         try:
