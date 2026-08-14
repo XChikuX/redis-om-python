@@ -35,8 +35,10 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
-    # unasync converts ``Async``-prefixed names to ``Sync`` (``AsyncMock`` → ``SyncMock``),
-    # but ``SyncMock`` doesn't exist. Override to use ``MagicMock`` instead.
+    # unasync has a built-in rule that converts any ``Async``-prefixed
+    # class name to ``Sync`` (e.g. ``AsyncMock`` → ``SyncMock``),
+    # but ``SyncMock`` does not exist. Override it for the common
+    # mock class used in tests so the sync mirror uses ``MagicMock``.
     "AsyncMock": "MagicMock",
 }
 
@@ -97,6 +99,7 @@ POST_SYNC_FIXES = {
         "import redis.asyncio as aioredis": "import redis as aioredis",
         "        migration_task = asyncio.create_task(\n            Migrator(conn=redis, allow_forward_swap=True).run()\n        )": "        Migrator(conn=redis, allow_forward_swap=True).run()",
         "        migration_task\n": "",
+        "conn.aclose()": "conn.close()",
     },
     # Update docstring to reflect the sync nature of the marker.
     "tests_sync/conftest.py": {
