@@ -190,7 +190,11 @@ def split_search_response(
     When ``protocol`` is omitted the function sniffs the wire shape so it
     works on either protocol transparently.
     """
-    if protocol == 3 or (protocol is None and is_resp3_search_response(raw)):
+    # Trust the wire shape over the claimed protocol: clients can misreport
+    # their negotiated protocol (e.g. sync RedisCluster omits ``protocol``
+    # from its connection kwargs yet negotiates RESP2), so an explicit
+    # ``protocol`` hint never overrides the shape of ``raw`` itself.
+    if isinstance(raw, dict) and (protocol == 3 or is_resp3_search_response(raw)):
         # redis-py may surface RESP3 map keys as bytes for raw
         # ``execute_command`` callers, so normalise them up front.
         raw = _decode_dict_keys(raw)
