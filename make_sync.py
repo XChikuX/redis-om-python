@@ -35,10 +35,9 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
-    # NOTE: unasync strips `await` from any expression, so transforming
-    # ``asyncio.sleep(`` here is undone when unasync removes the
-    # ``await`` keyword and re-emits the call. The actual replacement
-    # is done in ``POST_SYNC_FIXES`` below.
+    # unasync converts ``Async``-prefixed names to ``Sync`` (``AsyncMock`` → ``SyncMock``),
+    # but ``SyncMock`` doesn't exist. Override to use ``MagicMock`` instead.
+    "AsyncMock": "MagicMock",
 }
 
 

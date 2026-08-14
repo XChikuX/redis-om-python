@@ -252,30 +252,55 @@ async def _resolve_alias_or_index(conn, name: str) -> tuple[bool, Optional[str]]
     return (underlying != name, underlying)
 
 
+def _normalize_index_names(result: Any) -> List[str]:
+    """Flatten an ``FT._LIST`` reply into a de-duplicated list of names.
+
+    Standalone replies are a flat list. Cluster replies vary by client and
+    redis-py version: targeting a single node returns a flat list, while
+    multi-node fan-out (e.g. ``target_nodes=PRIMARIES`` on the async client)
+    returns ``{node_name: [index, ...]}`` or nested lists. Bytes entries are
+    decoded using UTF-8.
+    """
+    names: List[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, bytes):
+            names.append(node.decode("utf-8"))
+        elif isinstance(node, str):
+            names.append(node)
+
+    _walk(result)
+    # Preserve first-seen order while collapsing per-node duplicates from
+    # multi-node fan-out replies.
+    return list(dict.fromkeys(names))
+
+
 async def _list_indexes(conn) -> List[str]:
     """Return all FT index names via ``FT._LIST``.
 
-    Works for both standalone and cluster connections.
+    Works for both standalone and cluster connections. On a cluster,
+    ``FT._LIST`` takes no key argument so redis-py cannot slot-route it —
+    and a nodes-flag (``PRIMARIES``) is rejected outright by some redis-py
+    versions on the sync client. We therefore target the default node
+    explicitly: RediSearch propagates index metadata across the cluster,
+    so any node's reply lists every index.
     """
     try:
-        result = await conn.execute_command("FT._LIST")
+        if isinstance(conn, redis.RedisCluster):
+            result = await conn.execute_command(
+                "FT._LIST", target_nodes=conn.get_default_node()
+            )
+        else:
+            result = await conn.execute_command("FT._LIST")
     except redis.ResponseError:
         return []
-    # Normalize bytes and RESP3 nesting variations.
-    names: List[str] = []
-    for item in result:
-        if isinstance(item, bytes):
-            names.append(item.decode("utf-8"))
-        elif isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, (list, tuple)) and item:
-            # Some RESP3 shapes nest the name as the first element.
-            first = item[0]
-            if isinstance(first, bytes):
-                names.append(first.decode("utf-8"))
-            elif isinstance(first, str):
-                names.append(first)
-    return names
+    return _normalize_index_names(result)
 
 
 async def _create_physical_index_cluster(conn, index_name, schema):

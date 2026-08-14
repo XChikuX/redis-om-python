@@ -1371,6 +1371,29 @@ _EMPTY_PLAN = ConversionPlan(
 )
 
 
+def _raw_vector_connection_error(model_cls: Any) -> RedisModelError:
+    """Error raised when a decoding connection cannot return vector blobs.
+
+    Raw vector fields (``bytes`` / ``list[float]`` with ``vector_options``)
+    are stored as packed binary in hashes. On a ``decode_responses=True``
+    connection the redis-py parser UTF-8-decodes every reply and fails
+    before library code runs, surfacing as a cryptic ``UnicodeDecodeError``.
+    Replace it with an error that states the contract and the fix.
+    """
+    fields = sorted(
+        name
+        for name, fp in get_conversion_plan(model_cls).fields.items()
+        if fp.kind in (_KIND_VECTOR_RAW_BYTES, _KIND_VECTOR_LIST_FLOAT)
+    )
+    return RedisModelError(
+        f"Cannot read {model_cls.__name__} with this Redis connection: raw "
+        f"vector field(s) {fields} store binary data, which cannot be "
+        "returned by a connection created with decode_responses=True. "
+        "Create the model's connection with decode_responses=False, e.g. "
+        "get_redis_connection(decode_responses=False)."
+    )
+
+
 # Module-level imports kept lazy where they were already lazy in the legacy
 # converters (``base64``, ``uuid``) to avoid changing import-time cost.
 
@@ -4499,7 +4522,13 @@ class HashModel(RedisModel, abc.ABC):
 
     @classmethod
     async def get(cls: Type["Model"], pk: Any) -> "Model":
-        document = await cls.db().hgetall(cls.make_primary_key(pk))
+        try:
+            document = await cls.db().hgetall(cls.make_primary_key(pk))
+        except UnicodeDecodeError as exc:
+            # Raw vector blobs are not valid UTF-8, so a connection created
+            # with decode_responses=True fails inside the parser before our
+            # code ever runs. Surface an actionable error instead.
+            raise _raw_vector_connection_error(cls) from exc
         if not document:
             raise NotFoundError
         # Apply load-side conversions (empty-string → None for Optional,
@@ -4569,10 +4598,16 @@ class HashModel(RedisModel, abc.ABC):
             for key in keys:
                 pipeline.hgetall(key)
             return []  # caller will execute the pipeline
-        db = cls.db().pipeline(transaction=False)
-        for key in keys:
-            db.hgetall(key)
-        results = await db.execute()
+        try:
+            db = cls.db().pipeline(transaction=False)
+            for key in keys:
+                db.hgetall(key)
+            results = await db.execute()
+        except UnicodeDecodeError as exc:
+            # Raw vector blobs are not valid UTF-8, so a connection created
+            # with decode_responses=True fails inside the parser before our
+            # code ever runs. Surface an actionable error instead.
+            raise _raw_vector_connection_error(cls) from exc
         plan = get_conversion_plan(cls)
         # Vector-field names must survive the ``decode_responses=False`` path
         # below — the TypeError fallback decodes the whole document, which
