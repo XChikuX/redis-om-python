@@ -177,6 +177,12 @@ This works exactly the same way as it does with Pydantic. Check out the [Pydanti
 * Other Redis OM models
 * Pydantic models
 
+**Exception — vector fields.** A `HashModel` may declare `list[float]` or
+`bytes` fields annotated with `Field(vector_options=...)`. These are not
+stored as Redis containers: `list[float]` is packed to the declared vector
+dtype and `bytes` is written verbatim as a raw binary blob. See
+[Vector Fields for Similarity Search](#vector-fields-for-similarity-search).
+
 **NOTE**: In the future, we may serialize these values as JSON strings, the same way we do for `JsonModel`. The difference would be that in the case of `HashModel`, you wouldn't be able to index these fields, just get and save them with the model. With `JsonModel`, you can index list fields and embedded `JsonModel`s.
 
 So, in short, if you want to use container types, use `JsonModel`.
@@ -644,12 +650,17 @@ A vector field is automatically added to the RediSearch index, even if you do
 not pass `index=True` explicitly on the field — `vector_options` implies
 indexing.
 
-#### Raw-byte vector fields on `HashModel`
+#### Vector fields on `HashModel`
 
-On a `HashModel` you can instead annotate the field as `bytes` and store the
-packed vector buffer directly. The blob is written to the hash as raw binary
-(no JSON array, no base64), so a 1536-dim `FLOAT16` embedding occupies
-`1536 * 2 = 3072` bytes exactly:
+On a `HashModel` you can store the embedding as a compact binary blob in one
+of two ways:
+
+- annotate the field as `bytes` and pack the buffer yourself, or
+- annotate it as `list[float]` and let Redis OM pack/unpack it automatically
+  using the declared `VectorFieldOptions.TYPE`.
+
+Both are written to the hash as raw binary (no JSON array, no base64), so a
+1536-dim `FLOAT16` embedding occupies `1536 * 2 = 3072` bytes exactly.
 
 ```python
 import struct
@@ -674,12 +685,28 @@ chunk = Chunk(content="...", embedding=struct.pack("<1536e", *floats))
 await chunk.save()
 ```
 
-> **NOTE — reading raw-blob vectors back requires `decode_responses=False`.**
+Using `list[float]` instead of `bytes` is more ergonomic — Redis OM packs the
+list to the declared dtype on save and unpacks it back to a `list[float]` on
+load:
+
+```python
+class Chunk(HashModel):
+    content: str = Field(index=True)
+    embedding: list[float] = Field(vector_options=vector_options)
+
+
+chunk = Chunk(content="...", embedding=floats)  # list of 1536 floats
+await chunk.save()  # stored as 3072 raw FLOAT16 bytes in the hash
+```
+
+> **NOTE — reading `bytes` vector fields back requires `decode_responses=False`.**
 > Redis OM's default connection decodes responses as UTF-8, which is not
 > possible for arbitrary binary blobs. To round-trip a `bytes` vector field
 > through `Model.get()`, build the connection with
 > `get_redis_connection(decode_responses=False)` (KNN queries are unaffected —
-> they return scores and primary keys only, never the raw blob).
+> they return scores and primary keys only, never the raw blob). `list[float]`
+> vector fields are unpacked back to floats automatically on load, so they do
+> not require a `decode_responses=False` connection.
 
 ### Choosing an Algorithm: FLAT vs HNSW
 
