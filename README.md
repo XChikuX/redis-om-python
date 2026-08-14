@@ -177,9 +177,7 @@ Full details, including the lazy `Meta.database`, `Meta.default_ttl`, vector fie
 ```python
 # Equality, range, AND/OR/NOT
 Customer.find(Customer.age >= 35).all()
-Customer.find(
-    (Customer.last_name == "Brookins") | (Customer.first_name == "Kim")
-).all()
+Customer.find((Customer.last_name == "Brookins") | (Customer.first_name == "Kim")).all()
 
 # IN / NOT IN on TAG fields
 Customer.find(Customer.last_name << ["Brookins", "Smith"]).all()
@@ -191,13 +189,19 @@ Customer.find(Customer.address.city == "San Antonio").all()
 # GEO queries
 from redis_om import Coordinates, GeoFilter
 
+
 class Store(HashModel):
     name: str = Field(index=True)
     coordinates: Coordinates = Field(index=True)
 
+
 Store.find(
-    Store.coordinates == GeoFilter(
-        longitude=-73.9851, latitude=40.7589, radius=2, unit="mi",
+    Store.coordinates
+    == GeoFilter(
+        longitude=-73.9851,
+        latitude=40.7589,
+        radius=2,
+        unit="mi",
     )
 ).all()
 ```
@@ -210,6 +214,7 @@ Compose model queries with raw Redis commands in one round trip:
 
 ```python
 from aredis_om import HashModel, Field
+
 
 class Customer(HashModel):
     first_name: str
