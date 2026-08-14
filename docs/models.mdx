@@ -524,7 +524,8 @@ The mapping is determined by the field's Python type:
 | `datetime.date`, `datetime.datetime` | `NUMERIC`      | Stored as a Unix timestamp; range-queryable.                                                         |
 | `bool`                              | `TAG`           | Always stored as the string `"True"` / `"False"`.                                                     |
 | `Coordinates`                       | `GEO`           | Use with `GeoFilter` for radius queries.                                                              |
-| `list[float]` + `vector_options`    | `VECTOR`        | FLAT or HNSW index; see [Vector Fields for Similarity Search](#vector-fields-for-similarity-search). |
+| `list[float]` + `vector_options`    | `VECTOR`        | FLAT or HNSW index; see [Vector Fields for Similarity Search](#vector-fields-for-similarity-search). On `JsonModel` the value is stored as a JSON array. |
+| `bytes` + `vector_options` (`HashModel`) | `VECTOR`   | Raw-blob storage — the packed dtype buffer is written to the hash field verbatim (e.g. 3 KB for a 1536-dim `FLOAT16`). See [Raw-byte vector fields on HashModel](#defining-a-vector-field). |
 | `list[str]` / `tuple[str]`          | `TAG`           | Each element is a separate TAG value, joined by the field's separator.                               |
 | Embedded model fields               | (rolled up)     | Sub-fields are indexed under the parent's prefix (e.g. `address_city` for `Address.city`).            |
 
@@ -643,6 +644,43 @@ A vector field is automatically added to the RediSearch index, even if you do
 not pass `index=True` explicitly on the field — `vector_options` implies
 indexing.
 
+#### Raw-byte vector fields on `HashModel`
+
+On a `HashModel` you can instead annotate the field as `bytes` and store the
+packed vector buffer directly. The blob is written to the hash as raw binary
+(no JSON array, no base64), so a 1536-dim `FLOAT16` embedding occupies
+`1536 * 2 = 3072` bytes exactly:
+
+```python
+import struct
+from redis_om import HashModel, Field, VectorFieldOptions
+
+
+vector_options = VectorFieldOptions.flat(
+    type=VectorFieldOptions.TYPE.FLOAT16,
+    dimension=1536,
+    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+)
+
+
+class Chunk(HashModel):
+    content: str = Field(index=True)
+    embedding: bytes = Field(vector_options=vector_options)
+
+
+# Pack the embedding as little-endian float16 and save — the hash field
+# holds exactly 3072 raw bytes.
+chunk = Chunk(content="...", embedding=struct.pack("<1536e", *floats))
+await chunk.save()
+```
+
+> **NOTE — reading raw-blob vectors back requires `decode_responses=False`.**
+> Redis OM's default connection decodes responses as UTF-8, which is not
+> possible for arbitrary binary blobs. To round-trip a `bytes` vector field
+> through `Model.get()`, build the connection with
+> `get_redis_connection(decode_responses=False)` (KNN queries are unaffected —
+> they return scores and primary keys only, never the raw blob).
+
 ### Choosing an Algorithm: FLAT vs HNSW
 
 `VectorFieldOptions` offers two algorithms:
@@ -687,8 +725,21 @@ Choose the metric that matches how your embedding model was trained:
 
 ### Vector Data Types
 
-- `FLOAT32` — 32-bit floats (most common, default for most models)
-- `FLOAT64` — 64-bit floats (double precision)
+| Type        | Bytes per element | Notes                                                                                                          |
+| ----------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `FLOAT32`   | 4                 | 32-bit floats (most common, default for most models)                                                          |
+| `FLOAT64`   | 8                 | 64-bit floats (double precision)                                                                               |
+| `FLOAT16`   | 2                 | Half-precision floats — half the storage of `FLOAT32`. Supported by RediSearch v2.4+.                          |
+| `BFLOAT16`  | 2                 | Brain floats — same dynamic range as `FLOAT32` with reduced precision. Supported by RediSearch v2.4+.          |
+| `INT8`      | 1                 | Quantized 8-bit signed integers — smallest footprint. Supported by RediSearch v2.4+.                           |
+
+> **Tip — `HashModel` + `FLOAT16`/`BFLOAT16`/`INT8` for RAG workloads.**
+> A 1536-dim embedding costs ~12 KB as a JSON array of doubles (each
+> float is stored in full double precision) but only 3 KB as a raw
+> `FLOAT16` blob. Declare the field as `bytes` on a `HashModel` and pass
+> the packed buffer (`np.array(...).astype('<f2').tobytes()` or
+> `struct.pack`) — Redis OM stores the raw blob in the hash without any
+> JSON wrapping, cutting storage ~4-5x on memory-constrained tiers.
 
 ### Nested Vector Fields (JsonModel only)
 

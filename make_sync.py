@@ -221,8 +221,14 @@ def _fix_asyncio_sleep(content: str) -> str:
         if "asyncio." in line:
             still_used = True
             break
-    if not still_used and "import asyncio\n" in content:
-        content = content.replace("import asyncio\n", "")
+    if not still_used:
+        # Remove the whole ``import asyncio`` line, including its indentation
+        # — a bare ``replace("import asyncio\n", "")`` would leave the
+        # leading whitespace behind and emit a whitespace-only line (W293)
+        # for function-local imports.
+        content = "\n".join(
+            line for line in content.splitlines() if line.strip() != "import asyncio"
+        ) + ("\n" if content.endswith("\n") else "")
     return content
 
 

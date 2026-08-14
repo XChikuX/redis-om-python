@@ -57,6 +57,7 @@ sync: $(INSTALL_STAMP)
 	$(UV) sync --group dev
 	$(UV) run python make_sync.py
 	$(UV) run ruff format $(SYNC_NAME)
+	$(UV) run ruff format tests_sync
 
 .PHONY: lint
 lint: $(INSTALL_STAMP) sync
