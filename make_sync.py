@@ -49,6 +49,13 @@ POST_SYNC_FIXES = {
         "conn.aclose()": "conn.close()",
         "asyncio.gather(*tasks)": "tasks",
     },
+    # Cluster vector tests: convert async polling + conn teardown to sync.
+    "tests_sync/test_cluster_vectors.py": {
+        "import asyncio\nimport struct\nimport time": "import struct\nimport time",
+        "asyncio.sleep(": "time.sleep(",
+        "import redis.asyncio as aioredis": "import redis as aioredis",
+        "conn.aclose()": "conn.close()",
+    },
     # RESP3 tests require sync close() instead of async aclose().
     "tests_sync/test_protocol_negotiation.py": {
         "conn.aclose()": "conn.close()",
