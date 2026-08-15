@@ -1677,6 +1677,147 @@ async def test_cluster_model_with_meta_database():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# SECTION 12.5: FEATURE REGRESSIONS FROM RECENT COMMITS
+# - find().filter() chaining (2e77850)
+# - ConversionPlan plain bytes fields (2a12ea4)
+# - schema-hash change DROP+CREATE migration (dd6489e)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@py_test_mark_asyncio
+async def test_cluster_hash_find_filter_chaining(cluster_hash_models):
+    """Cluster: find(...).filter(...) chains and ANDs expressions (2e77850)."""
+    m = cluster_hash_models
+    await m.SimpleHash.add(
+        [
+            m.SimpleHash(name="alpha", value=5),
+            m.SimpleHash(name="alpha", value=50),
+            m.SimpleHash(name="beta", value=60),
+        ]
+    )
+
+    results = (
+        await m.SimpleHash.find(m.SimpleHash.name == "alpha")
+        .filter(m.SimpleHash.value > 10)
+        .all()
+    )
+
+    assert len(results) == 1
+    assert results[0].value == 50
+    assert results[0].name == "alpha"
+
+
+@py_test_mark_asyncio
+async def test_cluster_hash_plain_bytes_field_roundtrip(cluster_conn):
+    """Cluster: plain (non-vector) bytes fields base64 round-trip (2a12ea4)."""
+    model_registry.clear()
+
+    class BaseHash(HashModel, abc.ABC):
+        class Meta:
+            global_key_prefix = "cluster-test"
+            database = cluster_conn
+
+    class BytesHash(BaseHash):
+        name: str = Field(index=True)
+        data: bytes
+
+        class Meta:
+            model_key_prefix = "c_hash_bytes"
+
+    await Migrator(conn=cluster_conn).run()
+
+    blob = b"\x89PNG\r\n\x1a\n\x00\x01\x02"
+    doc = await BytesHash(name="bin", data=blob).save()
+    got = await BytesHash.get(doc.pk)
+    assert got.data == blob
+    assert got.name == "bin"
+
+    # Cleanup: docs, schema-hash key, index.
+    async for key in cluster_conn.scan_iter("cluster-test:c_hash_bytes:*"):
+        await cluster_conn.delete(key)
+    await cluster_conn.delete(f"{BytesHash.Meta.index_name}:hash")
+    try:
+        await cluster_conn.execute_command(
+            "FT.DROPINDEX",
+            BytesHash.Meta.index_name,
+            target_nodes=aioredis.RedisCluster.PRIMARIES,
+        )
+    except Exception:
+        pass
+
+
+@py_test_mark_asyncio
+async def test_cluster_migration_schema_change_recreates_index(cluster_conn):
+    """Cluster: a schema-hash change triggers DROP+CREATE, preserving docs (dd6489e)."""
+    from aredis_om.model.migrations.migrator import schema_hash_key
+
+    model_registry.clear()
+
+    class BaseHash(HashModel, abc.ABC):
+        class Meta:
+            global_key_prefix = "cluster-test"
+            database = cluster_conn
+
+    class SchemaChangeHash(BaseHash):
+        name: str = Field(index=True)
+
+        class Meta:
+            model_key_prefix = "schema_change"
+
+    index_name = SchemaChangeHash.Meta.index_name
+
+    await Migrator(conn=cluster_conn).run()
+    _ = await SchemaChangeHash(name="keeper").save()
+    found = await SchemaChangeHash.find(SchemaChangeHash.name == "keeper").all()
+    assert len(found) == 1
+
+    # Redefine with an extra indexed field → new schema hash → DROP+CREATE.
+    model_registry.clear()
+
+    class SchemaChangeHashV2(BaseHash):
+        name: str = Field(index=True)
+        rank: Optional[int] = Field(None, index=True)
+
+        class Meta:
+            model_key_prefix = "schema_change"
+
+    migrator2 = Migrator(conn=cluster_conn)
+    await migrator2.detect_migrations()
+    actions = [migration.action.name for migration in migrator2.migrations]
+    assert "DROP" in actions
+    assert "CREATE" in actions
+    await migrator2.run()
+
+    # The DROP used delete_documents=False: docs survive and are re-indexed.
+    survivors = await SchemaChangeHashV2.find(SchemaChangeHashV2.name == "keeper").all()
+    assert len(survivors) == 1
+    assert survivors[0].rank is None
+
+    # The new field is queryable...
+    await SchemaChangeHashV2(name="ranked", rank=42).save()
+    ranked = await SchemaChangeHashV2.find(SchemaChangeHashV2.rank == 42).all()
+    assert len(ranked) == 1
+
+    # ...and a third run detects nothing further (hash key updated).
+    migrator3 = Migrator(conn=cluster_conn)
+    await migrator3.detect_migrations()
+    assert len(migrator3.migrations) == 0
+
+    # Cleanup.
+    async for key in cluster_conn.scan_iter("cluster-test:schema_change:*"):
+        await cluster_conn.delete(key)
+    await cluster_conn.delete(schema_hash_key(index_name))
+    try:
+        await cluster_conn.execute_command(
+            "FT.DROPINDEX",
+            index_name,
+            target_nodes=aioredis.RedisCluster.PRIMARIES,
+        )
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SECTION 13: PERFORMANCE COMPARISON (CLUSTER vs SINGLE INSTANCE)
 # ══════════════════════════════════════════════════════════════════════
 

@@ -35,10 +35,11 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
-    # NOTE: unasync strips `await` from any expression, so transforming
-    # ``asyncio.sleep(`` here is undone when unasync removes the
-    # ``await`` keyword and re-emits the call. The actual replacement
-    # is done in ``POST_SYNC_FIXES`` below.
+    # unasync has a built-in rule that converts any ``Async``-prefixed
+    # class name to ``Sync`` (e.g. ``AsyncMock`` → ``SyncMock``),
+    # but ``SyncMock`` does not exist. Override it for the common
+    # mock class used in tests so the sync mirror uses ``MagicMock``.
+    "AsyncMock": "MagicMock",
 }
 
 
@@ -48,6 +49,13 @@ POST_SYNC_FIXES = {
         "import redis.asyncio as aioredis": "import redis as aioredis",
         "conn.aclose()": "conn.close()",
         "asyncio.gather(*tasks)": "tasks",
+    },
+    # Cluster vector tests: convert async polling + conn teardown to sync.
+    "tests_sync/test_cluster_vectors.py": {
+        "import asyncio\nimport struct\nimport time": "import struct\nimport time",
+        "asyncio.sleep(": "time.sleep(",
+        "import redis.asyncio as aioredis": "import redis as aioredis",
+        "conn.aclose()": "conn.close()",
     },
     # RESP3 tests require sync close() instead of async aclose().
     "tests_sync/test_protocol_negotiation.py": {
@@ -91,6 +99,7 @@ POST_SYNC_FIXES = {
         "import redis.asyncio as aioredis": "import redis as aioredis",
         "        migration_task = asyncio.create_task(\n            Migrator(conn=redis, allow_forward_swap=True).run()\n        )": "        Migrator(conn=redis, allow_forward_swap=True).run()",
         "        migration_task\n": "",
+        "conn.aclose()": "conn.close()",
     },
     # Update docstring to reflect the sync nature of the marker.
     "tests_sync/conftest.py": {
@@ -233,8 +242,14 @@ def _fix_asyncio_sleep(content: str) -> str:
         if "asyncio." in line:
             still_used = True
             break
-    if not still_used and "import asyncio\n" in content:
-        content = content.replace("import asyncio\n", "")
+    if not still_used:
+        # Remove the whole ``import asyncio`` line, including its indentation
+        # — a bare ``replace("import asyncio\n", "")`` would leave the
+        # leading whitespace behind and emit a whitespace-only line (W293)
+        # for function-local imports.
+        content = "\n".join(
+            line for line in content.splitlines() if line.strip() != "import asyncio"
+        ) + ("\n" if content.endswith("\n") else "")
     return content
 
 

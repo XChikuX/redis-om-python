@@ -386,7 +386,7 @@ def strip_null_embedded_pks(model: Any, values: Any) -> Any:
 
 def decode_redis_value(
     obj: Union[List[bytes], Dict[bytes, bytes], bytes], encoding: str
-) -> Union[List[str], Dict[str, str], str]:
+) -> Union[List[Union[str, bytes]], Dict[str, Union[str, bytes]], str, bytes]:
     """Decode a binary-encoded Redis hash into the specified encoding.
 
     Field values that fail to decode (e.g. packed vector embeddings stored
@@ -758,6 +758,74 @@ def _timestamp_to_datetime(value, target_type):
         return value
 
 
+def _pack_vector(
+    values: List[float], vtype: "VectorFieldOptions.TYPE", dim: int
+) -> bytes:
+    """Pack a list of floats into bytes in the RediSearch vector layout.
+
+    Uses only the standard library: ``struct`` supports float16 via the
+    ``e`` format char, and bfloat16 is the high 16 bits of a float32 (we
+    truncate rather than round-to-nearest-even, which Redis accepts).
+    INT8 uses symmetric quantization with a scale factor of 127.
+    """
+    if len(values) != dim:
+        raise ValueError(
+            f"Vector dimension mismatch: field declares {dim}, got {len(values)}"
+        )
+    if vtype == VectorFieldOptions.TYPE.FLOAT32:
+        return struct.pack(f"<{dim}f", *values)
+    if vtype == VectorFieldOptions.TYPE.FLOAT64:
+        return struct.pack(f"<{dim}d", *values)
+    if vtype == VectorFieldOptions.TYPE.FLOAT16:
+        return struct.pack(f"<{dim}e", *values)
+    if vtype == VectorFieldOptions.TYPE.BFLOAT16:
+        return b"".join(struct.pack("<f", v)[2:] for v in values)
+    if vtype == VectorFieldOptions.TYPE.INT8:
+        ints = [max(-128, min(127, int(round(v * 127)))) for v in values]
+        return struct.pack(f"<{dim}b", *ints)
+    raise ValueError(f"Unsupported vector type: {vtype}")
+
+
+def _unpack_vector(
+    blob: bytes, vtype: "VectorFieldOptions.TYPE", dim: int
+) -> List[float]:
+    """Unpack RediSearch vector bytes back into a list of floats.
+
+    Reverses :func:`_pack_vector`. Raises ``ValueError`` on a size mismatch
+    so schema drift (e.g. a changed dimension) surfaces clearly instead of
+    as a confusing Pydantic validation error.
+    """
+    widths = {
+        VectorFieldOptions.TYPE.FLOAT32: 4,
+        VectorFieldOptions.TYPE.FLOAT64: 8,
+        VectorFieldOptions.TYPE.FLOAT16: 2,
+        VectorFieldOptions.TYPE.BFLOAT16: 2,
+        VectorFieldOptions.TYPE.INT8: 1,
+    }
+    width = widths.get(vtype)
+    if width is None:
+        raise ValueError(f"Unsupported vector type: {vtype}")
+    expected = dim * width
+    if len(blob) != expected:
+        raise ValueError(
+            f"Vector blob size mismatch: expected {expected} bytes "
+            f"({dim} x {width}), got {len(blob)}"
+        )
+    if vtype == VectorFieldOptions.TYPE.FLOAT32:
+        return list(struct.unpack(f"<{dim}f", blob))
+    if vtype == VectorFieldOptions.TYPE.FLOAT64:
+        return list(struct.unpack(f"<{dim}d", blob))
+    if vtype == VectorFieldOptions.TYPE.FLOAT16:
+        return list(struct.unpack(f"<{dim}e", blob))
+    if vtype == VectorFieldOptions.TYPE.BFLOAT16:
+        return [
+            struct.unpack("<f", b"\x00\x00" + blob[i : i + 2])[0]
+            for i in range(0, expected, 2)
+        ]
+    # INT8 — dequantize with the same symmetric scale factor of 127.
+    return [v / 127.0 for v in struct.unpack(f"<{dim}b", blob)]
+
+
 def convert_timestamp_to_datetime(obj, model_fields):
     """Convert Unix timestamps back to datetime objects based on model field types."""
     if isinstance(obj, dict):
@@ -1030,39 +1098,27 @@ def convert_base64_to_bytes(obj, model_fields):
 # ===========================================================================
 # Field-aware conversion plans
 #
-# The recursive converters above (``convert_datetime_to_timestamp``,
-# ``convert_bytes_to_base64``, ``convert_dataclasses_to_dicts``,
-# ``convert_timestamp_to_datetime``, ``convert_base64_to_bytes``,
-# ``convert_empty_strings_to_none``) walk the *entire* document on every
-# save/load, even when only a handful of fields actually need conversion.
-# For models with many non-convertible fields (str/int/float) this is
-# wasted work — the load path alone issues ~289 ``isinstance`` calls per
-# document for a 12-field model.
-#
-# The classes below pre-compute, per model class, exactly which fields need
-# which conversion. The save/load hot paths then make a *single* pass over
-# the document and consult the plan, skipping fields that need no work.
-# Profiling shows this drops load ``isinstance`` calls from 289→19 (~4.8x
-# speedup on conversion-only work) and save calls from 769→397 (~1.5x).
-#
-# The legacy recursive converters remain available for callers that don't
-# have a model class handy — notably ``JsonModel._convert_sub_value``
-# (used by ``get_value()`` for arbitrary single sub-values) and the public
-# API imported by tests.
+# pre-computed per model to avoid walking
+# the entire document on every save/load. Legacy recursive converters remain
+# for callers without a model class (``get_value()``, tests).
+# Profiling: 289→19 isinstance calls on load (~4.8x), 769→397 on save (~1.5x).
 # ===========================================================================
 
 
-# Field "kinds" for the planned converters. We use small integers rather
-# than an Enum so the hot-loop dispatch is a cheap integer comparison.
-_KIND_NONE = 0  # no conversion needed (str, int, float, ...)
-_KIND_DATETIME = 1  # scalar datetime / date
-_KIND_BYTES = 2  # scalar bytes
-_KIND_DATETIME_LIST = 3  # List[datetime] / List[date]
-_KIND_BYTES_LIST = 4  # List[bytes]
-_KIND_DATACLASS = 5  # Coordinates or other dataclass (save-only → str/dict)
-_KIND_NESTED_MODEL = 6  # single embedded model with its own plan
+# Field kind constants for hot-loop dispatch (integers for cheap comparison).
+_KIND_NONE = 0               # str, int, float, etc.
+_KIND_DATETIME = 1           # datetime / date
+_KIND_BYTES = 2              # scalar bytes
+_KIND_DATETIME_LIST = 3      # List[datetime] / List[date]
+_KIND_BYTES_LIST = 4         # List[bytes]
+_KIND_DATACLASS = 5          # dataclass → str/dict
+_KIND_NESTED_MODEL = 6       # single embedded model
 _KIND_NESTED_MODEL_LIST = 7  # List[embedded model]
-_KIND_VECTOR = 8  # List[float] with vector_options (HashModel packs to bytes)
+# raw binary blob (no base64 wrapping) so vector payloads round-trip at their
+# native dtype width (e.g. 2 bytes per float for FLOAT16 instead of the ~8x
+# blowup of JSON-encoded doubles). Used by HashModel only
+_KIND_VECTOR_RAW_BYTES = 8   # bytes with vector_options (HashModel only, raw binary blob)
+_KIND_VECTOR_LIST_FLOAT = 9  # list[float] with vector_options, packed per dtype
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1074,13 +1130,16 @@ class _FieldPlan:
     ``nested_plan`` is the ``ConversionPlan`` for an embedded-model field
     (single or list). ``is_optional`` records ``Optional[T]`` so the
     HashModel load path can map empty string → None.
+    ``vector_type`` / ``vector_dim`` store the vector dtype and dimension for
+    ``_KIND_VECTOR_LIST_FLOAT`` fields so we can pack/unpack correctly.
     """
 
     kind: int = _KIND_NONE
     target_type: Any = None
     nested_plan: Optional["ConversionPlan"] = None
     is_optional: bool = False
-    vector_dtype: str = "FLOAT32"
+    vector_type: Optional["VectorFieldOptions.TYPE"] = None
+    vector_dim: Optional[int] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1097,17 +1156,13 @@ class ConversionPlan:
     it is ``True`` when at least one field is ``Optional`` (the empty-string
     → None pass is required). ``needs_dataclass_save`` is ``True`` when the
     save path must run ``convert_dataclasses_to_dicts`` (Coordinates or
-    other dataclass fields are present). ``needs_vector_packing`` is ``True``
-    when at least one field is a vector (``vector_options`` set), which
-    ``HashModel.save`` packs from ``list[float]`` to little-endian float
-    bytes after ``jsonable_encoder`` (it cannot handle arbitrary bytes).
+    other dataclass fields are present).
     """
 
     fields: Mapping[str, _FieldPlan]
     needs_conversion: bool
     needs_empty_string_to_none: bool
     needs_dataclass_save: bool
-    needs_vector_packing: bool
 
 
 _CONVERSION_PLAN_CACHE: "weakref.WeakKeyDictionary[Any, ConversionPlan]" = (
@@ -1148,6 +1203,19 @@ def _list_inner_type(annotation: Any) -> Any:
     return args[0] if args else None
 
 
+def _is_hash_model(model_cls: Any) -> bool:
+    """Return True if ``model_cls`` is a HashModel.
+
+    Vector blobs (raw ``bytes`` or packed ``list[float]``) only survive in
+    Redis hashes; JSON documents have no way to store raw binary without a
+    base64 layer, so vector-specific conversion kinds are HashModel-only.
+    """
+    try:
+        return issubclass(model_cls, HashModel)
+    except (NameError, TypeError):
+        return False
+
+
 def build_conversion_plan(model_cls: Any) -> ConversionPlan:
     """Build (and cache) a :class:`ConversionPlan` for ``model_cls``.
 
@@ -1164,7 +1232,7 @@ def build_conversion_plan(model_cls: Any) -> ConversionPlan:
     needs_conversion = False
     needs_empty_string_to_none = False
     needs_dataclass_save = False
-    needs_vector_packing = False
+    is_hash_model = _is_hash_model(model_cls)
 
     for field_name, field_info in get_model_fields(model_cls).items():
         raw_annotation = (
@@ -1180,36 +1248,42 @@ def build_conversion_plan(model_cls: Any) -> ConversionPlan:
         kind = _KIND_NONE
         target_type: Any = None
         nested_plan: Optional[ConversionPlan] = None
-        vector_dtype = "FLOAT32"
 
-        vector_options = getattr(field_info, "vector_options", None)
-        if vector_options is not None and (
-            effective is None or _is_list_annotation(effective) or effective is bytes
-        ):
-            # Vector embedding field (``list[float]`` with
-            # ``Field(vector_options=...)``). HashModel packs these to
-            # little-endian float bytes on save and unpacks on load;
-            # JsonModel stores the list natively, so load is pass-through
-            # for list values.
-            kind = _KIND_VECTOR
-            vector_dtype = vector_options.type.name
-            needs_conversion = True
-            needs_vector_packing = True
-        elif effective in (datetime.datetime, datetime.date):
+        if effective in (datetime.datetime, datetime.date):
             kind = _KIND_DATETIME
             target_type = effective
             needs_conversion = True
         elif effective is bytes:
-            kind = _KIND_BYTES
-            needs_conversion = True
+            # Raw-blob vector fields bypass the base64 wrapping that the
+            # ordinary ``_KIND_BYTES`` path applies. RediSearch expects
+            # the field's native dtype layout (e.g. 2 bytes per element
+            # for FLOAT16); any base64 layer would corrupt that on the
+            # round trip. The save/load passes treat this kind as a
+            # no-op so ``redis-py``'s HSET receives the raw ``bytes``.
+            if (
+                is_hash_model
+                and getattr(field_info, "vector_options", None) is not None
+            ):
+                kind = _KIND_VECTOR_RAW_BYTES
+            else:
+                kind = _KIND_BYTES
+                needs_conversion = True
         elif _is_list_annotation(effective):
             inner = _list_inner_type(effective)
+            vector_opts = getattr(field_info, "vector_options", None)
             if inner in (datetime.datetime, datetime.date):
                 kind = _KIND_DATETIME_LIST
                 target_type = inner
                 needs_conversion = True
             elif inner is bytes:
                 kind = _KIND_BYTES_LIST
+                needs_conversion = True
+            elif inner is float and vector_opts is not None and is_hash_model:
+                # list[float] with vector_options on HashModel → pack to
+                # bytes on save, unpack to list[float] on load. JsonModel
+                # keeps the JSON array as-is (no raw-binary storage exists
+                # in RedisJSON).
+                kind = _KIND_VECTOR_LIST_FLOAT
                 needs_conversion = True
             elif (
                 isinstance(inner, type)
@@ -1242,12 +1316,21 @@ def build_conversion_plan(model_cls: Any) -> ConversionPlan:
             needs_conversion = True
             needs_dataclass_save = True
 
+        vector_type = None
+        vector_dim = None
+        if kind in (_KIND_VECTOR_LIST_FLOAT, _KIND_VECTOR_RAW_BYTES):
+            vector_opts = getattr(field_info, "vector_options", None)
+            if vector_opts is not None:
+                vector_type = vector_opts.type
+                vector_dim = vector_opts.dimension
+
         field_plans[field_name] = _FieldPlan(
             kind=kind,
             target_type=target_type,
             nested_plan=nested_plan,
             is_optional=is_optional,
-            vector_dtype=vector_dtype,
+            vector_type=vector_type,
+            vector_dim=vector_dim,
         )
 
     plan = ConversionPlan(
@@ -1255,7 +1338,6 @@ def build_conversion_plan(model_cls: Any) -> ConversionPlan:
         needs_conversion=needs_conversion,
         needs_empty_string_to_none=needs_empty_string_to_none,
         needs_dataclass_save=needs_dataclass_save,
-        needs_vector_packing=needs_vector_packing,
     )
     _CONVERSION_PLAN_CACHE[model_cls] = plan
     return plan
@@ -1280,79 +1362,40 @@ _EMPTY_PLAN = ConversionPlan(
     needs_conversion=False,
     needs_empty_string_to_none=False,
     needs_dataclass_save=False,
-    needs_vector_packing=False,
 )
 
 
-# Vector embeddings are stored in Redis hashes as raw little-endian float
-# bytes (the format RediSearch's ``VECTOR ... TYPE FLOAT32|FLOAT64`` schema
-# expects), and in Redis JSON as plain numeric arrays.
-_VECTOR_STRUCT_FORMATS = {"FLOAT32": "f", "FLOAT64": "d"}
+def _raw_vector_connection_error(
+    model_cls: Any, operation: str = "read"
+) -> RedisModelError:
+    """Error raised when a decoding connection cannot return vector blobs.
 
-
-def convert_vector_to_bytes(value: Any, vector_dtype: str = "FLOAT32") -> Any:
-    """Pack a ``list[float]`` embedding into little-endian float bytes.
-
-    ``value`` may be a list/tuple of numbers (packed), ``bytes``/``str``
-    (already packed, passed through), or ``None``. ``vector_dtype`` is the
-    ``VectorFieldOptions.TYPE`` name (``FLOAT32`` or ``FLOAT64``).
+    Raw vector fields (``bytes`` / ``list[float]`` with ``vector_options``)
+    are stored as packed binary in hashes. On a ``decode_responses=True``
+    connection the redis-py parser UTF-8-decodes every reply and fails
+    before library code runs, surfacing as a cryptic ``UnicodeDecodeError``.
+    Replace it with an error that states the contract and the fix.
     """
-    if value is None or isinstance(value, (bytes, bytearray)):
-        return value
-    if isinstance(value, str):
-        # Already-packed value from a decode_responses connection.
-        return value.encode("latin-1")
-    if isinstance(value, (list, tuple)):
-        fmt = _VECTOR_STRUCT_FORMATS.get(vector_dtype, "f")
-        return struct.pack(f"<{len(value)}{fmt}", *value)
-    return value
-
-
-def convert_bytes_to_vector(value: Any, vector_dtype: str = "FLOAT32") -> Any:
-    """Unpack little-endian float bytes back into a ``list[float]``.
-
-    Inverse of :func:`convert_vector_to_bytes`. ``list`` values (e.g. from
-    ``JSON.GET``) and ``None`` pass through unchanged; ``str`` values come
-    from ``decode_responses=True`` connections and are re-encoded as
-    ``latin-1`` before unpacking.
-    """
-    if value is None or isinstance(value, (list, tuple)):
-        return value
-    if isinstance(value, str):
-        value = value.encode("latin-1")
-    if isinstance(value, (bytes, bytearray)):
-        fmt = _VECTOR_STRUCT_FORMATS.get(vector_dtype, "f")
-        width = struct.calcsize(fmt)
-        count = len(value) // width
-        if count == 0:
-            return []
-        return list(struct.unpack(f"<{count}{fmt}", bytes(value[: count * width])))
-    return value
-
-
-def pack_hash_model_vectors(document: Any, plan: ConversionPlan) -> Any:
-    """Pack vector ``list[float]`` fields in a HashModel document to bytes.
-
-    Runs in ``HashModel.save`` *after* ``jsonable_encoder``, which cannot
-    handle arbitrary bytes (it decodes them as UTF-8). Non-vector fields
-    and models without vector fields are returned untouched.
-    """
-    if not plan.needs_vector_packing or not isinstance(document, dict):
-        return document
-    result = dict(document)
-    for key, fp in plan.fields.items():
-        if fp.kind == _KIND_VECTOR:
-            value = result.get(key)
-            if isinstance(value, (list, tuple)):
-                result[key] = convert_vector_to_bytes(value, fp.vector_dtype)
-    return result
+    fields = sorted(
+        name
+        for name, fp in get_conversion_plan(model_cls).fields.items()
+        if fp.kind in (_KIND_VECTOR_RAW_BYTES, _KIND_VECTOR_LIST_FLOAT)
+    )
+    return RedisModelError(
+        f"Cannot {operation} {model_cls.__name__} with this Redis connection: raw "
+        f"vector field(s) {fields} store binary data, which cannot be "
+        "returned by a connection created with decode_responses=True. "
+        "Fix: use get_redis_connection(decode_responses=False) for this model, "
+        "or set REDIS_OM_URL=redis://...?decode_responses=False, or set "
+        f"Meta.database = get_redis_connection(decode_responses=False) on {model_cls.__name__}."
+    )
 
 
 # Module-level imports kept lazy where they were already lazy in the legacy
 # converters (``base64``, ``uuid``) to avoid changing import-time cost.
 
 
-def _save_convert_value(kind: int, value: Any, target_type: Any) -> Any:
+def _save_convert_value(fp: "_FieldPlan", value: Any) -> Any:
     """Apply save-side scalar/list conversions for a single field value.
 
     Mirrors the union of ``convert_datetime_to_timestamp`` +
@@ -1360,6 +1403,7 @@ def _save_convert_value(kind: int, value: Any, target_type: Any) -> Any:
     field. Nested-model recursion is handled by the caller (it needs the
     nested plan).
     """
+    kind = fp.kind
     if kind == _KIND_DATETIME:
         # datetime/date → timestamp. ``value`` may be None for Optional
         # fields — pass through unchanged (matches legacy behaviour).
@@ -1381,6 +1425,21 @@ def _save_convert_value(kind: int, value: Any, target_type: Any) -> Any:
         if isinstance(value, bytes):
             return base64.b64encode(value).decode("ascii")
         return value
+    if kind == _KIND_VECTOR_RAW_BYTES:
+        # Vector blobs are stored verbatim — no base64 wrapping, no
+        # scalar coercion.  Pydantic's ``model_validate`` already
+        # guarantees the value is ``bytes`` (or ``None``); we pass
+        # it through so ``redis-py``'s HSET receives the raw buffer.
+        return value
+    if kind == _KIND_VECTOR_LIST_FLOAT:
+        # ``list[float]`` vector field — pack per the declared dtype so
+        # HSET receives the raw buffer RediSearch expects. ``None``
+        # (Optional vector) and non-list values pass through unchanged.
+        if value is None or not isinstance(value, list):
+            return value
+        if fp.vector_type is None or fp.vector_dim is None:
+            return value
+        return _pack_vector(value, fp.vector_type, fp.vector_dim)
     if kind == _KIND_DATETIME_LIST:
         if not isinstance(value, list):
             return value
@@ -1466,11 +1525,11 @@ def planned_save_conversions(document: Any, plan: ConversionPlan) -> Any:
             else:
                 result[key] = value
         else:
-            result[key] = _save_convert_value(fp.kind, value, fp.target_type)
+            result[key] = _save_convert_value(fp, value)
     return result
 
 
-def _load_convert_scalar(kind: int, value: Any, target_type: Any) -> Any:
+def _load_convert_scalar(fp: "_FieldPlan", value: Any) -> Any:
     """Apply load-side scalar/list conversions for a single field value.
 
     Mirrors the union of ``convert_timestamp_to_datetime`` +
@@ -1478,6 +1537,8 @@ def _load_convert_scalar(kind: int, value: Any, target_type: Any) -> Any:
     values pass through unchanged (matches legacy ``_timestamp_to_datetime``
     / ``base64.b64decode`` fallback behaviour).
     """
+    kind = fp.kind
+    target_type = fp.target_type
     if kind == _KIND_DATETIME:
         return _timestamp_to_datetime(value, target_type)
     if kind == _KIND_BYTES:
@@ -1487,6 +1548,23 @@ def _load_convert_scalar(kind: int, value: Any, target_type: Any) -> Any:
             except (ValueError, TypeError):
                 return value
         return value
+    if kind == _KIND_VECTOR_RAW_BYTES:
+        # Mirror save-side: the bytes we wrote come back as bytes
+        # already.  Nothing to do (Pydantic will re-validate the type).
+        return value
+    if kind == _KIND_VECTOR_LIST_FLOAT:
+        # The packed blob comes back as ``bytes`` with
+        # ``decode_responses=False`` — unpack it back to ``list[float]``.
+        # A ``str`` value means the connection used
+        # ``decode_responses=True``; re-encode via latin-1 as a best-effort
+        # round trip (mirrors upstream). Lists (already converted) and
+        # ``None`` pass through.
+        if value is None or not isinstance(value, (bytes, str)):
+            return value
+        if fp.vector_type is None or fp.vector_dim is None:
+            return value
+        blob = value if isinstance(value, bytes) else value.encode("latin-1")
+        return _unpack_vector(blob, fp.vector_type, fp.vector_dim)
     if kind == _KIND_DATETIME_LIST:
         if not isinstance(value, list):
             return value
@@ -1562,10 +1640,6 @@ def planned_load_conversions(
             result[key] = value
         elif kind == _KIND_NONE:
             result[key] = value
-        elif kind == _KIND_VECTOR:
-            # Unpack little-endian float bytes → list[float]. JsonModel
-            # values are already lists and pass through unchanged.
-            result[key] = convert_bytes_to_vector(value, fp.vector_dtype)
         elif kind == _KIND_NESTED_MODEL:
             nested_plan = fp.nested_plan
             if isinstance(value, dict) and nested_plan is not None:
@@ -1586,7 +1660,7 @@ def planned_load_conversions(
             else:
                 result[key] = value
         else:
-            result[key] = _load_convert_scalar(kind, value, fp.target_type)
+            result[key] = _load_convert_scalar(fp, value)
     return result
 
 
@@ -1693,14 +1767,19 @@ class FindQueryCursor:
             return results
         if self.cursor_id == 0:
             return []
-        raw_result = await self.model.db().execute_command(
-            "FT.CURSOR",
-            "READ",
-            self.index_name,
-            self.cursor_id,
-            "COUNT",
-            self.count,
-        )
+        try:
+            raw_result = await self.model.db().execute_command(
+                "FT.CURSOR",
+                "READ",
+                self.index_name,
+                self.cursor_id,
+                "COUNT",
+                self.count,
+            )
+        except UnicodeDecodeError as exc:
+            raise _raw_vector_connection_error(
+                self.model, "execute FT.CURSOR READ"
+            ) from exc
         protocol = protocol_version(self.model.db())
         aggregate_result, self.cursor_id = self._split_cursor_result(
             raw_result, protocol=protocol
@@ -2587,6 +2666,62 @@ class FindQuery:
 
         return result
 
+    def _has_raw_vector_fields(self) -> bool:
+        """Whether the target model declares any raw-blob vector fields."""
+        return any(
+            fp.kind in (_KIND_VECTOR_RAW_BYTES, _KIND_VECTOR_LIST_FLOAT)
+            for fp in get_conversion_plan(self.model).fields.values()
+        )
+
+    async def _hydrate_hash_results(
+        self, raw_result: Any, protocol: Optional[int] = None
+    ) -> List["RedisModel"]:
+        """Build HashModel query results from their hashes, not the search rows.
+
+        Hash rows are flat (lossily decoded) strings that corrupt raw vector
+        blobs, and KNN ``$`` returns nothing on hash indexes (only the score).
+        So: extract keys + scores from the search response, fetch the hashes
+        via ``get_many`` (one pipelined round-trip, blobs intact), re-attach
+        scores. Mirrors ``iter_cursor``.
+        """
+        _, rows = split_search_response(raw_result, protocol=protocol)
+        score_field = self.knn.score_field if self.knn else None
+        pairs: List[Tuple[str, Any]] = []  # (redis key, KNN score or None)
+        for row in rows:
+            key = None
+            score = None
+            for i in range(0, len(row) - 1, 2):
+                name = _decode_token_value(row[i])
+                # RESP2 search rows carry the document key as ``__key``;
+                # RESP3 rows carry it as ``id`` (see ``_resp3_row_to_key_fields``).
+                if name in ("__key", "id") and key is None:
+                    key = _decode_token_value(row[i + 1])
+                elif score_field is not None and name == score_field:
+                    score = row[i + 1]
+            if key is not None:
+                pairs.append((key, score))
+        if not pairs:
+            return []
+
+        pks = [FindQueryCursor._pk_from_redis_key(self.model, key) for key, _ in pairs]
+        docs = await self.model.get_many(pks)
+        by_key = {doc.key(): doc for doc in docs}
+
+        results: List[RedisModel] = []
+        for key, score in pairs:
+            doc = by_key.get(key)
+            if doc is None:
+                # The document was deleted between the search and the fetch.
+                continue
+            if score is not None and score_field is not None:
+                # Mirror ``from_redis``: strip the leading underscore from the
+                # default ``__<field>_score`` alias before attaching.
+                attr = score_field[1:] if score_field.startswith("__") else score_field
+                if hasattr(doc, attr):
+                    setattr(doc, attr, float(score))
+            results.append(doc)
+        return results
+
     async def execute(
         self, exhaust_results=True, return_raw_result=False, return_query_args=False
     ):
@@ -2610,7 +2745,14 @@ class FindQuery:
                 i_dialect = args.index("DIALECT") + 1
                 if int(args[i_dialect]) < 2:
                     args[i_dialect] = "2"
-            args += ["RETURN", "2", "$", self.knn.score_field]
+            if issubclass(self.model, HashModel):
+                # ``$`` is a JSONPath identifier that returns nothing for
+                # ON HASH indexes.  Return only the synthesised KNN score
+                # field — the model itself is hydrated from its hash by
+                # ``_hydrate_hash_results`` so raw vector blobs survive.
+                args += ["RETURN", "1", self.knn.score_field]
+            else:
+                args += ["RETURN", "2", "$", self.knn.score_field]
 
         if self.nocontent:
             args.append("NOCONTENT")
@@ -2634,12 +2776,30 @@ class FindQuery:
 
         # If the offset is greater than 0, we're paginating through a result set,
         # so append the new results to results already in the cache.
-        raw_result = await self.model.db().execute_command(*args)
+        try:
+            raw_result = await self.model.db().execute_command(*args)
+        except UnicodeDecodeError as exc:
+            # Raw vector blobs in search results are not valid UTF-8.
+            # This can happen on decode_responses=True connections.
+            raise _raw_vector_connection_error(self.model, "execute FT.SEARCH") from exc
         if return_raw_result:
             return raw_result
         protocol = protocol_version(self.model.db())
         count, _ = split_search_response(raw_result, protocol=protocol)
-        results = self.model.from_redis(raw_result, protocol=protocol)
+        # HashModels with raw-blob vector fields are hydrated from their
+        # hashes by primary key instead of the inline FT.SEARCH content:
+        # the wire rows carry field values as flat (lossily decoded) strings,
+        # which would corrupt binary vector payloads, and KNN queries on
+        # hash indexes return no ``$`` document at all.
+        hydrate_hash = (
+            not self.nocontent
+            and issubclass(self.model, HashModel)
+            and self._has_raw_vector_fields()
+        )
+        if hydrate_hash:
+            results = await self._hydrate_hash_results(raw_result, protocol=protocol)
+        else:
+            results = self.model.from_redis(raw_result, protocol=protocol)
         self._model_cache += results
 
         if not exhaust_results:
@@ -2773,7 +2933,12 @@ class FindQuery:
         if max_idle is not None:
             args += ["MAXIDLE", str(max_idle)]
 
-        raw_result = await self.model.db().execute_command(*args)
+        try:
+            raw_result = await self.model.db().execute_command(*args)
+        except UnicodeDecodeError as exc:
+            raise _raw_vector_connection_error(
+                self.model, "execute FT.AGGREGATE"
+            ) from exc
         protocol = protocol_version(self.model.db())
         aggregate_result, cursor_id = FindQueryCursor._split_cursor_result(
             raw_result, protocol=protocol
@@ -3303,6 +3468,12 @@ class VectorFieldOptions:
     class TYPE(Enum):
         FLOAT32 = "FLOAT32"
         FLOAT64 = "FLOAT64"
+        # RediSearch v2.4+ supports compact numeric formats. See the RediSearch
+        # vector-index docs for the supported ``TYPE`` values and the byte
+        # layout each one expects in ``<field>`` hash blobs.
+        FLOAT16 = "FLOAT16"
+        BFLOAT16 = "BFLOAT16"
+        INT8 = "INT8"
 
     class DISTANCE_METRIC(Enum):
         L2 = "L2"
@@ -4234,36 +4405,29 @@ class HashModel(RedisModel, abc.ABC):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
-        def has_vector_options(name: str) -> bool:
-            # Vector embedding fields (``list[float]`` with
-            # ``Field(vector_options=...)``) are exempt from the
-            # no-list-fields rule: HashModel packs them to float bytes
-            # on save (see ``pack_hash_model_vectors``).
-            # At ``__init_subclass__`` time ``model_fields`` only contains
-            # inherited fields, so the field's own ``FieldInfo`` must be
-            # found in the class namespace (it is the default value).
-            candidates = [cls.__dict__.get(name), cls.model_fields.get(name)]
-            for candidate in candidates:
-                if candidate is None:
-                    continue
-                if getattr(candidate, "vector_options", None) is not None:
-                    return True
-                # Pydantic may wrap our FieldInfo in ``Annotated`` metadata.
-                metadata = getattr(candidate, "metadata", None)
-                if any(
-                    getattr(item, "vector_options", None) is not None
-                    for item in (metadata or ())
-                ):
-                    return True
-            return False
+        # ``model_fields`` is not yet populated with this subclass's own
+        # fields at ``__init_subclass__`` time — it only contains the
+        # fields inherited from the parent.  To find vector fields
+        # declared on the subclass itself, look at the FieldInfo values
+        # stored on the class's own ``__dict__`` (these are the raw
+        # ``Field()`` defaults the user wrote on the class body).
+        vector_field_names = {
+            name
+            for name, default in cls.__dict__.items()
+            if getattr(default, "vector_options", None) is not None
+        }
 
         if hasattr(cls, "__annotations__"):
             for name, field_type in cls.__annotations__.items():
+                if name in vector_field_names:
+                    # Vector fields store raw bytes regardless of the
+                    # declared container annotation (e.g. ``bytes`` or
+                    # ``list[float]``-shaped user hint) — skip the
+                    # container check for them.
+                    continue
                 origin = get_origin(field_type)
                 for typ in (Set, Mapping, List):
                     if isinstance(origin, type) and issubclass(origin, typ):  # type: ignore
-                        if issubclass(origin, List) and has_vector_options(name):
-                            continue
                         raise RedisModelError(
                             f"HashModels cannot index set, list, "
                             f"or mapping fields. Field: {name}"
@@ -4282,13 +4446,15 @@ class HashModel(RedisModel, abc.ABC):
                     )
 
         for name, field in cls.model_fields.items():
+            if name in vector_field_names:
+                # Vector fields are stored as raw binary blobs in the
+                # hash; the scalar/embedded-model checks below don't apply.
+                continue
             outer_type = outer_type_or_annotation(field)
             origin = get_origin(outer_type)
             if origin:
                 for typ in (Set, Mapping, List):
                     if isinstance(origin, type) and issubclass(origin, typ):  # type: ignore
-                        if issubclass(origin, List) and has_vector_options(name):
-                            continue
                         raise RedisModelError(
                             f"HashModels cannot index set, list, "
                             f"or mapping fields. Field: {name}"
@@ -4315,17 +4481,27 @@ class HashModel(RedisModel, abc.ABC):
 
         # Get model data and convert datetime/bytes/dataclass fields using
         # the pre-computed field-aware conversion plan (single pass).
-        plan = get_conversion_plan(type(self))
         document = self.model_dump()
+        plan = get_conversion_plan(type(self))
         document = planned_save_conversions(document, plan)
+        # Capture the raw bytes for vector fields (both the ``bytes``-annotated
+        # pass-through kind and the ``list[float]`` kind, which is now packed)
+        # so we can re-insert them after ``jsonable_encoder`` — which would
+        # otherwise base64-encode them and break RediSearch's native dtype
+        # layout.
+        raw_vector_blobs: Dict[str, bytes] = {}
+        for fname, fp in plan.fields.items():
+            if fp.kind in (
+                _KIND_VECTOR_RAW_BYTES,
+                _KIND_VECTOR_LIST_FLOAT,
+            ) and isinstance(document.get(fname), bytes):
+                raw_vector_blobs[fname] = document[fname]
 
-        # Then apply jsonable encoding for other types
-        document = jsonable_encoder(document)
-
-        # Pack vector ``list[float]`` fields into little-endian float bytes.
-        # This must happen *after* ``jsonable_encoder`` (it decodes bytes as
-        # UTF-8 and would corrupt or crash on packed floats).
-        document = pack_hash_model_vectors(document, plan)
+        # Then apply jsonable encoding for other types — pass an ``exclude``
+        # set so the raw-blob vector fields bypass the base64 encoder.
+        document = jsonable_encoder(document, exclude=set(raw_vector_blobs) or None)
+        for fname, blob in raw_vector_blobs.items():
+            document[fname] = blob
 
         # filter out values which are `None` because they are not valid in a HSET
         document = {k: v for k, v in document.items() if v is not None}
@@ -4358,12 +4534,41 @@ class HashModel(RedisModel, abc.ABC):
 
     @classmethod
     async def get(cls: Type["Model"], pk: Any) -> "Model":
-        document = await cls.db().hgetall(cls.make_primary_key(pk))
+        try:
+            document = await cls.db().hgetall(cls.make_primary_key(pk))
+        except UnicodeDecodeError as exc:
+            # Raw vector blobs are not valid UTF-8, so a connection created
+            # with decode_responses=True fails inside the parser before our
+            # code ever runs. Surface an actionable error instead.
+            raise _raw_vector_connection_error(cls, "hgetall") from exc
         if not document:
             raise NotFoundError
         # Apply load-side conversions (empty-string → None for Optional,
         # base64 → bytes) using the field-aware plan.
         plan = get_conversion_plan(cls)
+        # Capture vector-field names so the ``decode_redis_value``
+        # fallback (triggered when the connection returns ``bytes``
+        # keys/values with ``decode_responses=False``) leaves the raw
+        # vector blobs untouched.
+        vector_field_names = {
+            fname
+            for fname, fp in plan.fields.items()
+            if fp.kind in (_KIND_VECTOR_RAW_BYTES, _KIND_VECTOR_LIST_FLOAT)
+        }
+        # Normalise ``bytes`` keys to ``str`` when the connection was
+        # created with ``decode_responses=False``. Without this, Pydantic v2
+        # rejects the dict (``TypeError: keywords must be strings``) and
+        # ``restore_missing_pk`` mis-detects ``pk`` as missing (it looks
+        # up the literal ``str`` key ``"pk"``), which would create a
+        # duplicate ``pk`` field once the bytes key is decoded. The bytes
+        # values are intentionally left untouched — in particular the
+        # raw vector blobs survive the normalisation and feed directly
+        # into Pydantic's ``bytes`` validator below.
+        if document and any(isinstance(k, bytes) for k in document):
+            document = {
+                (k.decode("utf-8") if isinstance(k, bytes) else k): v
+                for k, v in document.items()
+            }
         document = planned_load_conversions(document, plan, for_hash=True)
         document = restore_missing_pk(cls, document, pk)
         try:
@@ -4375,7 +4580,17 @@ class HashModel(RedisModel, abc.ABC):
                 "Attempting to decode response using the encoding set on "
                 f"model class ({cls.__class__}. Encoding: {cls.Meta.encoding}."
             )
+            # Snapshot raw vector blobs before the fallback UTF-8 decodes
+            # the whole dict (the decoder would corrupt raw binary blobs).
+            vector_blobs_fb: Dict[str, bytes] = {}
+            for vname in vector_field_names:
+                raw_v = document.get(vname)
+                if isinstance(raw_v, bytes):
+                    vector_blobs_fb[vname] = raw_v
+                    document.pop(vname, None)
             document = decode_redis_value(document, cls.Meta.encoding)
+            for vname, blob in vector_blobs_fb.items():
+                document[vname] = blob  # type: ignore[call-overload,index,assignment]
             document = planned_load_conversions(document, plan, for_hash=True)
             document = restore_missing_pk(cls, document, pk)
             result = cls.model_validate(document)
@@ -4395,21 +4610,53 @@ class HashModel(RedisModel, abc.ABC):
             for key in keys:
                 pipeline.hgetall(key)
             return []  # caller will execute the pipeline
-        db = cls.db().pipeline(transaction=False)
-        for key in keys:
-            db.hgetall(key)
-        results = await db.execute()
+        try:
+            db = cls.db().pipeline(transaction=False)
+            for key in keys:
+                db.hgetall(key)
+            results = await db.execute()
+        except UnicodeDecodeError as exc:
+            # Raw vector blobs are not valid UTF-8, so a connection created
+            # with decode_responses=True fails inside the parser before our
+            # code ever runs. Surface an actionable error instead.
+            raise _raw_vector_connection_error(cls, "get_many (pipeline)") from exc
         plan = get_conversion_plan(cls)
+        # Vector-field names must survive the ``decode_responses=False`` path
+        # below — the TypeError fallback decodes the whole document, which
+        # would corrupt raw binary blobs (mirrors ``HashModel.get``).
+        vector_field_names = {
+            fname
+            for fname, fp in plan.fields.items()
+            if fp.kind in (_KIND_VECTOR_RAW_BYTES, _KIND_VECTOR_LIST_FLOAT)
+        }
         models = []
         for requested_pk, document in zip(pks, results):
             if not document:
                 continue
+            # Normalise ``bytes`` keys to ``str`` when the connection was
+            # created with ``decode_responses=False`` — Pydantic v2 rejects
+            # bytes keys with ``TypeError: keywords must be strings``.
+            if any(isinstance(k, bytes) for k in document):
+                document = {
+                    (k.decode("utf-8") if isinstance(k, bytes) else k): v
+                    for k, v in document.items()
+                }
             document = planned_load_conversions(document, plan, for_hash=True)
             document = restore_missing_pk(cls, document, requested_pk)
             try:
                 models.append(cls.model_validate(document))
             except TypeError:
+                # Snapshot raw vector blobs before the fallback UTF-8 decodes
+                # the whole dict (the decoder would corrupt raw binary blobs).
+                vector_blobs: Dict[str, bytes] = {}
+                for vname in vector_field_names:
+                    raw_v = document.get(vname)
+                    if isinstance(raw_v, bytes):
+                        vector_blobs[vname] = raw_v
+                        document.pop(vname, None)
                 document = decode_redis_value(document, cls.Meta.encoding)
+                for vname, blob in vector_blobs.items():
+                    document[vname] = blob  # type: ignore[call-overload,index,assignment]
                 document = planned_load_conversions(document, plan, for_hash=True)
                 document = restore_missing_pk(cls, document, requested_pk)
                 models.append(cls.model_validate(document))
@@ -4687,6 +4934,25 @@ class HashModel(RedisModel, abc.ABC):
                 schema = f"{name} {vector_options.schema}"
             else:
                 schema = f"{name} NUMERIC"
+        elif typ is bytes:
+            # ``bytes`` is the storage shape Redis OM uses for raw-blob
+            # vector fields on HashModel (no JSON/base64 wrapping). If
+            # ``vector_options`` is set, emit a VECTOR schema; otherwise
+            # the field is an ordinary bytes payload and falls through to
+            # the TAG default at the bottom of this method.
+            vector_options_bytes: Optional[VectorFieldOptions] = getattr(
+                field_info, "vector_options", None
+            )
+            if vector_options_bytes:
+                schema = f"{name} {vector_options_bytes.schema}"
+            else:
+                # Mirror the trailing default below so this branch always
+                # binds ``schema`` (a plain ``bytes`` field without
+                # ``vector_options`` is rare but is allowed on HashModel).
+                separator = getattr(
+                    field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
+                )
+                schema = f"{name} TAG SEPARATOR {separator}"
         elif typ is Coordinates:
             schema = f"{name} GEO"
         elif typ in (datetime.date, datetime.datetime):

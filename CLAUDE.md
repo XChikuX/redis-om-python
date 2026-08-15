@@ -115,6 +115,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 
 * **Database:** Lazy `Meta.database` resolution, callable providers, runtime reassignment.
 * **Core CRUD:** `Meta.default_ttl`, embedded JSON sorting (dotted/underscore paths), bulk `get_many()`, binary `bytes` round-tripping (base64), explicit pipeline composition.
+* **HashModel vector fields:** `bytes` (raw blob) and `list[float]` (auto-packed per `VectorFieldOptions.TYPE`) vector fields are stored as raw binary in hashes — no JSON-array/base64 wrapping — so FLOAT16/BFLOAT16/INT8 embeddings stay compact.
 * **Query Capabilities:** Enum numeric queries, NUMERIC `IN`/`NOT_IN`, custom `TAG` separators, embedded model query prefix isolation, KNN + OR syntax wrapping.
 * **Explicit Logicals:** `Or`, `And`, `Not` now render true RediSearch syntax (`|`, space, `-`). Resolves to strings; delegates to `.query` for end-to-end `Model.find()`.
 * **Cluster & Integrity:** Index health warnings (`FT.INFO`), Cluster-safe migrations, RESP3 parity (protocol-aware parsers, URL kwarg passthrough).

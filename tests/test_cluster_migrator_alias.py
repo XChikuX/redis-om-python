@@ -48,6 +48,7 @@ import redis.asyncio as aioredis
 from aredis_om import EmbeddedJsonModel, Field, JsonModel, Migrator
 from aredis_om.model.migrations.migrator import (
     MigrationAction,
+    _list_indexes,
     physical_index_name,
 )
 from aredis_om.model.model import model_registry
@@ -58,7 +59,7 @@ from .conftest import py_test_mark_asyncio
 # MUST run on a single xdist worker to avoid cross-test alias races. They
 # are additionally grouped with the rest of the ``cluster`` suite.
 pytestmark = [
-    py_test_mark_asyncio,
+    pytest.mark.asyncio,
     pytest.mark.xdist_group(name="cluster"),
 ]
 
@@ -97,7 +98,30 @@ class _Address(EmbeddedJsonModel):
     city: str = Field(index=True)
 
 
-class _ClusterPersonV1(JsonModel):
+# Active cluster connection injected by ``cluster_conn`` fixture.
+# Models resolve DB through this provider so operations hit the CLUSTER (port 7001).
+# Without it, tests silently fall back to ``REDIS_OM_URL`` (standalone), exercising wrong topology while appearing to pass.
+_active_cluster_conn = None
+
+
+def _cluster_db():
+    if _active_cluster_conn is None:
+        raise RuntimeError(
+            "cluster database requested outside of the cluster_conn fixture"
+        )
+    return _active_cluster_conn
+
+
+class _ClusterPersonBase(JsonModel, abc.ABC):
+    # Only ``database`` is inherited by subclasses (ModelMeta copies it in
+    # ``__new__``); name-derived settings like ``index_name`` and
+    # ``model_key_prefix`` are deliberately reset for Meta-less subclasses,
+    # so each version model below redeclares them.
+    class Meta:
+        database = _cluster_db
+
+
+class _ClusterPersonV1(_ClusterPersonBase):
     name: str = Field(index=True)
     address: _Address
 
@@ -108,7 +132,7 @@ class _ClusterPersonV1(JsonModel):
         _test_only = True
 
 
-class _ClusterPersonV2(JsonModel):
+class _ClusterPersonV2(_ClusterPersonBase):
     name: str = Field(index=True)
     height: int = Field(index=True)
     address: _Address
@@ -178,20 +202,10 @@ def _migrations_for(migrator: Migrator, alias: str) -> List:
 
 
 async def _ft_list(conn) -> List[str]:
-    result = await conn.execute_command("FT._LIST")
-    names: List[str] = []
-    for item in result:
-        if isinstance(item, bytes):
-            names.append(item.decode("utf-8"))
-        elif isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, (list, tuple)) and item:
-            first = item[0]
-            if isinstance(first, bytes):
-                names.append(first.decode("utf-8"))
-            elif isinstance(first, str):
-                names.append(first)
-    return names
+    # Delegate to the migrator's own lister: multi-node ``FT._LIST`` replies
+    # arrive as ``{node: [indexes]}`` on the async cluster client, and this
+    # file's assertions must see the same normalized view the migrator sees.
+    return await _list_indexes(conn)
 
 
 async def _alias_target(conn, name: str) -> Optional[str]:
@@ -270,11 +284,27 @@ async def _wait_for_alias(
 
 @pytest_asyncio.fixture
 async def cluster_conn():
+    global _active_cluster_conn
     conn = aioredis.RedisCluster(
         host="localhost", port=CLUSTER_PORT, decode_responses=True
     )
+    _active_cluster_conn = conn
+    _rearm_database_provider()
     yield conn
+    _active_cluster_conn = None
+    _rearm_database_provider()
     await conn.aclose()
+
+
+def _rearm_database_provider() -> None:
+    # ``RedisModel.db()`` replaces a callable ``Meta.database`` with the
+    # resolved connection the first time a model touches Redis. Re-arm the
+    # provider around every test so each one resolves the fresh connection
+    # installed by ``cluster_conn`` (and a closed connection is never
+    # reused across tests).
+    for model in (_ClusterPersonBase, _ClusterPersonV1, _ClusterPersonV2):
+        model.Meta.database = _cluster_db
+        model._meta.database = _cluster_db
 
 
 @pytest_asyncio.fixture
@@ -429,8 +459,11 @@ async def test_cluster_schema_change_swaps_alias_without_data_loss(
 
         # CRITICAL: every V1 document survived across the shards.
         assert await _ClusterPersonV2.find().count() == 5
-        got = await _ClusterPersonV2.find(_ClusterPersonV2.name == "Pre2").first()
-        assert got.pk == "pre-2"
+        # Reading the raw JSON value avoids V2 validation on the missing
+        # ``height`` field (docs were written by V1 — same approach as the
+        # standalone sibling test in test_migrator_alias.py).
+        raw_name = await _ClusterPersonV2.get_value("pre-2", "name")
+        assert raw_name == "Pre2"
     finally:
         _restore_registry(snapshot)
 
@@ -706,8 +739,10 @@ async def test_cluster_concurrent_schema_change_multiple_versions(clean_cluster_
     finally:
         _restore_registry(snapshot)
 
-    # Define V3 on the fly (adds a new indexed field).
-    class _ClusterPersonV3(JsonModel):
+    # Define V3 on the fly (adds a new indexed field). The cluster database
+    # provider is inherited from _ClusterPersonBase; name-derived settings
+    # must be redeclared.
+    class _ClusterPersonV3(_ClusterPersonBase):
         name: str = Field(index=True)
         height: int = Field(index=True)
         weight: int = Field(index=True)  # new field
@@ -717,6 +752,7 @@ async def test_cluster_concurrent_schema_change_multiple_versions(clean_cluster_
             zero_downtime_migrations = True
             index_name = ALIAS
             model_key_prefix = DOC_PREFIX
+            _test_only = True
 
     snapshot = _isolate_registry(_ClusterPersonV3)
     try:

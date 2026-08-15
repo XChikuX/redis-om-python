@@ -50,12 +50,12 @@ jobs:
               #----------------------------------------------
             - name: Install dependencies
               if: steps.cached-venv.outputs.cache-hit != 'true'
-              run: uv sync --extra dev
+              run: uv sync --group dev
               #----------------------------------------------
               # install your root project, if required
               #----------------------------------------------
             - name: Install library
-              run: uv sync --extra dev
+              run: uv sync --group dev
               #----------------------------------------------
               #              run test suite
               #----------------------------------------------

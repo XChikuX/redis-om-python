@@ -12,6 +12,7 @@ import pytest
 
 from aredis_om import Field, HashModel, JsonModel, Migrator, get_redis_connection
 from aredis_om.model.model import model_registry
+from aredis_om.model.resp3_shim import split_cursor_response, split_search_response
 
 from .conftest import py_test_mark_asyncio, skip_redis_py_lt_8
 
@@ -110,6 +111,53 @@ def legacy_false_resp3_redis():
         url="redis://localhost:6380?decode_responses=True",
         legacy_responses=False,
     )
+
+
+# ── Shim trusts the wire shape over the claimed protocol ────────────────
+
+
+class TestShimTrustsWireShape:
+    """Unit tests: parsing must follow the raw response shape.
+
+    ``protocol_version`` can misreport in either direction depending on the
+    redis-py version and client type (redis-py < 8, pinned by redisvl,
+    defaults to RESP2 — sync ``RedisCluster`` omits ``protocol`` from its
+    connection kwargs entirely; redis-py >= 8 auto-negotiates RESP3 without
+    recording it). The shim must therefore never let an explicit ``protocol``
+    hint override the shape of ``raw`` itself.
+    """
+
+    def test_resp2_list_with_protocol_3_parsed_as_resp2(self):
+        # Regression: sync RedisCluster on redis-py 7.x reports protocol 3
+        # while actually negotiating RESP2 — this used to raise
+        # AttributeError: 'list' object has no attribute 'get'.
+        raw = [2, "k1", ["name", "a"], "k2", ["name", "b"]]
+        total, rows = split_search_response(raw, protocol=3)
+        assert total == 2
+        assert len(rows) == 2
+        assert rows[0][:2] == ["__key", "k1"]
+        assert rows[0][2:] == ["name", "a"]
+
+    def test_resp3_dict_with_protocol_2_parsed_as_resp3(self):
+        raw = {
+            "total_results": 1,
+            "results": [{"id": "k1", "extra_attributes": {"name": "a"}, "values": []}],
+        }
+        total, rows = split_search_response(raw, protocol=2)
+        assert total == 1
+        assert rows[0][:2] == ["id", "k1"]
+
+    def test_aggregate_resp2_list_with_protocol_3(self):
+        raw = [1, ["__key", "k1", "name", "a"]]
+        total, rows = split_search_response(raw, protocol=3, command="aggregate")
+        assert total == 1
+        assert rows == [["__key", "k1", "name", "a"]]
+
+    def test_cursor_resp2_list_with_protocol_3(self):
+        raw = [[1, ["__key", "k1", "name", "a"]], 42]
+        rows, cursor_id = split_cursor_response(raw, protocol=3)
+        assert cursor_id == 42
+        assert rows == [["__key", "k1", "name", "a"]]
 
 
 # ── HashModel CRUD parity ────────────────────────────────────────────────

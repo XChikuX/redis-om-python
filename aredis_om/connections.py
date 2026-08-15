@@ -5,6 +5,11 @@ from . import redis
 
 
 def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
+    # Strip caller-provided kwargs from URL query string to prevent
+    # query-string arguments from overriding explicit arguments.
+    # Library defaults still defer to URL; only explicit caller args are stripped.
+    explicit_kwargs = set(kwargs) - {"url"}
+
     # Decode from UTF-8 by default
     if "decode_responses" not in kwargs:
         kwargs["decode_responses"] = True
@@ -27,26 +32,37 @@ def get_redis_connection(**kwargs) -> Union[redis.Redis, redis.RedisCluster]:
 
     if cluster:
         if url:
-            # Strip the cluster=true query parameter from the URL so it
-            # doesn't get forwarded to RedisCluster.__init__().
-            clean_url = _strip_cluster_param(url)
+            # Strip the cluster=true switch (consumed above) plus any
+            # explicitly-passed kwargs so they win over URL query params.
+            clean_url = _strip_url_params(url, explicit_kwargs | {"cluster"})
             return redis.RedisCluster.from_url(clean_url, **kwargs)
         return redis.RedisCluster(**kwargs)
     else:
         if url:
-            return redis.Redis.from_url(url, **kwargs)
+            clean_url = _strip_url_params(url, explicit_kwargs)
+            return redis.Redis.from_url(clean_url, **kwargs)
         return redis.Redis(**kwargs)
 
 
 def _strip_cluster_param(url: str) -> str:
     """Remove 'cluster=true' from URL query parameters."""
+    return _strip_url_params(url, {"cluster"})
+
+
+def _strip_url_params(url: str, names) -> str:
+    """Remove the named keys from a URL's query string.
+
+    Used to keep explicit ``get_redis_connection(...)`` kwargs from being
+    overridden by query-string parameters in the URL (redis-py otherwise
+    lets the query string win — see ``get_redis_connection``).
+    """
     from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     parsed = urlparse(url)
     params = [
         (key, value)
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key.lower() != "cluster"
+        if key.lower() not in names
     ]
     new_query = urlencode(params, doseq=True)
     return urlunparse(parsed._replace(query=new_query))
@@ -95,7 +111,12 @@ def protocol_version(connection) -> int:
                     return proto
 
     # RedisCluster has no top-level connection_pool; use get_connection_kwargs().
-    # If protocol was not explicitly set, redis-py defaults to RESP3 (3).
+    # Protocol defaults are version-dependent: redis-py < 8 (pinned by redisvl)
+    # defaults every connection to RESP2, while redis-py >= 8 auto-negotiates
+    # RESP3 against newer servers without recording it in the kwargs. With the
+    # kwarg absent we report RESP2 (the < 8 default); the RESP3 shim sniffs
+    # the actual wire shape regardless, so a mis-reported version here can
+    # never corrupt response parsing.
     if pool is None:
         conn_kwargs_fn = getattr(connection, "get_connection_kwargs", None)
         if callable(conn_kwargs_fn):
@@ -103,7 +124,6 @@ def protocol_version(connection) -> int:
             version = _coerce(kwargs.get("protocol"))
             if version in (2, 3):
                 return version
-            # protocol not explicitly set → redis-py defaults to RESP3
-            return 3
+            return 2
 
     return 2

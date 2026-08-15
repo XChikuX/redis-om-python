@@ -57,6 +57,7 @@ sync: $(INSTALL_STAMP)
 	$(UV) sync --group dev
 	$(UV) run python make_sync.py
 	$(UV) run ruff format $(SYNC_NAME)
+	$(UV) run ruff format tests_sync
 
 .PHONY: lint
 lint: $(INSTALL_STAMP) sync
@@ -147,9 +148,9 @@ redis_cluster:
 
 .PHONY: test_cluster
 test_cluster: $(INSTALL_STAMP) sync redis redis_cluster
-	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests/test_cluster_operations.py --cov-report term-missing --cov $(NAME)
-	if [ -e tests_sync/test_cluster_operations.py ]; then \
-		REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_operations.py --cov-append --cov-report term-missing --cov $(SYNC_NAME); \
+	REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests/test_cluster_*.py --cov-report term-missing --cov $(NAME)
+	if ls tests_sync/test_cluster_*.py >/dev/null 2>&1; then \
+		REDIS_OM_URL=$(REDIS_OM_URL) $(UV) run pytest -vv ./tests_sync/test_cluster_*.py --cov-append --cov-report term-missing --cov $(SYNC_NAME); \
 	fi
 	$(CLUSTER_COMPOSE) down
 	$(DOCKER_COMPOSE) down

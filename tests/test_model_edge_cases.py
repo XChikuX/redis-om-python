@@ -160,7 +160,9 @@ def test_list_inner_type_tuple():
 def test_save_convert_value_datetime_naive():
     """Naive datetime (no tzinfo) gets UTC and returns timestamp."""
     naive_dt = datetime.datetime(2024, 6, 15, 12, 0, 0)
-    result = _save_convert_value(_KIND_DATETIME, naive_dt, datetime.datetime)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME, target_type=datetime.datetime), naive_dt
+    )
     assert isinstance(result, float)
     # Naive datetime gets UTC timezone added, timestamp should be close to expected
     # 2024-06-15 12:00:00 UTC
@@ -173,14 +175,18 @@ def test_save_convert_value_datetime_naive():
 def test_save_convert_value_datetime_aware():
     """Aware datetime returns timestamp (tz preserved to UTC)."""
     aware_dt = datetime.datetime(2024, 6, 15, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    result = _save_convert_value(_KIND_DATETIME, aware_dt, datetime.datetime)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME, target_type=datetime.datetime), aware_dt
+    )
     assert isinstance(result, float)
 
 
 def test_save_convert_value_date():
     """date (not datetime) is converted to UTC midnight timestamp."""
     d = datetime.date(2024, 6, 15)
-    result = _save_convert_value(_KIND_DATETIME, d, datetime.date)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME, target_type=datetime.date), d
+    )
     assert isinstance(result, float)
     # Date gets combined with time.min (00:00:00) and UTC timezone
     expected = datetime.datetime.combine(
@@ -191,13 +197,17 @@ def test_save_convert_value_date():
 
 def test_save_convert_value_datetime_none():
     """None datetime passes through unchanged."""
-    result = _save_convert_value(_KIND_DATETIME, None, datetime.datetime)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME, target_type=datetime.datetime), None
+    )
     assert result is None
 
 
 def test_save_convert_value_bytes():
     """bytes are base64-encoded to ascii string."""
-    result = _save_convert_value(_KIND_BYTES, b"hello", bytes)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_BYTES, target_type=bytes), b"hello"
+    )
     assert isinstance(result, str)
     decoded = base64.b64decode(result)
     assert decoded == b"hello"
@@ -205,7 +215,9 @@ def test_save_convert_value_bytes():
 
 def test_save_convert_value_bytes_non_bytes():
     """Non-bytes value in KIND_BYTES passes through."""
-    result = _save_convert_value(_KIND_BYTES, "not_bytes", bytes)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_BYTES, target_type=bytes), "not_bytes"
+    )
     assert result == "not_bytes"
 
 
@@ -215,7 +227,9 @@ def test_save_convert_value_datetime_list():
         datetime.datetime(2024, 6, 15, 12, 0, 0),
         datetime.datetime(2024, 6, 16, 12, 0, 0),
     ]
-    result = _save_convert_value(_KIND_DATETIME_LIST, dt_list, datetime.datetime)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME_LIST, target_type=datetime.datetime), dt_list
+    )
     assert isinstance(result, list)
     assert all(isinstance(x, float) for x in result)
     assert len(result) == 2
@@ -227,7 +241,9 @@ def test_save_convert_value_datetime_list_mixed():
         datetime.datetime(2024, 6, 15, 12, 0, 0),
         "not_a_datetime",
     ]
-    result = _save_convert_value(_KIND_DATETIME_LIST, dt_list, datetime.datetime)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_DATETIME_LIST, target_type=datetime.datetime), dt_list
+    )
     assert result[0] != dt_list[0]  # converted
     assert result[1] == "not_a_datetime"  # passed through
 
@@ -235,7 +251,9 @@ def test_save_convert_value_datetime_list_mixed():
 def test_save_convert_value_bytes_list():
     """List[bytes] base64-encodes each item."""
     b_list = [b"a", b"b"]
-    result = _save_convert_value(_KIND_BYTES_LIST, b_list, bytes)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_BYTES_LIST, target_type=bytes), b_list
+    )
     assert isinstance(result, list)
     assert all(isinstance(x, str) for x in result)
     assert base64.b64decode(result[0]) == b"a"
@@ -244,7 +262,9 @@ def test_save_convert_value_bytes_list():
 
 def test_save_convert_value_kind_none_returns_value():
     """Unknown kind returns value unchanged."""
-    result = _save_convert_value(_KIND_NONE, "anything", None)
+    result = _save_convert_value(
+        _FieldPlan(kind=_KIND_NONE, target_type=None), "anything"
+    )
     assert result == "anything"
 
 
@@ -253,7 +273,9 @@ def test_save_convert_value_kind_none_returns_value():
 
 def test_load_convert_scalar_bytes_invalid_base64():
     """Invalid base64 string falls back to original value."""
-    result = _load_convert_scalar(_KIND_BYTES, "not-valid!!!", bytes)
+    result = _load_convert_scalar(
+        _FieldPlan(kind=_KIND_BYTES, target_type=bytes), "not-valid!!!"
+    )
     # Should return original value (fallback)
     assert result == "not-valid!!!"
 
@@ -261,14 +283,18 @@ def test_load_convert_scalar_bytes_invalid_base64():
 def test_load_convert_scalar_bytes_valid_base64():
     """Valid base64 string decodes to bytes."""
     encoded = base64.b64encode(b"hello").decode("ascii")
-    result = _load_convert_scalar(_KIND_BYTES, encoded, bytes)
+    result = _load_convert_scalar(
+        _FieldPlan(kind=_KIND_BYTES, target_type=bytes), encoded
+    )
     assert result == b"hello"
 
 
 def test_load_convert_scalar_datetime_list():
     """List of timestamps converts to datetime list."""
     ts_list = [1718457600.0, 1718544000.0]
-    result = _load_convert_scalar(_KIND_DATETIME_LIST, ts_list, datetime.datetime)
+    result = _load_convert_scalar(
+        _FieldPlan(kind=_KIND_DATETIME_LIST, target_type=datetime.datetime), ts_list
+    )
     assert isinstance(result, list)
     assert all(isinstance(x, datetime.datetime) for x in result)
 
@@ -279,7 +305,9 @@ def test_load_convert_scalar_bytes_list():
         base64.b64encode(b"a").decode("ascii"),
         base64.b64encode(b"b").decode("ascii"),
     ]
-    result = _load_convert_scalar(_KIND_BYTES_LIST, b64_list, bytes)
+    result = _load_convert_scalar(
+        _FieldPlan(kind=_KIND_BYTES_LIST, target_type=bytes), b64_list
+    )
     assert isinstance(result, list)
     assert result == [b"a", b"b"]
 
