@@ -1,8 +1,13 @@
 # PLAN.md — RedisVL Integration
 
-**Status:** Approved for implementation
+**Status:** In progress — M1–M6 + D1 + D2 complete; remaining: M7/D3 docs, CLAUDE.md section, coverage gate + benchmark
 **Scope:** Port the upstream RedisVL escape-hatch integration (redis/redis-om-python PR #791) into this fork, with fixes for the defects found during review.
 **Last verified against upstream:** 2026-08-13 (PR #791 commit `31ded2e`; redisvl `redis-vl-python@main`; redis-py `master`)
+
+**Progress log:**
+
+- 2026-08-15: Merged `main` into `redisvl` (`f26eefd`). Main shipped its own `HashModel` vector storage (all dtypes, two plan kinds) which **supersedes Phase 1's original design** — §5/Phase 1 below updated to describe what landed. Merge resolution validated: ruff + mypy clean, 1511 async / 1493 sync tests passed, 110+110 cluster tests passed.
+- 2026-08-15: **M6 done** — `tests/test_redisvl_integration.py` (15 tests + sync mirror) covering schema conversion, D1 `_fts` fidelity vs OM's own `FT.CREATE`, lazy import, cluster-client acceptance + FT.HYBRID default-node routing (mocked, network-free), HashModel FLOAT64 raw-blob round-trip, and e2e redisvl queries (VectorQuery / text search on `body_fts` / `hybrid_search`) against a Migrator-created index. Full suites: async 1525 passed, sync 1504 passed (10 sync failures pre-existing at HEAD — verified by stash-and-rerun). Writing the tests surfaced and fixed a real bug: `hybrid_search()`'s non-cluster path forwarded `timeout=` to redisvl's `query()`, which takes no such parameter (`TypeError`); timeout is now documented + applied as cluster-path-only (`FT.HYBRID` `TIMEOUT` argument).
 
 ---
 
@@ -10,15 +15,15 @@
 
 Upstream PR #791 gives Redis OM an **escape hatch** into RedisVL: convert an OM model into a RedisVL `IndexSchema` (`to_redisvl_schema()`) and get a ready-to-use `AsyncSearchIndex`/`SearchIndex` wired to the model's `Meta.database` (`get_redisvl_index()`). It deliberately does **not** reimplement advanced search in OM — `FT.HYBRID`, aggregations, SVS-VAMANA, and vector policies stay in redisvl (per upstream RFC #790).
 
-This fork already contains the *prerequisite plumbing* (`VectorFieldOptions`, `Field(vector_options=...)`, `VECTOR` schema rendering, `KNNExpression`, index-implying `should_index_field()`). What is missing is:
+This fork already contains the *prerequisite plumbing* (`VectorFieldOptions`, `Field(vector_options=...)`, `VECTOR` schema rendering, `KNNExpression`, index-implying `should_index_field()`). Of the original gaps, **1–4 are now closed** (see §4 status table):
 
-1. The conversion module itself (`aredis_om/redisvl.py`).
-2. `HashModel` vector byte storage (pack `list[float]` → float32 bytes on save; unpack on load).
-3. A `HashModel` `__init_subclass__` exemption for vector list fields.
-4. The `redisvl` dependency (optional extra).
-5. Tests + docs.
+1. ~~The conversion module itself (`aredis_om/redisvl.py`).~~ ✅
+2. ~~`HashModel` vector byte storage (pack `list[float]` → float32 bytes on save; unpack on load).~~ ✅ (landed via main merge — all dtypes)
+3. ~~A `HashModel` `__init_subclass__` exemption for vector list fields.~~ ✅
+4. ~~The `redisvl` dependency (optional extra).~~ ✅ (`>=0.25.1`)
+5. Tests + docs. ⏳ **remaining**
 
-We port the upstream design, then fix **three defects found during review** (see §5): the `_fts` field-name mismatch, cluster routing for hybrid search, and the stale docs API.
+We port the upstream design, then fix **three defects found during review** (see §5): the `_fts` field-name mismatch (✅ D1 done), cluster routing for hybrid search (✅ D2 done — `hybrid_search()`), and the stale docs API (⏳ D3 open).
 
 ---
 
@@ -83,23 +88,29 @@ Upstream defects (verified by reading source — see §5 for our fixes):
 | Cluster plumbing: `get_redis_connection` (`cluster=true` → `RedisCluster`), `_strip_cluster_param` | `aredis_om/connections.py` |
 | `ConversionPlan` system (`planned_save_conversions`/`planned_load_conversions`, `_FieldPlan` kinds) | `aredis_om/model/model.py` L1030–1450 |
 
-### Missing — the actual work
+### Status — original gaps now largely closed
 
-| # | Piece | Upstream basis | Notes for our port |
+| # | Piece | Upstream basis | Status |
 | --- | --- | --- | --- |
-| M1 | `aredis_om/redisvl.py` (`_get_field_type`, `to_redisvl_schema`, `get_redisvl_index`) | `aredis_om/redisvl.py` | Add `_fts` fix (D1) + cluster-hybrid helper (D2) + lazy redisvl import |
-| M2 | HashModel vector byte storage | `convert_vector_to_bytes`/`convert_bytes_to_vector` | Integrate into the `ConversionPlan` system (not standalone legacy converters — see §6.2) |
-| M3 | `HashModel.__init_subclass__` vector-list exemption | upstream `model.py` | Fork's L4125 currently rejects *all* list fields |
-| M4 | `redisvl` optional dependency | upstream `pyproject.toml` | `[project.optional-dependencies] redisvl = [...]`; bump `uv.lock` |
-| M5 | Sync-mirror mapping for the new module | upstream commit `456f316` | `make_sync.py` `POST_SYNC_FIXES` entry (surgical, not global) |
-| M6 | Tests | upstream `tests/test_redisvl_integration.py` | Plus `_fts`-fidelity, hash round-trip, hybrid-skip guards, cluster test |
-| M7 | Docs | — | Fix D3 in `docs/redisvl.mdx` + `docs/pending_features.mdx`; README/index links |
+| M1 | `aredis_om/redisvl.py` (`_get_field_type`, `to_redisvl_schema`, `get_redisvl_index`) | `aredis_om/redisvl.py` | **Done, incl. D1** — dual `body` TAG + `body_fts` TEXT mapping; lazy redisvl import |
+| M2 | HashModel vector byte storage | `convert_vector_to_bytes`/`convert_bytes_to_vector` | **Done via main merge** — two plan kinds (`_KIND_VECTOR_RAW_BYTES`, `_KIND_VECTOR_LIST_FLOAT`), all dtypes (FLOAT16/32/64, BFLOAT16, INT8); differs from original plan design, see §5 |
+| M3 | `HashModel.__init_subclass__` vector-list exemption | upstream `model.py` | **Done via main merge** |
+| M4 | `redisvl` optional dependency | upstream `pyproject.toml` | **Done** — `redisvl>=0.25.1` in both `full` and `redisvl` extras; `dev` extra transitively includes it via `pyredis-om[full]` |
+| M5 | Sync-mirror mapping for the new module | upstream commit `456f316` | **Done** — `make_sync.py` `POST_SYNC_FIXES["redis_om/redisvl.py"]` (L117–123) |
+| M6 | Tests | upstream `tests/test_redisvl_integration.py` | **Done** — `tests/test_redisvl_integration.py` (15 tests) + sync mirror via `make_sync.py` `POST_SYNC_FIXES`; see Phase 4 |
+| M7 | Docs | — | **Partial** — `docs/redisvl.mdx` exists but **L64 still uses `text_field="body"`** (D3 not fixed) |
+
+**Remaining work:** M7/D3 docs fix (`redisvl.mdx` L64 → `text_field_name="body_fts"`), CLAUDE.md §RedisVL, coverage gate + benchmark.
+
+**Note on D2:** originally planned as `_cluster_aware_hybrid(...)`, but landed as `aredis_om/redisvl.py::hybrid_search(index, query, timeout=None)` (async + sync mirror) — detects cluster clients via `_is_cluster_client`, pins `FT.HYBRID` to `target_nodes=[default_node]` mirroring redisvl's `async_cluster_search`, delegates to `index.query()` otherwise. **D2 is implemented and tested** (routing covered by mocked network-free tests). A latent bug found during M6 was fixed: the non-cluster path used to forward `timeout=` to redisvl's `query()` (which takes none) — timeout is now cluster-path-only.
 
 ---
 
 ## 5. Design decisions (with rationale)
 
-### D1-fix: faithful `_fts` field mapping (deviation from upstream — deliberate)
+### D1-fix: faithful `_fts` field mapping (deviation from upstream — deliberate) — ✅ DONE
+
+*(Landed in `aredis_om/redisvl.py::_get_field_type` — the dual-mapping decision below is implemented as designed.)*
 
 OM's schema for `body: str = Field(full_text_search=True)` is **two** fields:
 - `$.body AS body TAG SEPARATOR |` (exact match)
@@ -111,7 +122,9 @@ Upstream's converter emits **one** field named `body` of type `text`. Consequenc
 
 **Decision:** `_get_field_type()` emits the *same dual fields OM creates*: for `full_text_search=True` strings → a `tag` entry named `body` **and** a `text` entry named `body_fts`. For HashModel the same rule applies (`body` TAG + `body_fts` TEXT). This makes a redisvl-created index byte-compatible with an OM-created one — both engines work on either index.
 
-### D2-fix: cluster-aware hybrid search helper
+### D2-fix: cluster-aware hybrid search helper — ✅ DONE (renamed `hybrid_search`)
+
+*(Landed as `aredis_om/redisvl.py::hybrid_search(index, query, timeout=None)` — async + sync mirror; routing covered by network-free mocked tests, delegation + cluster pinning both regression-tested. `timeout` is cluster-path-only — redisvl's `query()` takes no timeout parameter.)*
 
 We add `_hybrid_search_*` cluster handling in our module's thin wrapper where we control the client:
 
@@ -120,7 +133,9 @@ We add `_hybrid_search_*` cluster handling in our module's thin wrapper where we
 
 Fallback for now: the plain `index.query()` path works on cluster because `FT.HYBRID <index>` routes by index name to the default node; the helper exists to make this explicit and raise a friendly error otherwise.
 
-### D3-fix: current redisvl `HybridQuery` API in docs
+### D3-fix: current redisvl `HybridQuery` API in docs — ⏳ OPEN
+
+*(Docs not yet updated — `docs/redisvl.mdx` L64 still uses the nonexistent `text_field=` kwarg.)*
 
 Verified against `redisvl/query/hybrid.py@main`:
 - `HybridQuery(text=..., text_field_name=..., vector=..., vector_field_name=..., combination_method="LINEAR"|"RRF"|None, linear_alpha=0.3, rrf_window=20, rrf_constant=60, yield_text_score_as=..., yield_vsim_score_as=..., yield_combined_score_as=..., num_results=10, return_fields=..., stopwords="english", text_weights=..., filter_expression=..., dtype="float32", knn_ef_runtime=10, range_radius=..., range_epsilon=0.01)`.
@@ -128,20 +143,21 @@ Verified against `redisvl/query/hybrid.py@main`:
 - `text_field=` / `vector_field=` have never existed in any redisvl release (verified against 0.5.1 and latest). `alpha=` only exists pre-0.13.
 - Docs must show `text_field_name="body_fts"` (the aliased TEXT field, per D1).
 
-### Dependency policy: optional extra, lazy import
+### Dependency policy: optional extra, lazy import — ✅ DONE (pin differs)
 
-- `[project.optional-dependencies] redisvl = ["redisvl>=0.13.0,<1.0"]` (distribution name to confirm: official docs say `pip install redisvl`; fork docs link `pypi.org/project/redis-vl` — resolve during implementation).
+- Landed as `redisvl>=0.25.1` (no upper bound) in both the `full` and dedicated `redisvl` extras — resolved newer than the planned `redisvl>=0.13.0,<1.0`. The distribution name is `redisvl` (`pip install redisvl`).
 - `aredis_om/redisvl.py` must **not** import redisvl at module import time. Both public functions do the import inside the function body and raise a helpful `ImportError("pip install 'redis-om[redisvl]'")` if missing.
 - Rationale: fork docs (`docs/redisvl.mdx` §"What changes for existing users") promise soft/optional; upstream later made it required, which we deliberately do not copy.
 
-### Vector storage: integrate with `ConversionPlan`, not legacy converters
+### Vector storage: integrated with `ConversionPlan` — landed design (supersedes original plan)
 
-Upstream uses standalone recursive converters. This fork's hot path is the field-aware `ConversionPlan` system (single pass, precomputed per-field metadata, 1.5–4.8x faster). We extend the plan instead of adding a third recursive pass:
+Upstream uses standalone recursive converters. This fork's hot path is the field-aware `ConversionPlan` system (single pass, precomputed per-field metadata, 1.5–4.8x faster). **This landed via the 2026-08-15 main merge**, with a design that supersedes the original plan (single `_KIND_VECTOR` kind, float32/64 only, `latin-1` re-encode for `decode_responses=True`):
 
-- New `_FieldPlan` kind for vector fields (e.g. `_KIND_VECTOR`), populated in `build_conversion_plan()` when `field_info.vector_options is not None`.
-- Save: `list[float]` → `struct.pack(f"<{len}f", *values)` (little-endian float32, matching the `VECTOR ... TYPE FLOAT32` schema RediSearch expects). `FLOAT64` → `"<Nd"`.
-- Load: bytes → list; when `decode_responses=True` Redis returns str, re-encode `latin-1` before unpacking (upstream's approach).
-- The legacy recursive `convert_vector_to_bytes`/`convert_bytes_to_vector` are added **only** for the `get_value()`/test API parity path (matching the fork's existing "legacy converters remain" convention) — or skipped if no caller needs them.
+- **Two plan kinds:** `_KIND_VECTOR_RAW_BYTES` (8) for `bytes` vector fields (stored as the raw blob) and `_KIND_VECTOR_LIST_FLOAT` (9) for `list[float]` fields with `vector_options` (auto-packed per dtype).
+- **All dtypes supported:** FLOAT16, FLOAT32, FLOAT64, BFLOAT16, INT8 — via `_pack_vector`/`_unpack_vector` (`struct`-based, dtype-aware), not just float32/64.
+- **`decode_responses=False` contract for raw bytes vectors** rather than `latin-1` re-encoding: `_raw_vector_connection_error(model_cls, operation)` raises an actionable error (3 fix options) when a raw-blob read hits a decoding connection. `UnicodeDecodeError` handlers guard FT.SEARCH / FT.AGGREGATE / FT.CURSOR READ / hgetall / get_many-pipeline paths as a fallback for `decode_responses=True`.
+- **List exemption:** `HashModel` list fields with `vector_options` bypass the "cannot index list" rejection (M3).
+- Legacy recursive `convert_vector_to_bytes`/`convert_bytes_to_vector` were **not** kept — the plan path covers everything, so no parity path was needed.
 
 ### Storage type / index detection details
 
@@ -158,8 +174,10 @@ def get_redisvl_index(model_cls, async_client: bool = True):
     redis_client = model_cls.db()
     if async_client:
         from redisvl.index import AsyncSearchIndex
+
         return AsyncSearchIndex(schema=schema, redis_client=redis_client)
     from redisvl.index import SearchIndex
+
     return SearchIndex(schema=schema, redis_client=redis_client)
 ```
 
@@ -171,19 +189,18 @@ No `await index.create()` inside — callers control lifecycle (matches upstream
 
 Conventions: **all manual edits in `aredis_om/` and `tests/` only**; `redis_om/` + `tests_sync/` are generated via `make sync`; `uv.lock` bump via `uv lock`; run `read_file` before any `edit_file`.
 
-### Phase 0 — Dependency (M4)
+### Phase 0 — Dependency (M4) — ✅ DONE
 
-1. `pyproject.toml`: add
-   ```toml
-   [project.optional-dependencies]
-   redisvl = ["redisvl>=0.13.0,<1.0"]
-   ```
-   (also add `redisvl` to the `dev` extra so CI/tests exercise the real library).
-2. `uv lock` → commit updated `uv.lock`.
+Landed as (differs from the plan's pin — resolved newer):
 
-### Phase 1 — HashModel vector storage (M2, M3)
+- `pyproject.toml`: `full = [... "redisvl>=0.25.1"]` and a dedicated `redisvl = ["redisvl>=0.25.1"]` extra (no upper bound; plan said `>=0.13.0,<1.0`).
+- `dev` extra pulls `pyredis-om[full]`, so CI/tests exercise the real library transitively.
 
-Files: `aredis_om/model/model.py`.
+### Phase 1 — HashModel vector storage (M2, M3) — ✅ DONE via main merge
+
+**Superseded by main's implementation** (commit `2f81d39` lineage, merged 2026-08-15 as `f26eefd`). The steps below are the original plan, kept for history; what actually landed is described in §5 "Vector storage": two plan kinds instead of one, all dtypes instead of float32/64, `decode_responses=False` contract + actionable `_raw_vector_connection_error` instead of `latin-1` re-encoding. No legacy converters were added.
+
+<details><summary>Original plan (superseded)</summary>
 
 1. Extend `_FieldPlan` with a vector kind + `vector_dtype` (float32/float64 from `VectorFieldOptions.TYPE`).
 2. In `build_conversion_plan()`: when `field_info.vector_options is not None`, mark the field as vector (container `list[float]`/`list` types).
@@ -192,38 +209,54 @@ Files: `aredis_om/model/model.py`.
 5. `HashModel.__init_subclass__` (currently rejecting all lists at ~L4125): exempt list fields whose `FieldInfo.vector_options is not None` (mirror upstream's `_has_vector_options` check over both `cls.__dict__` and `model_fields`).
 6. Confirm `HashModel.save()` and `get()` call the planned converters (they do per CLAUDE.md pipelines); verify no `jsonable_encoder` pass mangles the packed bytes (bytes are already JSON-safe for hash storage; upstream base64-encodes — decide: hash storage of packed float32 bytes directly, matching upstream's `convert_vector_to_bytes` **before** base64 pass. Follow upstream ordering: vector packing happens before base64, and base64 is applied to other bytes fields only.)
 
-### Phase 2 — The conversion module (M1, D1, D2)
+</details>
 
-New file: `aredis_om/redisvl.py`.
+### Phase 2 — The conversion module (M1, D1, D2) — ✅ DONE
 
-Structure (upstream layout, with our fixes):
+Landed as `aredis_om/redisvl.py` (async source of truth; sync mirror generated):
 
-1. `_get_field_type(field_name, field_type, field_info, is_json) -> Optional[dict]` — port upstream logic; **changes**:
-   - `full_text_search=True` str → return the dual mapping (`tag` named `body` + `text` named `body_fts`) — see §5 D1-fix.
-   - `should_index_field(field_info)` gate first (upstream does).
-   - Vector attrs: `dims`, `distance_metric`, `algorithm`, `datatype` (lowercased enum names); FLAT adds `block_size`; HNSW adds `m`, `ef_construction`, `ef_runtime`, `epsilon`; common `initial_cap`. (Same as upstream.)
-2. `to_redisvl_schema(model_cls) -> IndexSchema` — lazy import redisvl inside; indexed check via fork's canonical sources; iterate `model_cls.model_fields`, unwrap metadata-wrapped `FieldInfo` (Pydantic 2.12+ `Annotated` case) exactly like upstream; build `{"index": {"name", "prefix", "storage_type"}, "fields": [...]}`; `IndexSchema.from_dict(...)`.
-3. `get_redisvl_index(model_cls, async_client=True)` — as §5 signature; lazy import; no create.
-4. `_cluster_aware_hybrid(...)` helper (D2) — if the client is a cluster client, route `FT.HYBRID` with `target_nodes=[default_node]`; else delegate to `index.query(...)`. Keep it minimal; prefer dropping it if redisvl upstream ships the helper before we land.
-5. Module docstring with usage examples (async + sync + hybrid).
+- `_get_field_type(field_name, field_type, field_info, is_json)` (L118) — upstream logic + **D1**: `full_text_search=True` str → dual mapping (`tag` named `body` + `text` named `body_fts`); vector attrs as planned.
+- `to_redisvl_schema(model_cls)` (L256) — lazy redisvl import; indexed check; metadata-unwrapping; `IndexSchema.from_dict(...)`.
+- `get_redisvl_index(model_cls, async_client=True)` (L353) — lazy import; no create; matches §5 signature.
+- `hybrid_search(index, query, timeout=None)` (L399) — **D2** (renamed from the planned `_cluster_aware_hybrid`): cluster detection + `target_nodes=[default_node]` pinning for `FT.HYBRID`, delegation to `index.query()` otherwise.
+- Module docstring with usage examples (async + sync + hybrid, `text_field_name="body_fts"`).
 
-### Phase 3 — Exports & sync mirror (M5)
+**Tested** — see Phase 4 (15 tests + sync mirror).
 
-1. Export from `aredis_om/redisvl.py` only (module-level API, like upstream). Do **not** re-export at `aredis_om/__init__.py` top level (keeps redisvl import lazy; upstream does the same).
-2. `make_sync.py`: add a `POST_SYNC_FIXES` entry for `redis_om/redisvl.py` (surgical — a global `ADDITIONAL_REPLACEMENTS` entry would corrupt the dual import):
-   ```python
-   "redis_om/redisvl.py": {
-       "from redisvl.index import AsyncSearchIndex": "from redisvl.index import SearchIndex",
-       "AsyncSearchIndex(": "SearchIndex(",
-   }
-   ```
-3. Run `make sync`; inspect generated `redis_om/redisvl.py` for correctness (no double-import collision).
+### Phase 3 — Exports & sync mirror (M5) — ✅ DONE
 
-### Phase 4 — Tests (M6)
+- Exported from `aredis_om/redisvl.py` only (module-level API). No top-level re-export in `aredis_om/__init__.py` — keeps redisvl import lazy.
+- `make_sync.py` `POST_SYNC_FIXES["redis_om/redisvl.py"]` (L117–123) — landed differently (and more correctly) than the plan's sketch: unasync rewrites `Async*` → `Sync*` before fixes run, so the fixes target the `Sync*` spellings (`SyncSearchIndex` → `SearchIndex`, `SyncRedisCluster` → `RedisCluster`), with import lines rewritten before class-name references (order matters).
+- `make sync` verified: generated `redis_om/redisvl.py` exposes all three functions (`to_redisvl_schema` L256, `get_redisvl_index` L353, `hybrid_search` L399) with no double-import collision.
 
-New file: `tests/test_redisvl_integration.py` (async source; sync mirror auto-generated).
+### Phase 4 — Tests (M6) — ✅ DONE
 
-Port upstream's 5 tests, then add fork-specific coverage:
+Landed as `tests/test_redisvl_integration.py` (15 tests) + sync mirror (via a new `make_sync.py` `POST_SYNC_FIXES` entry — the Async*→Sync* import fixups mirror `redis_om/redisvl.py`'s own, plus `conn.aclose()` → `conn.close()`). Coverage:
+
+| Test | Asserts |
+| --- | --- |
+| `TestToRedisvlSchema::test_json_model` | `IndexSchema`, name/prefix/storage_type, field set, vector attrs (dims/FLAT/FLOAT32/COSINE), `body_fts` path `$.body`, sortable |
+| `TestToRedisvlSchema::test_hash_model` | storage_type hash, `description_fts.path == "description"` (the post-construction alias fix), OM schema string contains `description AS description_fts TEXT` |
+| `TestToRedisvlSchema::test_fts_field_name_set_matches_om_schema` | **D1**: redisvl field-name set == `re.findall(r"AS (\w+)", redisearch_schema())` |
+| `TestToRedisvlSchema::test_non_indexed_raises` | `ValueError("is not indexed")` |
+| `TestGetRedisvlIndex::test_async/test_sync` | `AsyncSearchIndex` / `SearchIndex`, index name matches |
+| `TestGetRedisvlIndex::test_accepts_cluster_client` | index wired with the (unconnected) cluster client |
+| `TestLazyImport::test_module_imports_without_redisvl` | `importlib.reload` with `sys.modules["redisvl"]=None` imports cleanly |
+| `TestLazyImport::test_helpers_raise_helpful_import_error` | helpful `ImportError` ("pip install 'redis-om[redisvl]'") when redisvl blocked |
+| `TestVectorRoundTrip::test_hash_model_float64_stored_as_raw_blob` | FLOAT64 `list[float]` → raw `HGET` blob (8 B/dim) → identical `get()` (uses `decode_responses=False` conn per the storage contract) |
+| `TestRedisvlAgainstOmCreatedIndex::test_vector_query` | redisvl `VectorQuery` hits the top doc against a Migrator-created index |
+| `TestRedisvlAgainstOmCreatedIndex::test_text_search_uses_fts_alias` | raw `index.search("@body_fts:(…)")` matches — the `_fts` alias works on OM indexes |
+| `TestRedisvlAgainstOmCreatedIndex::test_hybrid_search_end_to_end` | `hybrid_search(HybridQuery(text_field_name="body_fts", …))` returns results (skips < Redis 8.4 via `COMMAND INFO ft.hybrid` probe) |
+| `TestHybridSearchRouting::test_delegates_on_non_cluster_client` | delegation to `index.query()`; regression: `timeout=` never forwarded (redisvl `query()` takes none — found & fixed a real `TypeError` here) |
+| `TestHybridSearchRouting::test_pins_default_node_on_cluster_client` | mocked network-free cluster client: `FT.HYBRID` + index name + `TIMEOUT` pieces, `target_nodes=[default_node]`, result passthrough |
+
+Implementation notes:
+
+- The cluster-routing tests use a `_UnconnectedClusterClient(AsyncRedisCluster)` subclass with a no-op `__init__` — only needed for `isinstance` routing; redis-py's **sync** `RedisCluster` initializes topology eagerly (and hangs on unreachable announced addresses), so a real client would make the sync mirror flaky/network-dependent.
+- `RedisModel.key` is a **method**, not a property — call `model.key()`.
+- Upstream's 5 tests are subsumed by `TestToRedisvlSchema`/`TestGetRedisvlIndex`.
+
+Original plan table (kept for reference):
 
 | Test | Asserts |
 | --- | --- |
@@ -239,7 +272,9 @@ Port upstream's 5 tests, then add fork-specific coverage:
 
 Use existing fixtures/patterns (`py_test_mark_asyncio`, `key_prefix`, `redis`, `Migrator(conn=redis).run()`); skip module when `not has_redis_json()` (upstream pattern). Redis version detection: reuse the fork's version helpers from `aredis_om/checks.py` or `protocol_version()`.
 
-### Phase 5 — Docs (M7, D3)
+### Phase 5 — Docs (M7, D3) — ⏳ PARTIAL
+
+**Status:** `docs/redisvl.mdx` exists but **L64 still uses `text_field="body"`** — the D3 fix is **not** applied. `docs/pending_features.mdx`, README/index links, and the CLAUDE.md section remain to do. Original plan:
 
 1. `docs/redisvl.mdx`:
    - Fix `Field(vector_field=...)` → `Field(vector_options=...)`; drop SVS-VAMANA `algorithm="svs-vamana"` claim (upstream enum has FLAT/HNSW only).
@@ -250,7 +285,13 @@ Use existing fixtures/patterns (`py_test_mark_asyncio`, `key_prefix`, `redis`, `
 3. `README.md` (L237) + `docs/index.mdx` (L63–64): link labels — README's "Pending Features (RedisVL)" pointing at `redisvl.mdx` should be "RedisVL Integration"; pending list stays at `pending_features.mdx`.
 4. `CLAUDE.md`: add a short §"RedisVL Integration" noting the module, lazy-import rule, and `_fts` fidelity invariant.
 
-### Phase 6 — Validation & landing
+### Phase 6 — Validation & landing — ⏳ PARTIAL
+
+**Done post-merge (2026-08-15, manual):** ruff check + format clean (105 files, `aredis_om/` + `tests/`); mypy clean on `model.py` (1 pre-existing error in generated `redis_om/redisvl.py:327`); full async suite 1511 passed / 124 skipped; full sync suite 1493 passed (7 pre-existing `AsyncMock` failures in `test_migration_edge_cases.py` sync mirror); cluster async+sync 110+110 passed; `make sync` regenerated clean.
+
+**Post-M6 (2026-08-15):** async suite 1525 passed / 125 skipped / 1 xfailed; sync suite 1504 passed (10 failures pre-existing at HEAD — verified identical via stash-and-rerun; migrator-alias/sync-mirror flakes are order-dependent under `-n auto`); ruff check + format clean across `tests/` + `aredis_om/` + `redis_om/` (137 files); new test file mypy-clean.
+
+**Remaining:** re-run after M6/M7 land; confirm ≥88% coverage gate; `make benchmark` for conversion-plan regression check.
 
 1. `uv sync --extra dev`
 2. `make sync` (idempotent; diff clean)
@@ -302,13 +343,13 @@ Use existing fixtures/patterns (`py_test_mark_asyncio`, `key_prefix`, `redis`, `
 
 ## 9. Definition of done
 
-- [ ] `aredis_om/redisvl.py` exists with `to_redisvl_schema` + `get_redisvl_index`; lazy imports; `_fts`-faithful schema (D1).
-- [ ] `HashModel` vector fields round-trip byte-exactly through `save()`/`get()` (M2); list exemption in `__init_subclass__` (M3).
-- [ ] `pyproject.toml` + `uv.lock` include the optional `redisvl` extra (M4).
-- [ ] `make sync` produces a correct `redis_om/redisvl.py` mirror (M5).
-- [ ] `tests/test_redisvl_integration.py` (+ sync mirror) passes on Redis 8; hybrid tests skip cleanly < 8.4.
-- [ ] `docs/redisvl.mdx`, `docs/pending_features.mdx`, `README.md`, `docs/index.mdx` use the current redisvl API (D3).
-- [ ] `make lint`, `make test`, `make test_cluster` green; coverage ≥ 88%.
+- [x] `aredis_om/redisvl.py` exists with `to_redisvl_schema` + `get_redisvl_index`; lazy imports; `_fts`-faithful schema (D1).
+- [x] `HashModel` vector fields round-trip byte-exactly through `save()`/`get()` (M2); list exemption in `__init_subclass__` (M3). *(Landed via main merge — all dtypes, two plan kinds; covered by `tests/test_hash_model_vector.py` + `tests/test_cluster_vectors.py`.)*
+- [x] `pyproject.toml` + `uv.lock` include the optional `redisvl` extra (M4). *(Pinned `>=0.25.1` in `full` + `redisvl` extras.)*
+- [x] `make sync` produces a correct `redis_om/redisvl.py` mirror (M5).
+- [x] `tests/test_redisvl_integration.py` (+ sync mirror) passes on Redis 8; hybrid tests skip cleanly < 8.4. *(15 tests each mirror; hybrid e2e skips via `COMMAND INFO ft.hybrid` probe.)*
+- [ ] `docs/redisvl.mdx`, `docs/pending_features.mdx`, `README.md`, `docs/index.mdx` use the current redisvl API (D3). *(D3 open: `redisvl.mdx` L64.)*
+- [ ] `make lint`, `make test`, `make test_cluster` green; coverage ≥ 88%. *(Green post-merge except pre-existing sync-mirror mock failures; coverage gate unverified.)*
 - [ ] `make benchmark` shows no regression from the conversion-plan changes.
 
 ---

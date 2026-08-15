@@ -118,7 +118,7 @@ def _is_cluster_client(client: Any) -> bool:
 def _get_field_type(
     field_name: str,
     field_type: Any,
-    field_info: FieldInfo,
+    field_info: FieldInfo | PydanticFieldInfo,
     is_json: bool,
 ) -> List[Dict[str, Any]]:
     """Convert an OM field to RedisVL field definitions.
@@ -138,9 +138,7 @@ def _get_field_type(
     sortable = getattr(field_info, "sortable", False) is True
     full_text_search = getattr(field_info, "full_text_search", False) is True
     case_sensitive = getattr(field_info, "case_sensitive", False) is True
-    separator = getattr(
-        field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR
-    )
+    separator = getattr(field_info, "separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
 
     # Vector field — attrs map one-to-one from VectorFieldOptions.
     if vector_options:
@@ -418,7 +416,10 @@ async def hybrid_search(
         index: A RedisVL ``AsyncSearchIndex`` (e.g. from
             :func:`get_redisvl_index`).
         query: A RedisVL ``HybridQuery``.
-        timeout: Optional server-side timeout in milliseconds.
+        timeout: Optional server-side timeout in milliseconds. Applied on
+            cluster clients only (appended as the ``FT.HYBRID`` ``TIMEOUT``
+            argument); the non-cluster path delegates to redisvl's
+            ``index.query()``, which takes no timeout parameter.
 
     Returns:
         The hybrid search results as a list of dicts, ordered by combined
@@ -427,10 +428,10 @@ async def hybrid_search(
     client = getattr(index, "_redis_client", None) or await index._get_client()
 
     if not _is_cluster_client(client):
-        kwargs: Dict[str, Any] = {}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        return await index.query(query, **kwargs)
+        # redisvl's ``query()`` takes no timeout parameter, so the timeout
+        # can only be honored on the cluster path below, where we build
+        # the FT.HYBRID command ourselves.
+        return await index.query(query)
 
     # Cluster path: build the FT.HYBRID command exactly the way redis-py's
     # ``hybrid_search`` does, then pin it to the default node (an index

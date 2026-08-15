@@ -1106,18 +1106,20 @@ def convert_base64_to_bytes(obj, model_fields):
 
 
 # Field kind constants for hot-loop dispatch (integers for cheap comparison).
-_KIND_NONE = 0               # str, int, float, etc.
-_KIND_DATETIME = 1           # datetime / date
-_KIND_BYTES = 2              # scalar bytes
-_KIND_DATETIME_LIST = 3      # List[datetime] / List[date]
-_KIND_BYTES_LIST = 4         # List[bytes]
-_KIND_DATACLASS = 5          # dataclass → str/dict
-_KIND_NESTED_MODEL = 6       # single embedded model
+_KIND_NONE = 0  # str, int, float, etc.
+_KIND_DATETIME = 1  # datetime / date
+_KIND_BYTES = 2  # scalar bytes
+_KIND_DATETIME_LIST = 3  # List[datetime] / List[date]
+_KIND_BYTES_LIST = 4  # List[bytes]
+_KIND_DATACLASS = 5  # dataclass → str/dict
+_KIND_NESTED_MODEL = 6  # single embedded model
 _KIND_NESTED_MODEL_LIST = 7  # List[embedded model]
 # raw binary blob (no base64 wrapping) so vector payloads round-trip at their
 # native dtype width (e.g. 2 bytes per float for FLOAT16 instead of the ~8x
 # blowup of JSON-encoded doubles). Used by HashModel only
-_KIND_VECTOR_RAW_BYTES = 8   # bytes with vector_options (HashModel only, raw binary blob)
+_KIND_VECTOR_RAW_BYTES = (
+    8  # bytes with vector_options (HashModel only, raw binary blob)
+)
 _KIND_VECTOR_LIST_FLOAT = 9  # list[float] with vector_options, packed per dtype
 
 

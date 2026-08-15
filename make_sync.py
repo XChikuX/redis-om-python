@@ -121,6 +121,17 @@ POST_SYNC_FIXES = {
         "SyncRedisCluster": "RedisCluster",
         "SyncSearchIndex": "SearchIndex",
     },
+    # RedisVL integration tests: same Async* → Sync* fixups as the module
+    # itself, plus the lazily-constructing cluster client used to verify
+    # FT.HYBRID routing without a live cluster.
+    "tests_sync/test_redisvl_integration.py": {
+        "from redis.asyncio.cluster import RedisCluster as SyncRedisCluster": "from redis.cluster import RedisCluster",
+        "from redisvl.index import SyncSearchIndex, SearchIndex": "from redisvl.index import SearchIndex",
+        "from redisvl.index import SyncSearchIndex": "from redisvl.index import SearchIndex",
+        "SyncRedisCluster": "RedisCluster",
+        "SyncSearchIndex": "SearchIndex",
+        "conn.aclose()": "conn.close()",
+    },
 }
 
 # Deduplicate `import pytest` lines that unasync may produce when
