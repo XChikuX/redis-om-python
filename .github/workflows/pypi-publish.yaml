@@ -1,59 +1,78 @@
-name: Publish Pypi
+name: Publish PyPI
+
 on:
     release:
         types: [published]
 
+# Required by PyPI's OIDC trusted publisher workflow.
+permissions:
+    contents: read
+    id-token: write
+
 jobs:
-    pytest:
-        name: Publish to PyPi
+    build:
+        name: Build and publish
         runs-on: ubuntu-latest
+        timeout-minutes: 15
         env:
-            ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+            pythonversion: "3.12"
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-            - name: get version from tag
-              id: get_version
-              run: |
-                  realversion="${GITHUB_REF/refs\/tags\//}"
-                  realversion="${realversion//v/}"
-                  echo "::set-output name=VERSION::$realversion"
-
-            - name: Set the version for publishing
-              uses: ciiiii/toml-editor@29f312b4557fdbbb1fc356a7042f85307d244345 # 1.0.0
-              with:
-                  file: "pyproject.toml"
-                  key: "tool.poetry.version"
-                  value: "${{ steps.get_version.outputs.VERSION }}"
-
-            - name: Set up Python 3.12
+            - name: Setup Python ${{ env.pythonversion }}
               uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
               with:
-                  python-version: 3.12
+                  python-version: ${{ env.pythonversion }}
 
-            - name: Cache Poetry virtualenv
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-              id: cache
+            - name: Setup uv
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
-                  path: ~/.virtualenvs
-                  key: poetry-${{ hashFiles('**/poetry.lock') }}
-                  restore-keys: |
-                      poetry-${{ hashFiles('**/poetry.lock') }}
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
 
-            - name: Set Poetry config
+            - name: Install dependencies
+              run: uv sync --group dev
+
+            - name: Derive version from tag
+              id: get_version
               run: |
-                  pip install --upgrade pip poetry
-                  poetry config virtualenvs.in-project false
-                  poetry config virtualenvs.path ~/.virtualenvs
-                  poetry export --dev --without-hashes -o requirements.txt
-                  pip install -r requirements.txt
+                  realversion="${GITHUB_REF#refs/tags/}"
+                  realversion="${realversion#v}"
+                  echo "version=$realversion" >> "$GITHUB_OUTPUT"
 
-            - name: Make sync version of library (redis_om)
+            - name: Verify pyproject.toml matches the release tag
+              env:
+                  EXPECTED_VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  actual="$(uv version --short)"
+                  if [ "$actual" != "$EXPECTED_VERSION" ]; then
+                      echo "::error::Release tag v$EXPECTED_VERSION does not match pyproject.toml version $actual"
+                      echo "Bump pyproject.toml to '$EXPECTED_VERSION' with: uv version $EXPECTED_VERSION"
+                      exit 1
+                  fi
+                  echo "pyproject.toml version ($actual) matches tag."
+
+            - name: Generate sync mirror (redis_om, tests_sync)
               run: make sync
 
-            - name: Install
-              run: poetry install --no-interaction
+            - name: Lint
+              run: make lint
+
+            - name: Test
+              env:
+                  REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
+              run: |
+                  docker compose up -d
+                  make test
+                  docker compose down
+
+            - name: Build distributions
+              run: uv build
 
             - name: Publish to PyPI
-              run: |
-                  poetry publish -u __token__ -p ${{ secrets.PYPI_TOKEN }} --build
+              # Uses PyPI's OIDC trusted publishing — no secret token required.
+              # Configure the publisher at
+              # https://pypi.org/manage/account/publishing/ with this
+              # workflow's path + tag environment.
+              run: uv publish dist/*
