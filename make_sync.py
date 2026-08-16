@@ -22,6 +22,12 @@ _ASYNC_ONLY_TEST_BASENAMES = frozenset(
         # Bridge tests — would ``from redis_om.integrations import ...``
         # and fail to import because the sync mirror does not exist.
         "test_fastapi_integration.py",
+        # RedisVL cluster end-to-end tests exercise the async cluster path
+        # (``hybrid_search`` is async-only; redisvl's ``AsyncSearchIndex``
+        # and OM's async ``JsonModel`` save/find are required). The sync
+        # path would need a separate sync-``SearchIndex`` + sync-``Migrator``
+        # rewrite; out of scope for the integration milestone.
+        "test_redisvl_cluster.py",
     }
 )
 

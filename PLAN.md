@@ -1,6 +1,6 @@
 # PLAN.md — RedisVL Integration
 
-**Status:** In progress — M1–M7 + D1 + D2 + D3 complete; remaining: cluster tests for the redisvl integration (in progress), coverage gate + benchmark
+**Status:** In progress — M1–M7 + D1 + D2 + D3 complete; remaining: cluster tests for the redisvl integration (✅ done — `tests/test_redisvl_cluster.py`, 6 tests, async-only since `hybrid_search()` is async-only), coverage gate + benchmark
 **Scope:** Port the upstream RedisVL escape-hatch integration (redis/redis-om-python PR #791) into this fork, with fixes for the defects found during review.
 **Last verified against upstream:** 2026-08-13 (PR #791 commit `31ded2e`; redisvl `redis-vl-python@main`; redis-py `master`)
 
