@@ -1176,7 +1176,10 @@ async def test_bench_redisvl_vector_query(redisvl_model):
     elapsed = time.perf_counter() - start
     record_benchmark("redisvl_vector_query", elapsed, ops=20)
     assert len(results) >= 1
-    assert results[0]["id"] == docs[0].key()
+    # _onehot(i) repeats every REDISVL_DIMENSIONS docs, so KNN ties among
+    # exact matches; only assert the rows came from the seeded corpus.
+    seeded_keys = {d.key() for d in docs}
+    assert {row["id"] for row in results}.issubset(seeded_keys)
 
 
 @py_test_mark_asyncio
@@ -1229,7 +1232,8 @@ async def test_bench_redisvl_hybrid_search(redisvl_model, redis):
     assert isinstance(results, list)
     assert len(results) >= 1
     # FT.HYBRID's reserved fields: @__key (key id) and @__score (combined).
-    assert results[0]["__key"] == docs[0].key()
+    seeded_keys = {d.key() for d in docs}
+    assert results[0]["__key"] in seeded_keys
     assert "__score" in results[0]
 
 
