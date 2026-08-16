@@ -110,6 +110,159 @@ index parameters (algo, compression, search-time `EF`).
 Status: **available through redisvl directly** via the shipped escape
 hatch.
 
+## Redis 8.10 features not yet wrapped
+
+[Redis Open Source 8.10](https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.10-release-notes/)
+(July 2026, GA) ships several new commands and capabilities that pyredis-om
+does not yet expose. The list below covers only the ones that map to a
+natural OM surface; pure server-side bug fixes and configuration knobs are
+omitted.
+
+### Compact hashes — pending
+
+Redis 8.10 introduces **compact hashes** — a new hash encoding that stores
+hash field names just once per template, shared across keys with the same
+schema. Reduces memory for `HashModel`-style workloads with many keys and
+many fields.
+
+- **New command:** `HIMPORT` (high-throughput bulk insertion into a
+  compact hash).
+- **New config:** `hash-rdb-load-min-template-entries`,
+  `hash-rdb-load-max-template-entries`,
+  `hash-rdb-load-template-disassembly-threshold`.
+- **New metrics:** `INFO STATS` exposes `hash_templates` and
+  `hash_template_keys`; `INFO MEMORY` exposes `used_memory_hash_templates`.
+
+Status: **not wrapped.** `HashModel.save()` issues plain `HSET`/`HMSET`;
+the compact-hash encoding is server-side and requires the above
+configuration to be set on the server. No OM-side API needed today;
+follow-up work would expose a `Meta.hash_compact = True` opt-in plus an
+`HIMPORT` helper for bulk loads.
+
+### Multi-element list moves — pending
+
+- **New commands:** `LMOVEM`, `BLMOVEM` — move multiple elements between
+  lists in one round-trip.
+
+Status: **not wrapped.** pyredis-om has no native list-wrapper class
+(`List[T]` is a Pydantic field type, not a first-class data structure).
+The new commands are useful as a low-level primitive for anyone building
+a queue-like primitive on top of OM; not in scope until an OM list
+wrapper is introduced.
+
+### Set cardinality commands — pending
+
+- **New commands:** `SUNIONCARD`, `SDIFFCARD` — get the cardinality of
+  the union / difference of multiple sets without materialising the
+  result set.
+
+Status: **not wrapped.** OM has no native `Set[T]` field type or
+set-wrapper class. Trivial `execute_command` access for now.
+
+### `BACKUP` — pending
+
+- **New command:** `BACKUP` — node-side backup and restore based on
+  multi-part AOF (MP-AOF).
+
+Status: **not wrapped.** A backup/restore story for OM-managed data
+would be a larger feature (cross-cluster restore, schema re-application,
+key-prefix rewriting). Tracked for a future milestone.
+
+### `XREAD` / `XREADGROUP` `MAXCOUNT` / `MAXSIZE` — pending
+
+Redis 8.10 adds new `MAXCOUNT` and `MAXSIZE` arguments that cap the
+**cumulative** reply entries and byte size across all streams in a single
+`XREAD` / `XREADGROUP` call.
+
+Status: **not exposed.** `RedisStream.read()` / `.readgroup()` do not
+currently forward these arguments. Easy follow-up: add them as kwargs on
+the existing methods.
+
+### `FT.ALIASLIST` — pending
+
+- **New command:** `FT.ALIASLIST <index>` — list all aliases that point
+  at the given index.
+
+Status: **not wrapped.** OM's migrator exposes `FT._LIST` (all index
+names) and `await conn.ft(name).info()["index_name"]` (one alias's
+target), but no helper for the reverse direction ("what aliases point
+at this physical index?"). Useful for the migrator's own health checks
+and for user code that needs to inspect alias fan-out.
+
+### Stemmer support for Malay and Tagalog — auto
+
+RediSearch 8.10 adds native stemmer support for Malay and Tagalog.
+Configured per-index at `FT.CREATE` time; nothing for OM to wrap.
+
+Status: **automatic.** Users get the new stemmers by upgrading the
+server; OM's `Field(full_text_search=True)` schema generation continues
+to delegate stemming configuration to the server.
+
+### JSONPath extensions — pending
+
+JSONPath (RedisJSON 8.10) gains a substantial new feature set:
+
+- Projection expressions at the top level of a JSONPath query
+- `==` / `!=` comparison of any literal (arrays, objects)
+- Filter negation operator: `!`
+- `size` / `sizeof` and `empty` operators on string, array, object, nodelist
+- `in` / `nin` membership tests
+- Number arithmetic: `-`, `+`, `*`, `/`, `%` (binary), `-`, `+` (unary)
+- Object operator: `~`
+- `length()` on array, object, string
+- Number functions: `abs()`, `ceiling()`, `floor()`
+- String functions: `match()`, `search()`
+- String concatenation: `concat()`
+- Array functions: `first()`, `last()`, `index()`, `append()`
+- Array aggregation: `min()`, `max()`, `avg()`, `sum()`, `stddev()`
+- Object function: `keys()`
+- Nodelist function: `count()`, `value()`
+- Relations on array/nodelist: `subsetof()`, `anyof()`, `noneof()`
+
+Status: **not wrapped.** pyredis-om has no native JSONPath query
+builder — `JsonModel.get_value(pk, field_path, raw=False)` accepts a
+single path string and uses the raw `$`-prefixed form when
+`raw=True`. The new expressions, functions, and operators would belong
+in a future `JsonPath` query helper; significant surface area, deferred
+to a dedicated milestone.
+
+### TimeSeries extensions — pending
+
+RedisTimeSeries 8.10 ships several new commands:
+
+- `TS.NRANGE`, `TS.NREVRANGE` — range queries across multiple time
+  series, grouped by timestamp.
+- `TS.READ` — optionally blocking read of the latest sample.
+- `TS.QUERYLABELS` — list of label/label-value pairs.
+- `TS.MRANGE`, `TS.MREVRANGE` — new `EXCLUDEEMPTY` argument to exclude
+  series with no reported samples.
+
+Status: **not wrapped.** pyredis-om has **no TimeSeries wrapper class**
+at all (the `TS.*` family is not currently part of the project's surface
+area). Tracked for a future milestone.
+
+### `search-on-timeout` `RETURN_STRICT` policy — partial
+
+Redis 8.10 adds a third option to the `search-on-timeout` policy for
+`FT.SEARCH`, `FT.AGGREGATE`, `FT.HYBRID`:
+
+- `FAIL` — reject timed-out queries (preemptively enforced when
+  `search-workers > 0`).
+- `RETURN` (default) — best-effort partial results, no post-processing
+  enforcement.
+- `RETURN_STRICT` (new) — best-effort partial results **with** strict
+  timeout enforcement through the post-processing pipeline (requires
+  `search-workers > 0`).
+
+Foreground queries (`search-workers == 0`) are capped by
+`search-max-foreground-timeout-limit` (default `60000` ms).
+
+Status: **not wrapped.** pyredis-om never overrides the server's
+`search-on-timeout` policy; users get the default behaviour. The
+`timeout=` kwarg on `hybrid_search()` sets the per-query `TIMEOUT`
+argument only. A follow-up could expose the policy as a `Meta` option
+or a kwarg on `Migrator`.
+
 ## How to track progress
 
 - [PR #791](https://github.com/redis/redis-om-python/pull/791) — the
@@ -118,6 +271,7 @@ hatch.
   the upstream RFC for delegation.
 - Issue [#258](https://github.com/redis/redis-om-python/issues/258) —
   `FT.AGGREGATE` / hybrid search.
+- [Redis Open Source 8.10 release notes](https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.10-release-notes/) — source of the items above.
 
 ## Valkey Module Support
 
