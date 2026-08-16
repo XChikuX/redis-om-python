@@ -1,127 +1,114 @@
 ---
 title: Pending Features (via RedisVL)
-description: Advanced RediSearch/Vector features planned for the upcoming RedisVL integration.
+description: Advanced RediSearch/Vector features available through the RedisVL escape hatch, and what is not yet natively integrated.
 ---
 
 # Pending Features (via RedisVL)
 
-> **Status: PENDING.** The features on this page are **not yet
-> implemented** in pyredis-om. They will land with the upcoming
-> [RedisVL integration](/redisvl), which delegates RediSearch/Vector
-> index operations to the dedicated
-> [`redisvl`](https://github.com/redis/redis-vl) library — the same
-> path taken by [upstream PR #791](https://github.com/redis/redis-om-python/pull/791)
-> and the upstream [RFC #790](https://github.com/redis/redis-om-python/issues/790).
+> **Status: ESCAPE HATCH SHIPPED.** The
+> [RedisVL integration](/redisvl) has landed: `to_redisvl_schema()`,
+> `get_redisvl_index()`, and cluster-aware `hybrid_search()` are
+> available now (install with `pip install 'pyredis-om[redisvl]'`).
+> This page tracks what is **not natively integrated** into Redis OM's
+> own model/query API — everything here is usable *today* through the
+> redisvl index object the escape hatch returns.
 
-This page documents *what's planned* so users can preview the API and
-track progress. It will move to its own full reference once the
-integration lands.
+The delegation follows
+[upstream PR #791](https://github.com/redis/redis-om-python/pull/791)
+and the upstream [RFC #790](https://github.com/redis/redis-om-python/issues/790):
 
-## Why delegate?
-
-Building parallel `FT.*` support in pyredis-om would duplicate the
-maintenance burden of redisvl (which already covers hybrid search,
-SVS-VAMANA, vector policies, and more). The upstream RFC explicitly
-asks for this delegation:
-
-> We should delegate vector and FT.HYBRID support to the redisvl
-> library, which is the canonical Python implementation of these
-> features.
->
-> — [redis/redis-om-python#790](https://github.com/redis/redis-om-python/issues/790)
-
-Concretely, this means:
-
-- **What pyredis-om keeps**: Pydantic model definition, schema
+- **What Redis OM keeps**: Pydantic model definition, schema
   generation, query building for the existing operators, low-level
   data-structure wrappers (Streams, Vector Sets, Bitmaps, ...).
 - **What redisvl owns**: Index management, vector field configuration,
-  hybrid search (`FT.HYBRID`), aggregations (`FT.AGGREGATE`), SVS-VAMANA
-  graph index, and other advanced search features.
+  hybrid search (`FT.HYBRID`), aggregations (`FT.AGGREGATE`), and other
+  advanced search features.
 
-## Planned feature list
+## Feature list
 
-### `FT.HYBRID` — hybrid BM25 + vector queries
+### `FT.HYBRID` — hybrid BM25 + vector queries — SHIPPED
 
 Combines full-text BM25 ranking with vector similarity in a single
 query. Useful for "find me semantically similar documents that also
 mention this keyword."
 
 ```python
-# PLANNED — do not use yet.
 from redisvl.query import HybridQuery
 
-query = HybridQuery(
-    text="redis hash field expiration",
-    vector=embed("redis hash field expiration"),
-    text_field="body",
-    vector_field="embedding",
-    alpha=0.5,  # 0 = pure vector, 1 = pure BM25
+from aredis_om.redisvl import get_redisvl_index, hybrid_search
+
+index = get_redisvl_index(Article)
+results = await hybrid_search(
+    index,
+    HybridQuery(
+        text="redis hash field expiration",
+        text_field_name="body_fts",   # OM renders full-text fields as <name>_fts
+        vector=embed("redis hash field expiration"),
+        vector_field_name="embedding",
+        combination_method="LINEAR",
+        linear_alpha=0.5,             # 0 = pure vector, 1 = pure BM25
+    ),
 )
-results = index.query(query)
 ```
 
-Status: **pending redisvl delegation.** Tracked by upstream issue
+Status: **shipped** via `hybrid_search()` (Redis 8.4+, redis-py 7.1+),
+including Redis Cluster routing. Tracked by upstream issue
 [#258](https://github.com/redis/redis-om-python/issues/258).
 
-### SVS-VAMANA vector index (`VSIM IN` for `FT.HYBRID`)
+### `AsyncSearchIndex` lifecycle from models — SHIPPED
 
-Redis 8.8 introduces the SVS-VAMANA graph-based vector index, an
-alternative to HNSW with better compression and recall at scale.
-redisvl exposes this as a vector index algorithm option.
+Wrappers that connect the existing `Meta.database` model pattern to
+redisvl's `AsyncSearchIndex` so user code doesn't have to rebuild the
+index from Pydantic models:
 
 ```python
-# PLANNED — do not use yet.
-from aredis_om import JsonModel, VectorFieldOptions
+from aredis_om.redisvl import get_redisvl_index, to_redisvl_schema
 
-
-class Article(JsonModel):
-    body: str = Field(index=True, full_text_search=True)
-    embedding: list[float] = Field(
-        index=True,
-        vector_field=VectorFieldOptions(
-            algorithm="svs-vamana",
-            dim=384,
-            compression="LVQ8",  # or "LeanVec", "GlobalPQ"
-        ),
-    )
+schema = to_redisvl_schema(Article)      # inspect / serialize the schema
+index = get_redisvl_index(Article)       # async; async_client=False for sync
+await index.create(overwrite=True)       # lifecycle stays with the caller
 ```
 
-Status: **pending redisvl delegation.**
+Status: **shipped**. See [RedisVL Integration](/redisvl).
 
-### `FT.AGGREGATE` — server-side aggregations
+### `FT.AGGREGATE` — server-side aggregations — via redisvl
 
 Performs grouping, reduction, sorting, and limiting server-side,
-returning only the projected fields. Useful for dashboards and
-faceted navigation.
+returning only the projected fields. Useful for dashboards and faceted
+navigation. Not re-wrapped by OM — run it on the index object the
+escape hatch returns:
 
 ```python
-# PLANNED — do not use yet.
 from redisvl.query import AggregateQuery
 
-q = AggregateQuery("article").group_by(["@category"]).reduce(
-    count=Count(), avg_score=Avg("@score")
-).sort_by(AvgField("@score"), desc=True).limit(0, 20)
-results = index.aggregate(q)
+index = get_redisvl_index(Article)
+results = await index.aggregate(AggregateQuery(...))
 ```
 
-Status: **pending redisvl delegation.** Tracked by upstream issue
+Status: **available through redisvl directly** via the shipped escape
+hatch; no native OM query-builder integration (OM's cursor-paginated
+`FindQuery.iter_cursor()` already covers streaming aggregation use
+cases). Tracked by upstream issue
 [#258](https://github.com/redis/redis-om-python/issues/258).
 
-### Vector field policies
+### SVS-VAMANA vector index — via redisvl
+
+Redis 8.8 introduces the SVS-VAMANA graph-based vector index, an
+alternative to HNSW with better compression and recall at scale. OM's
+`VectorFieldOptions` exposes the `FLAT` and `HNSW` algorithms only, so
+SVS-VAMANA is configured through redisvl directly.
+
+Status: **not exposed through OM model declarations.** Use the index
+returned by `get_redisvl_index()` and redisvl's own vector field
+configuration.
+
+### Vector field policies — via redisvl
 
 Custom pre-filtering, post-filtering, and runtime swap-in of vector
 index parameters (algo, compression, search-time `EF`).
 
-Status: **pending redisvl delegation.**
-
-### `AsyncSearchIndex` lifecycle hooks
-
-Wrappers that connect the existing `Meta.database` model pattern to
-redisvl's `AsyncSearchIndex.from_existing(...)` so user code doesn't
-have to rebuild the index from Pydantic models.
-
-Status: **pending redisvl delegation.**
+Status: **available through redisvl directly** via the shipped escape
+hatch.
 
 ## How to track progress
 
@@ -131,22 +118,6 @@ Status: **pending redisvl delegation.**
   the upstream RFC for delegation.
 - Issue [#258](https://github.com/redis/redis-om-python/issues/258) —
   `FT.AGGREGATE` / hybrid search.
-
-The integration is expected to land in the next major release of
-pyredis-om after the current non-search-feature batch ships.
-
-## In the meantime
-
-If you need these features today:
-
-1. Install [`redisvl`](https://pypi.org/project/redis-vl/) directly
-   and use it standalone (it doesn't depend on redis-om).
-2. Use [`redisvl` indexes](https://docs.redisvl.com/) for hybrid
-   search and advanced vector work, while keeping pyredis-om for
-   Pydantic models, persistence, and the operators/queries API.
-
-Once the integration lands, both will share the same `Meta.database`
-connection.
 
 ## Valkey Module Support
 
@@ -191,10 +162,10 @@ handling each gap.
 
 ## Related
 
-- [RedisVL Integration (Coming Soon)](/redisvl) — overview and
-  migration story.
+- [RedisVL Integration](/redisvl) — the shipped escape hatch:
+  `to_redisvl_schema()`, `get_redisvl_index()`, `hybrid_search()`.
 - [Queries and Vector Search](/queries) — what's already available
-  today via pyredis-om (BM25, KNN, GEORADIUS).
+  today via Redis OM's native API (BM25, KNN, GEORADIUS).
 - [Vector Sets](/vector_sets) — the **separate** Redis 8.8 first-class
   vector-set data structure, which is already implemented (and is not
   delegated to redisvl).

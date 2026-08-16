@@ -21,7 +21,7 @@ creates*, so indexes built by either engine are interchangeable:
 
 RedisVL is an **optional** dependency — install it with::
 
-    pip install 'redis-om[redisvl]'
+    pip install 'pyredis-om[redisvl]'
 
 This module imports cleanly without it; the helpers raise a helpful
 ``ImportError`` only when called.
@@ -97,7 +97,7 @@ log = logging.getLogger(__name__)
 
 _LAZY_IMPORT_MESSAGE = (
     "The RedisVL integration requires the 'redisvl' package. "
-    "Install it with: pip install 'redis-om[redisvl]'"
+    "Install it with: pip install 'pyredis-om[redisvl]'"
 )
 
 
