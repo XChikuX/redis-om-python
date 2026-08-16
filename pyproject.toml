@@ -8,7 +8,7 @@ authors = [
 maintainers = [
     { name = "Srikanth", email = "oss@psync.club" },
 ]
-license = { file = "LICENSE" }
+license = "LGPL-3.0-or-later"
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 classifiers = [
@@ -17,7 +17,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Topic :: Database",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
