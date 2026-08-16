@@ -34,10 +34,21 @@ from aredis_om import (
     JsonModel,
     Migrator,
     NotFoundError,
+    VectorFieldOptions,
     get_redis_connection,
 )
 from aredis_om.model.model import model_registry
 from tests._sync_redis import has_redis_json, has_redisearch
+
+try:
+    from redisvl.query import FilterQuery, HybridQuery, VectorQuery
+    from redisvl.query.filter import Num
+
+    from aredis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
+except ImportError:  # pragma: no cover - dev extras always include redisvl
+    HAS_REDISVL = False
+else:
+    HAS_REDISVL = True
 
 from .conftest import py_test_mark_asyncio
 
@@ -1066,6 +1077,160 @@ async def test_bench_complex_geo_plus_filter(json_models):
     ).all()
     elapsed = time.perf_counter() - start
     record_benchmark("complex_geo_plus_filter", elapsed, ops=len(results))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# REDISVL BENCHMARKS
+# ══════════════════════════════════════════════════════════════════════
+
+REDISVL_DIMENSIONS = 8
+
+
+def _onehot(i, dims=REDISVL_DIMENSIONS):
+    """Deterministic query vector: exact match with docs whose embedding
+    index equals ``i % dims`` under any distance metric."""
+    return [1.0 if j == i % dims else 0.0 for j in range(dims)]
+
+
+@pytest_asyncio.fixture
+async def redisvl_model(key_prefix, redis):
+    """Indexed JsonModel with text + numeric + vector fields, migrated via
+    OM's own Migrator so both OM and redisvl query paths hit the same index."""
+    if not HAS_REDISVL:
+        pytest.skip("requires the optional redisvl package")
+    model_registry.clear()
+
+    class BaseJson(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class BenchDoc(BaseJson, index=True):
+        title: str = Field(index=True)
+        body: str = Field(full_text_search=True)
+        views: int = Field(index=True, sortable=True)
+        embedding: List[float] = Field(
+            vector_options=VectorFieldOptions.flat(
+                type=VectorFieldOptions.TYPE.FLOAT32,
+                dimension=REDISVL_DIMENSIONS,
+                distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+            )
+        )
+
+        class Meta:
+            model_key_prefix = "bench_redisvl"
+
+    await Migrator().run()
+    return BenchDoc
+
+
+async def _seed_redisvl_docs(model, count=50):
+    docs = [
+        model(
+            title=f"doc {i}",
+            body=f"body text number {i} for benchmark",
+            views=i,
+            embedding=_onehot(i),
+        )
+        for i in range(count)
+    ]
+    await model.add(docs)
+    return docs
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_schema_conversion(redisvl_model):
+    """Benchmark: OM model -> redisvl IndexSchema (pure CPU, no I/O)."""
+    start = time.perf_counter()
+    for _ in range(50):
+        schema = to_redisvl_schema(redisvl_model)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_schema_conversion", elapsed, ops=50)
+    assert schema.index.name == redisvl_model.Meta.index_name
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_index_construction(redisvl_model):
+    """Benchmark: get_redisvl_index (schema conversion + index wiring)."""
+    start = time.perf_counter()
+    for _ in range(20):
+        index = get_redisvl_index(redisvl_model)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_index_construction", elapsed, ops=20)
+    assert index.schema.index.name == redisvl_model.Meta.index_name
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_vector_query(redisvl_model):
+    """Benchmark: redisvl VectorQuery (KNN) against the OM-migrated index."""
+    docs = await _seed_redisvl_docs(redisvl_model)
+
+    index = get_redisvl_index(redisvl_model)
+    query = VectorQuery(
+        vector=_onehot(0),
+        vector_field_name="embedding",
+        num_results=5,
+    )
+    start = time.perf_counter()
+    for _ in range(20):
+        results = await index.query(query)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_vector_query", elapsed, ops=20)
+    assert len(results) >= 1
+    assert results[0]["id"] == docs[0].key()
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_filter_query(redisvl_model):
+    """Benchmark: redisvl FilterQuery with a NUMERIC filter."""
+    await _seed_redisvl_docs(redisvl_model)
+
+    index = get_redisvl_index(redisvl_model)
+    query = FilterQuery(
+        filter_expression=Num("views") > 25,
+        num_results=10,
+    )
+    start = time.perf_counter()
+    for _ in range(20):
+        results = await index.query(query)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_filter_query", elapsed, ops=20)
+    assert len(results) == 10
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_hybrid_search(redisvl_model, redis):
+    """Benchmark: FT.HYBRID text+vector fusion via OM's cluster-aware
+    hybrid_search helper (requires Redis 8.4+)."""
+    try:
+        info = await redis.execute_command("COMMAND", "INFO", "ft.hybrid")
+        has_hybrid = bool(info and all(info))
+    except Exception:
+        has_hybrid = False
+    if not has_hybrid:
+        pytest.skip("FT.HYBRID requires Redis 8.4+")
+
+    docs = await _seed_redisvl_docs(redisvl_model)
+
+    index = get_redisvl_index(redisvl_model)
+    query = HybridQuery(
+        text="body",
+        text_field_name="body_fts",
+        vector=_onehot(0),
+        vector_field_name="embedding",
+        combination_method="LINEAR",
+        linear_alpha=0.5,
+        num_results=5,
+    )
+    start = time.perf_counter()
+    for _ in range(20):
+        results = await hybrid_search(index, query)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_hybrid_search", elapsed, ops=20)
+    assert isinstance(results, list)
+    assert len(results) >= 1
+    # FT.HYBRID's reserved fields: @__key (key id) and @__score (combined).
+    assert results[0]["__key"] == docs[0].key()
+    assert "__score" in results[0]
 
 
 # ══════════════════════════════════════════════════════════════════════

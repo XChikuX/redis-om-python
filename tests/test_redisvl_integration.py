@@ -14,7 +14,7 @@ import importlib
 import re
 import sys
 from types import SimpleNamespace
-from typing import List
+from typing import List, Optional
 
 import pytest
 import pytest_asyncio
@@ -29,6 +29,8 @@ except ImportError:  # pragma: no cover - dev extras always include redisvl
 
 import aredis_om.redisvl as om_redisvl
 from aredis_om import (
+    Coordinates,
+    EmbeddedJsonModel,
     Field,
     HashModel,
     JsonModel,
@@ -162,6 +164,79 @@ async def hash_vector_model(key_prefix, redis_bytes):
 
 
 @pytest_asyncio.fixture
+async def json_field_mapping_model(key_prefix):
+    """JSON model exercising every ``_get_field_type`` branch.
+
+    No Migrator run: ``to_redisvl_schema`` is pure schema conversion and the
+    exotic fields (dict, Any, embedded) exist to probe conversion, not to be
+    indexed by OM's own Migrator.
+    """
+
+    class Address(EmbeddedJsonModel):
+        street: str = Field(index=True)
+
+    class BaseJsonModel(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class Sink(BaseJsonModel, index=True):
+        hidden: str = Field(index=False, default="")
+        tags: List[str] = Field(index=True, default_factory=list)
+        # Bare ``List`` (no inner type): OM's own schema generation logs a
+        # warning and skips the field; the redisvl conversion must skip it
+        # too (container with no ``str`` inner type).
+        raw_list: List = Field(index=True, default_factory=list)
+        address: Optional[Address] = Field(default=None)
+        location: Optional[Coordinates] = Field(index=True, default=None)
+        blob: dict = Field(index=True, default_factory=dict)
+        vec_flat: List[float] = Field(
+            default_factory=list,
+            vector_options=VectorFieldOptions.flat(
+                type=VectorFieldOptions.TYPE.FLOAT32,
+                dimension=DIMENSIONS,
+                distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+                initial_cap=1000,
+                block_size=64,
+            ),
+        )
+        vec_hnsw: List[float] = Field(
+            default_factory=list,
+            vector_options=VectorFieldOptions.hnsw(
+                type=VectorFieldOptions.TYPE.FLOAT32,
+                dimension=DIMENSIONS,
+                distance_metric=VectorFieldOptions.DISTANCE_METRIC.L2,
+                initial_cap=1000,
+                m=32,
+                ef_construction=400,
+                ef_runtime=50,
+                epsilon=0.05,
+            ),
+        )
+
+    return Sink
+
+
+@pytest_asyncio.fixture
+async def hash_field_mapping_model(key_prefix):
+    """Hash model with a List[str] field (the hash-storage variant of the
+    tag-list conversion, which takes no JSONPath)."""
+
+    class BaseHashModel(HashModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+
+    class SinkHash(BaseHashModel, index=True):
+        # ``Optional[List[str]]`` is the supported spelling for hash models:
+        # a plain ``List[str]`` annotation raises ``RedisModelError`` in
+        # ``HashModel.__init_subclass__`` (hash models cannot index set, list,
+        # or mapping fields), while the Optional-wrapped form bypasses that
+        # check and OM renders it as a plain TAG.
+        tags: Optional[List[str]] = Field(index=True, default=None)
+
+    return SinkHash
+
+
+@pytest_asyncio.fixture
 async def cluster_model_and_index(key_prefix):
     """Model whose database is presented as an async cluster client.
 
@@ -248,6 +323,108 @@ class TestToRedisvlSchema:
     async def test_non_indexed_raises(self, non_indexed_model):
         with pytest.raises(ValueError, match="is not indexed"):
             to_redisvl_schema(non_indexed_model)
+
+
+class TestToRedisvlSchemaFieldMapping:
+    """Branch coverage for ``_get_field_type`` via ``to_redisvl_schema``.
+
+    Expected shapes are grounded in the RediSearch docs (FT.CREATE and vector
+    search reference pages):
+
+    - GEO fields hold "longitude,latitude" strings.
+    - JSON identifiers are JSONPath expressions — arrays use ``$.field[*]``.
+    - HNSW exposes M / EF_CONSTRUCTION / EF_RUNTIME / EPSILON with documented
+      defaults 16 / 200 / 10 / 0.01. The values below are deliberately
+      non-default so the tests prove user values are forwarded, not that the
+      server defaults round-trip.
+    - FLAT's INITIAL_CAP / BLOCK_SIZE are accepted by the server (verified
+      against a live Redis 8.8, which rejects unknown vector attributes) but
+      are not echoed by FT.INFO, so they are asserted at the schema level.
+    """
+
+    @py_test_mark_asyncio
+    async def test_index_false_field_is_skipped(self, json_field_mapping_model):
+        schema = to_redisvl_schema(json_field_mapping_model)
+        assert "hidden" not in schema.fields
+
+    @py_test_mark_asyncio
+    async def test_geo_field(self, json_field_mapping_model):
+        field = to_redisvl_schema(json_field_mapping_model).fields["location"]
+        assert field.type.value == "geo"
+
+    @py_test_mark_asyncio
+    async def test_json_list_of_strings_uses_wildcard_path(
+        self, json_field_mapping_model
+    ):
+        field = to_redisvl_schema(json_field_mapping_model).fields["tags"]
+        assert field.type.value == "tag"
+        assert field.path == "$.tags[*]"
+
+    @py_test_mark_asyncio
+    async def test_json_bare_list_is_skipped(self, json_field_mapping_model):
+        """Containers without a ``str`` inner type are skipped (OM's own
+        Migrator skips them too, with a warning)."""
+        assert "raw_list" not in to_redisvl_schema(json_field_mapping_model).fields
+
+    @py_test_mark_asyncio
+    async def test_hash_list_of_strings_has_no_path(self, hash_field_mapping_model):
+        field = to_redisvl_schema(hash_field_mapping_model).fields["tags"]
+        assert field.type.value == "tag"
+        assert not field.path
+
+    @py_test_mark_asyncio
+    async def test_embedded_model_field_is_skipped(self, json_field_mapping_model):
+        schema = to_redisvl_schema(json_field_mapping_model)
+        assert "address" not in schema.fields
+
+    @py_test_mark_asyncio
+    async def test_unknown_type_defaults_to_tag(self, json_field_mapping_model):
+        field = to_redisvl_schema(json_field_mapping_model).fields["blob"]
+        assert field.type.value == "tag"
+
+    @py_test_mark_asyncio
+    async def test_flat_vector_knobs_round_trip(self, json_field_mapping_model):
+        attrs = to_redisvl_schema(json_field_mapping_model).fields["vec_flat"].attrs
+        assert attrs.initial_cap == 1000
+        assert attrs.block_size == 64
+        assert attrs.algorithm.value == "FLAT"
+
+    @py_test_mark_asyncio
+    async def test_hnsw_vector_knobs_round_trip(self, json_field_mapping_model):
+        attrs = to_redisvl_schema(json_field_mapping_model).fields["vec_hnsw"].attrs
+        assert attrs.algorithm.value == "HNSW"
+        assert attrs.m == 32
+        assert attrs.ef_construction == 400
+        assert attrs.ef_runtime == 50
+        assert attrs.epsilon == 0.05
+        assert attrs.initial_cap == 1000
+
+    @py_test_mark_asyncio
+    async def test_hnsw_attrs_reach_the_server(self, json_field_mapping_model, redis):
+        """End to end: the converted schema's FT.CREATE must be accepted by
+        the server and echo the user-supplied HNSW knobs back via FT.INFO.
+
+        FT.INFO echoes M / ef_construction / ef_runtime (verified against a
+        live Redis 8.8); EPSILON is documented but not echoed.
+        """
+        index = get_redisvl_index(json_field_mapping_model)
+        await index.create()
+        try:
+            info = await redis.ft(index.schema.index.name).info()
+            vector_attrs = None
+            for entry in info["attributes"]:
+                pairs = dict(zip(entry[0::2], entry[1::2]))
+                if pairs.get("attribute") == "vec_hnsw":
+                    vector_attrs = pairs
+                    break
+            assert vector_attrs is not None
+            assert vector_attrs["algorithm"] == "HNSW"
+            assert int(vector_attrs["dim"]) == DIMENSIONS
+            assert int(vector_attrs["M"]) == 32
+            assert int(vector_attrs["ef_construction"]) == 400
+            assert int(vector_attrs["ef_runtime"]) == 50
+        finally:
+            await index.delete()
 
 
 class TestGetRedisvlIndex:
@@ -489,4 +666,63 @@ class TestHybridSearchRouting:
         assert args[1] == ClusterDoc.Meta.index_name
         assert any(a == "TIMEOUT" and b == 500 for a, b in zip(args, args[1:]))
         assert captured["kwargs"]["target_nodes"] == [sentinel_node]
+        assert results == [{"id": "doc1"}]
+
+    @py_test_mark_asyncio
+    async def test_cluster_combination_method_args_included(
+        self, cluster_model_and_index, monkeypatch
+    ):
+        """The COMBINE clause must be forwarded on the cluster path.
+
+        The FT.HYBRID reference documents ``COMBINE LINEAR count [[ALPHA a]
+        [BETA b]]``; redisvl's ``CombineResultsMethod.get_args()`` emits exactly
+        that (count prefixes the tokens that follow).
+        """
+        ClusterDoc, index, cluster_client = cluster_model_and_index
+
+        captured = {}
+
+        async def fake_execute_command(*args, **kwargs):
+            captured["args"] = args
+            return ["raw-response"]
+
+        class _FakeSearchCommands:
+            def get_params_args(self, params):
+                return []
+
+            def _parse_results(self, cmd, res, **kwargs):
+                return SimpleNamespace(results=[{"id": "doc1"}])
+
+        monkeypatch.setattr(cluster_client, "execute_command", fake_execute_command)
+        monkeypatch.setattr(cluster_client, "get_default_node", lambda: object())
+        monkeypatch.setattr(
+            cluster_client, "ft", lambda index_name: _FakeSearchCommands()
+        )
+        monkeypatch.setattr(
+            "redisvl.utils.redis_protocol.get_protocol_version",
+            lambda client: "2",
+        )
+        monkeypatch.setattr(
+            "redisvl.index.index._convert_and_drop_empty_rows",
+            lambda rows, kind: rows,
+        )
+
+        query = HybridQuery(
+            text="shoes",
+            text_field_name="body_fts",
+            vector=[1.0] * DIMENSIONS,
+            vector_field_name="embedding",
+            combination_method="LINEAR",
+            linear_alpha=0.7,
+            num_results=5,
+        )
+        results = await hybrid_search(index, query)
+
+        args = captured["args"]
+        assert args[0] == "FT.HYBRID"
+        # COMBINE LINEAR count ALPHA a BETA b (documented syntax)
+        combine_at = args.index("COMBINE")
+        assert args[combine_at + 1] == "LINEAR"
+        assert "ALPHA" in args
+        assert "BETA" in args
         assert results == [{"id": "doc1"}]

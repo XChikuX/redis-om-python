@@ -306,23 +306,26 @@ def to_redisvl_schema(model_cls: Type[RedisModel]) -> "IndexSchema":
     for name, field in model_cls.model_fields.items():
         field_type = get_outer_type(field)
         if field_type is None:
-            continue
+            # Unreachable for annotations pydantic accepts (``typing.Any`` is a class
+            # instance on 3.11+, bare Union forms are rejected at class-creation).
+            # Kept as a guard.
+            continue  # pragma: no cover
 
-        # Get FieldInfo (Pydantic may wrap it in ``Annotated`` metadata).
-        # Note the fork's OM attributes (``vector_options`` etc.) are
-        # exposed as properties on Pydantic's base ``FieldInfo``, so plain
-        # FieldInfo instances (e.g. the metaclass-created ``pk``) work too.
+        # Get FieldInfo (Pydantic may wrap in ``Annotated`` metadata).
+        # Fork's OM attributes (``vector_options`` etc.) are properties on base FieldInfo,
+        # so plain instances (e.g. metaclass-created ``pk``) work too.
+        # Pydantic v2 stores FieldInfo in ``model_fields``; metadata branches are defensive.
         if (
             not isinstance(field, PydanticFieldInfo)
             and hasattr(field, "metadata")
             and len(field.metadata) > 0
             and isinstance(field.metadata[0], PydanticFieldInfo)
         ):
-            field_info = field.metadata[0]
+            field_info = field.metadata[0]  # pragma: no cover
         elif isinstance(field, PydanticFieldInfo):
             field_info = field
         else:
-            continue
+            continue  # pragma: no cover
 
         fields.extend(_get_field_type(name, field_type, field_info, is_json))
 
