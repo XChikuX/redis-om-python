@@ -52,8 +52,6 @@ pytestmark = [
     pytest.mark.xdist_group(name="migrator"),
 ]
 
-_TEST_MODEL_PREFIXES = ("_EdgeCaseModel",)
-
 
 class _EdgeCaseModel(JsonModel):
     """Model used for edge-case tests."""
@@ -66,35 +64,28 @@ class _EdgeCaseModel(JsonModel):
         _test_only = True
 
 
-_ALL_TEST_MODELS: Dict[str, Type] = {}
-for _key, _val in list(model_registry.items()):
-    _name = getattr(_val, "__name__", "")
-    if _name.startswith(_TEST_MODEL_PREFIXES):
-        _ALL_TEST_MODELS[_key] = _val
-
-
 def _qualname_key(cls: Type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
 def _isolate_registry(*keep: Type) -> Dict[str, Type]:
-    """Remove all test models except those in ``keep`` from the registry."""
-    snapshot: Dict[str, Type] = {}
-    for key in list(model_registry.keys()):
-        if key in _ALL_TEST_MODELS:
-            snapshot[key] = model_registry.pop(key)
+    """Clear the entire registry except the models in ``keep``.
+
+    Removing every entry (rather than only recognised test models)
+    guarantees that module-level models from sibling test files on the
+    same xdist worker cannot leak into this test's migrator runs.
+    """
+    snapshot: Dict[str, Type] = dict(model_registry)
+    model_registry.clear()
     for cls in keep:
         model_registry[_qualname_key(cls)] = cls
     return snapshot
 
 
 def _restore_registry(snapshot: Dict[str, Type]) -> None:
-    """Undo ``_isolate_registry``."""
-    for key in list(model_registry.keys()):
-        if key in _ALL_TEST_MODELS:
-            model_registry.pop(key, None)
-    for str_key, cls in snapshot.items():
-        model_registry[str_key] = cls
+    """Undo ``_isolate_registry``, including models registered mid-test."""
+    model_registry.clear()
+    model_registry.update(snapshot)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -571,10 +562,15 @@ async def test_alias_swap_success_when_sibling_already_swapped(conn: redis.Redis
 async def test_migrator_dry_run_with_no_migrations(conn: redis.Redis, snapshot):
     """Migrator.run dry_run prints 'No pending migrations.' when list is empty."""
     migrator = Migrator(conn=conn)
+    # Bypass registry-driven detection so the test is independent of
+    # whatever other test files happened to import on this xdist worker
+    # (e.g. ``StrawberryUser`` from ``test_strawberry_integration``).
+    migrator.detect_migrations = AsyncMock()  # type: ignore[method-assign]
 
     with patch("builtins.print") as mock_print:
         await migrator.run(dry_run=True)
         mock_print.assert_called_with("No pending migrations.")
+    migrator.detect_migrations.assert_awaited_once()
 
 
 async def test_migrator_dry_run_shows_planned_migrations(

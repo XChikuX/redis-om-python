@@ -91,7 +91,7 @@ async def _create_index_cluster(
         log.info("Index already exists, skipping. Index hash: %s", index_name)
 
 
-async def _wait_for_index(conn, index_name: str, timeout: float = 3.0) -> None:
+async def _wait_for_index(conn, index_name: str, timeout: float = 7.0) -> None:
     """Poll FT.INFO until the index reports it is fully indexed.
 
     Redis 8.8+ introduced asynchronous background indexing for existing
@@ -106,7 +106,11 @@ async def _wait_for_index(conn, index_name: str, timeout: float = 3.0) -> None:
     case we keep polling instead of returning early so that callers can
     rely on the index being queryable once this function returns.
 
-    3 s is the empirically sufficient budget for both standalone and
+    The budget must cover re-indexing existing documents while Redis is
+    under load from concurrent clients (e.g. other pytest-xdist workers
+    hammering the same instance).
+
+    7s is the empirically sufficient budget for both standalone and
     pytest-xdist runs (20 workers, single Redis 8 instance) without
     turning transient load spikes into minute-long suite hangs.
     """

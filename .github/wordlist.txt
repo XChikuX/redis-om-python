@@ -18,7 +18,7 @@ Pydantic
 Pydantic's
 README
 README.md
-RediSearch
+RedisArray
 RediSearch
 RedisJSON
 SQLAlchemy
@@ -45,6 +45,7 @@ redis
 redisearch
 redisjson
 rediss
+redisvl
 runtime
 sortable
 subclasses

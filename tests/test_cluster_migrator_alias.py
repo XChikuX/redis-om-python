@@ -38,7 +38,7 @@ import abc
 import asyncio
 import hashlib
 from collections import namedtuple
-from typing import Dict, List, Optional, Type, cast
+from typing import Dict, List, Optional, Type
 
 import pytest
 import pytest_asyncio
@@ -144,23 +144,13 @@ class _ClusterPersonV2(_ClusterPersonBase):
         _test_only = True
 
 
-_ALL_TEST_MODELS: Dict[str, Type] = {}
-for _key, _val in list(model_registry.items()):
-    _name = getattr(_val, "__name__", "")
-    # Capture every test-prefixed model that may be registered by sibling
-    # test files on the same xdist worker. ``test_migrator_alias.py`` and
-    # this file are both collected on every worker, so we must isolate
-    # against both prefixes to avoid one test's models leaking into the
-    # other's migrator runs.
-    if (
-        _name.startswith("_Person")
-        or _name.startswith("_LegacyModel")
-        or _name.startswith("_ClusterPerson")
-    ):
-        _ALL_TEST_MODELS[_key] = _val
-
-
-# ── Registry isolation helpers ───────────────────────────────────────
+# ── Registry isolation helpers ──────────────────────────────────────
+#
+# The migrator walks the entire global ``model_registry``, so tests must
+# isolate themselves from models defined by sibling test modules that land
+# on the same xdist worker. Isolation snapshots and clears the WHOLE
+# registry (restoring it afterwards) — matching by name prefix would miss
+# module-level models from other test files.
 
 
 def _qualname_key(cls: Type) -> str:
@@ -168,22 +158,18 @@ def _qualname_key(cls: Type) -> str:
 
 
 def _isolate_registry(*keep: Type) -> Dict[str, Type]:
-    """Remove all cluster-person models except those in ``keep``."""
-    snapshot: Dict[str, Type] = {}
-    for key in list(model_registry.keys()):
-        if key in _ALL_TEST_MODELS:
-            snapshot[key] = cast(Type, model_registry.pop(key))
+    """Clear the entire registry except the models in ``keep``."""
+    snapshot: Dict[str, Type] = dict(model_registry)
+    model_registry.clear()
     for cls in keep:
         model_registry[_qualname_key(cls)] = cls
     return snapshot
 
 
 def _restore_registry(snapshot: Dict[str, Type]) -> None:
-    for key in list(model_registry.keys()):
-        if key in _ALL_TEST_MODELS:
-            model_registry.pop(key, None)
-    for key, cls in snapshot.items():
-        model_registry[key] = cls
+    """Undo ``_isolate_registry``, including models registered mid-test."""
+    model_registry.clear()
+    model_registry.update(snapshot)
 
 
 def _schema_hash(schema: str) -> str:
