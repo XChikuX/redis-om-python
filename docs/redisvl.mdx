@@ -18,7 +18,7 @@ RedisVL is an **optional** dependency — Redis OM imports cleanly without
 it, and the helpers below raise a helpful `ImportError` only when called:
 
 ```bash
-pip install 'pyredis-om[redisvl]'   # requires redisvl >= 0.25.1
+pip install 'pyredis-om[redisvl]'   # requires redisvl >= 0.27.0
 ```
 
 ## What you get
@@ -83,6 +83,57 @@ results = await index.query(
 )
 ```
 
+## Cluster support
+
+Cluster-ness comes from the **connection, not from redisvl**. There is
+no redisvl-specific cluster mode, and installing the package changes
+nothing until you call the helpers:
+
+- `get_redisvl_index()` wires the redisvl index to the **same client the
+  model already uses** — `Meta.database` (resolved lazily via
+  `model_cls.db()`, falling back to `get_redis_connection()`). Whatever
+  that resolves to — `redis.Redis`, `redis.asyncio.RedisCluster`, a
+  callable provider — the redisvl index gets it verbatim.
+- If `Meta.database` is a cluster client, redisvl **routes the query
+  commands itself**: `index.create()` and `index.query()` (vector,
+  filter, tag, text) detect the cluster client and dispatch
+  `FT.CREATE` / `FT.SEARCH` with redisvl's own cluster helpers.
+- The **one command redisvl cannot route** on a cluster is `FT.HYBRID`
+  (redisvl ships no cluster helper for it). Use OM's `hybrid_search()` —
+  it pins the command to the cluster's default node for you (see
+  "Hybrid search" below).
+
+Configure the cluster exactly as for the rest of Redis OM — see
+[Redis Cluster](/cluster) for the full options (`cluster=true` URL
+parameter, `Meta.database`, callable providers):
+
+```python
+from aredis_om import JsonModel, get_redis_connection
+from aredis_om.redisvl import get_redisvl_index, hybrid_search
+
+cluster = get_redis_connection(
+    url="redis://node1:7001,node2:7002,node3:7003?cluster=true",
+)
+
+
+class Article(JsonModel, index=True):
+    body: str = Field(full_text_search=True)
+    embedding: list[float] = Field(vector_options=...)
+
+    class Meta:
+        database = cluster
+
+
+index = get_redisvl_index(Article)      # wired to the cluster client above
+await index.create()                    # redisvl's cluster-aware FT.CREATE
+results = await index.query(VectorQuery(...))  # redisvl's cluster-aware FT.SEARCH
+hybrid = await hybrid_search(index, HybridQuery(...))  # OM pins FT.HYBRID for you
+```
+
+In short: Redis OM's own query path never touches redisvl, and redisvl
+never re-configures your connection — both engines share the single
+connection resolved from `Meta.database`.
+
 ## Hybrid search (BM25 + vector)
 
 `FT.HYBRID` combines full-text BM25 ranking with vector similarity in a
@@ -119,11 +170,12 @@ behave identically.
 
 ### Redis Cluster
 
-An index name hashes to a single cluster slot, so `FT.HYBRID` must be
-pinned to one node. redisvl ships cluster helpers for `FT.SEARCH` /
-`FT.CREATE` but not for `FT.HYBRID`; `hybrid_search()` fills that gap by
-mirroring redisvl's own routing. The optional `timeout` argument
-(milliseconds) is applied on cluster clients only.
+`FT.HYBRID` must be pinned to one node (an index name hashes to a single
+cluster slot), and redisvl has no cluster helper for it — so call
+`hybrid_search()` rather than `index.query()` on cluster clients (see
+"Cluster support" above). On non-cluster clients
+`hybrid_search()` simply delegates to `index.query()`. The optional
+`timeout` argument (milliseconds) is applied on cluster clients only.
 
 ## Still delegated to redisvl (use the index directly)
 
@@ -164,4 +216,5 @@ Nothing. The integration is **additive**:
   KNN, GEO).
 - [Vector Sets](/vector_sets) — the **separate** Redis 8.8 first-class
   vector-set data structure, already shipped.
+- [Redis Cluster](/cluster) — how cluster connections work in Redis OM.
 - [docs.redisvl.com](https://docs.redisvl.com/) — redisvl reference.

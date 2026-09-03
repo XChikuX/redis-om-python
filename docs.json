@@ -218,7 +218,7 @@
                     "icon": "wrench"
                 },
                 {
-                    "title": "RedisVL Integration (Coming Soon)",
+                    "title": "RedisVL Integration",
                     "href": "/redisvl",
                     "icon": "sparkles"
                 },

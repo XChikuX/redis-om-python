@@ -187,7 +187,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 ## 9. RedisVL Integration
 
 * **Module:** `aredis_om/redisvl.py` (async source) → `redis_om/redisvl.py` (generated). Public helpers: `to_redisvl_schema(Model)`, `get_redisvl_index(Model, async_client=True)`, `hybrid_search(index, query, timeout=None)`.
-* **Optional dependency:** redisvl is NOT a hard dep — module imports cleanly without it; helpers raise a helpful `ImportError` (`_LAZY_IMPORT_MESSAGE`) only when called. Install extra: `pip install 'pyredis-om[redisvl]'` (requires `redisvl>=0.25.1`).
+* **Optional dependency:** redisvl is NOT a hard dep — module imports cleanly without it; helpers raise a helpful `ImportError` (`_LAZY_IMPORT_MESSAGE`) only when called. Install extra: `pip install 'pyredis-om[redisvl]'` (requires `redisvl>=0.27.0`).
 * **`_fts` fidelity invariant:** `Field(full_text_search=True)` renders as dual fields (`body` TAG + `body_fts` TEXT aliased to the same source). The generated redisvl schema matches OM's `Migrator` output exactly (index name, key prefix, storage type, field names), so indexes built by either engine are interchangeable — OM queries work on redisvl-created indexes and vice versa. redisvl text queries must target the `_fts` name (`text_field_name="body_fts"`).
 * **Cluster routing:** `hybrid_search()` pins `FT.HYBRID` (Redis 8.4+, redis-py 7.1+) to `get_default_node()` — an index name hashes to one slot; redisvl has no `FT.HYBRID` cluster helper of its own. Non-cluster clients delegate to `index.query()`.
 * **Tests:** `tests/test_redisvl_integration.py` (+ sync mirror) — schema fidelity, lazy import, routing (mocked cluster client), end-to-end queries against an OM-migrated index.

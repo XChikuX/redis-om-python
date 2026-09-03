@@ -1842,8 +1842,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
     { name = "python-ulid", specifier = ">=3.0.0" },
     { name = "redis", specifier = ">=7.4.1,<9.0.0" },
-    { name = "redisvl", marker = "extra == 'full'", specifier = ">=0.25.1" },
-    { name = "redisvl", marker = "extra == 'redisvl'", specifier = ">=0.25.1" },
+    { name = "redisvl", marker = "extra == 'full'", specifier = ">=0.27.0" },
+    { name = "redisvl", marker = "extra == 'redisvl'", specifier = ">=0.27.0" },
 ]
 provides-extras = ["full", "hiredis", "redisvl"]
 
@@ -2099,7 +2099,7 @@ wheels = [
 
 [[package]]
 name = "redisvl"
-version = "0.25.1"
+version = "0.27.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpath-ng" },
@@ -2113,9 +2113,9 @@ dependencies = [
     { name = "redis" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ba/a1/d8864892eb43313103e2a904fb0e6a6bc538f9cb542ac432c8bfdbfdb279/redisvl-0.25.1.tar.gz", hash = "sha256:5a651d4be1136e6e82d00c8e16ec02711992a5cf95079d9c50e6129bd960621c", size = 1252286, upload-time = "2026-08-07T15:31:13.791Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/d2/194a9476cced8df9ed86ec111911fd65bfa02edff71d17ed4de7c6d4fe71/redisvl-0.27.0.tar.gz", hash = "sha256:7a1b29f2d0a3b95884e6c818a1e5beb95bd9d0cdab038e6a2c628576cb5c327e", size = 1315642, upload-time = "2026-09-02T13:13:16.563Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/a1/9e1d55f70198a8f97977798fa76e1947760c58000f74152a9aa3c61aa1d8/redisvl-0.25.1-py3-none-any.whl", hash = "sha256:dc0ab14f92b54f8b7804a53529545181b8463105699f20df724e27359c0dbe8c", size = 392583, upload-time = "2026-08-07T15:31:12.057Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/dc/424039fccc1aceb67c9c423a476940796054bcc55d213d9de47329cf9576/redisvl-0.27.0-py3-none-any.whl", hash = "sha256:9428b37687206798f2cecd73371395d0520d626900109d7d6015633bd6f07c28", size = 412189, upload-time = "2026-09-02T13:13:14.504Z" },
 ]
 
 [[package]]
