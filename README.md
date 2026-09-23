@@ -231,6 +231,28 @@ results = await pipe.execute()
 
 Why `execute_command` (and not the redis-py typed bindings): see [⚡ Why `execute_command`?](#-why-execute_command) above. Full pipeline patterns — bulk fetches + secondary key lookups, GEO model + raw `GEO*` storage, KNN + stream publish, rate limiting + writes, cluster hash tags: [`docs/pipelines.mdx`](docs/pipelines.mdx).
 
+## 🚨 Handling Redis errors
+
+Catch Redis failures without importing `redis` directly. The full set of
+redis-py exceptions lives in `redis_om.exceptions`, and the common ones are
+re-exported from the package root:
+
+```python
+from redis_om import RedisConnectionError, RedisError, ResponseError
+
+
+try:
+    Member.find(Member.first_name == "Andrew").all()
+except ResponseError:
+    ...
+except RedisConnectionError:
+    ...
+```
+
+`redis_om.exceptions` mirrors `redis.exceptions`; the two names that shadow
+Python builtins are exposed as `RedisConnectionError` and `RedisTimeoutError`.
+See [`docs/errors.mdx`](docs/errors.mdx).
+
 ## 📚 Documentation
 
 **The full documentation lives in [`docs/`](docs/index.mdx).** Highlights:

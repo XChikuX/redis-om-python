@@ -1,6 +1,20 @@
 from .async_redis import redis  # isort:skip
 from .checks import has_redis_json, has_redisearch
 from .connections import get_redis_connection
+from .exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    BusyLoadingError,
+    ClusterError,
+    DataError,
+    NoScriptError,
+    ReadOnlyError,
+    RedisConnectionError,
+    RedisError,
+    RedisTimeoutError,
+    ResponseError,
+    WatchError,
+)
 from .hotkeys import HotKeysSnapshot, has_hotkeys, hotkeys_snapshot
 from .model.array import RedisArray
 from .model.atomic_string import AtomicString, msetex

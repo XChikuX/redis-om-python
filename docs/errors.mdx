@@ -286,3 +286,30 @@ scalar operator, because both are deliberately excluded from
 [tests/test_find_query.py](https://github.com/XChikuX/redis-om-python/blob/main/tests/test_find_query.py)
 for the exact boundary, which also covers `range`, `collections.deque`,
 empty lists, single-element lists, and tuples).
+
+## Redis exceptions
+
+You never need to import `redis` directly to catch Redis failures — Redis OM
+re-exports redis-py's exception types. The full set lives in
+`redis_om.exceptions`, and the most common ones are available from the package
+root:
+
+```python
+from redis_om import RedisConnectionError, RedisError, ResponseError
+
+
+try:
+    Member.find(Member.first_name == "Andrew").all()
+except ResponseError:
+    ...
+except RedisConnectionError:
+    ...
+```
+
+`redis_om.exceptions` mirrors `redis.exceptions`: every redis-py exception is
+available under its redis-py name. The two exceptions that shadow Python
+builtins are exposed as `RedisConnectionError` and `RedisTimeoutError` instead
+of `ConnectionError` and `TimeoutError`.
+
+The async API exposes the same module as `aredis_om.exceptions`.
+
