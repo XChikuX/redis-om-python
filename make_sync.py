@@ -41,6 +41,12 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
+    # Vectorizers expose sync ``embed`` and async ``aembed`` variants. OM's
+    # async source calls ``aembed`` (awaited); the sync mirror must call the
+    # sync ``embed``. unasync matches full NAME tokens, so the keys are bare
+    # identifiers. Call sites only exist in ``aredis_om/ai/*``.
+    "aembed": "embed",
+    "aembed_many": "embed_many",
     # unasync has a built-in rule that converts any ``Async``-prefixed
     # class name to ``Sync`` (e.g. ``AsyncMock`` → ``SyncMock``),
     # but ``SyncMock`` does not exist. Override it for the common

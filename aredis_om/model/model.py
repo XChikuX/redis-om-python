@@ -1437,8 +1437,13 @@ def _save_convert_value(fp: "_FieldPlan", value: Any) -> Any:
         # ``list[float]`` vector field — pack per the declared dtype so
         # HSET receives the raw buffer RediSearch expects. ``None``
         # (Optional vector) and non-list values pass through unchanged.
+        # An empty list ("not embedded yet", e.g. the source field was
+        # empty) maps to ``None`` so the save path drops the field instead
+        # of failing the dimension check on a zero-byte blob.
         if value is None or not isinstance(value, list):
             return value
+        if not value:
+            return None
         if fp.vector_type is None or fp.vector_dim is None:
             return value
         return _pack_vector(value, fp.vector_type, fp.vector_dim)
@@ -3154,6 +3159,8 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]  # ty: ignore[subclass
         index = kwargs.pop("index", Undefined)
         full_text_search = kwargs.pop("full_text_search", Undefined)
         vector_options = kwargs.pop("vector_options", None)
+        vectorizer = kwargs.pop("vectorizer", None)
+        source = kwargs.pop("source", None)
         separator = kwargs.pop("separator", SINGLE_VALUE_TAG_FIELD_SEPARATOR)
         # Track which attributes the user *explicitly* set in the ``Field()``
         # call.  The ``index`` property has a default of ``False``, so without
@@ -3182,6 +3189,8 @@ class FieldInfo(PydanticFieldInfo):  # type: ignore[misc]  # ty: ignore[subclass
         self.index = index
         self.full_text_search = full_text_search
         self.vector_options = vector_options
+        self.vectorizer = vectorizer
+        self.source = source
         self.separator = separator
         # Pydantic v2 merges Annotated metadata from its internal
         # _attributes_set, so mark Redis OM metadata as explicit when that
@@ -3205,6 +3214,8 @@ REDIS_OM_FIELD_DEFAULTS = {
     "index": False,
     "full_text_search": False,
     "vector_options": None,
+    "vectorizer": None,
+    "source": None,
     "separator": SINGLE_VALUE_TAG_FIELD_SEPARATOR,
 }
 REDIS_OM_METADATA_KEY = "redis_om"
@@ -3466,6 +3477,9 @@ class VectorFieldOptions:
     class ALGORITHM(Enum):
         FLAT = "FLAT"
         HNSW = "HNSW"
+        # SVS-VAMANA — Redis 8.2+. Supports only FLOAT16/FLOAT32 and uses a
+        # different attribute set than HNSW (see the ``svs()`` factory).
+        SVS = "SVS-VAMANA"
 
     class TYPE(Enum):
         FLOAT32 = "FLOAT32"
@@ -3498,6 +3512,17 @@ class VectorFieldOptions:
     ef_construction: Optional[int] = None
     ef_runtime: Optional[int] = None
     epsilon: Optional[float] = None
+
+    # Optional parameters for SVS-VAMANA (Redis 8.2+). ``compression`` is a
+    # compression type name (LVQ4, LVQ4x4, LVQ4x8, LVQ8, LeanVec4x8,
+    # LeanVec8x8). These attributes are algorithm-specific and only render
+    # when ``algorithm=SVS`` — not copies of the HNSW knobs.
+    compression: Optional[str] = None
+    construction_window_size: Optional[int] = None
+    graph_max_degree: Optional[int] = None
+    search_window_size: Optional[int] = None
+    training_threshold: Optional[int] = None
+    reduce: Optional[int] = None
 
     @staticmethod
     def flat(
@@ -3539,6 +3564,52 @@ class VectorFieldOptions:
             epsilon=epsilon,
         )
 
+    @staticmethod
+    def svs(
+        type: TYPE,
+        dimension: int,
+        distance_metric: DISTANCE_METRIC,
+        initial_cap: Optional[int] = None,
+        compression: Optional[str] = None,
+        construction_window_size: Optional[int] = None,
+        graph_max_degree: Optional[int] = None,
+        search_window_size: Optional[int] = None,
+        training_threshold: Optional[int] = None,
+        reduce: Optional[int] = None,
+        epsilon: Optional[float] = None,
+    ):
+        """Build SVS-VAMANA vector options (Redis 8.2+).
+
+        SVS-VAMANA supports only FLOAT16/FLOAT32 and its own attribute set
+        (compression, construction_window_size, graph_max_degree,
+        search_window_size, training_threshold, reduce, epsilon) — these are
+        *not* the HNSW knobs. ``compression`` is one of LVQ4, LVQ4x4, LVQ4x8,
+        LVQ8, LeanVec4x8, LeanVec8x8 (see
+        ``aredis_om.ai.recommend_compression`` for a heuristic choice).
+        """
+        if type not in (
+            VectorFieldOptions.TYPE.FLOAT16,
+            VectorFieldOptions.TYPE.FLOAT32,
+        ):
+            raise ValueError(
+                "SVS-VAMANA supports only FLOAT16 and FLOAT32 vector types; "
+                f"got {getattr(type, 'name', type)}."
+            )
+        return VectorFieldOptions(
+            algorithm=VectorFieldOptions.ALGORITHM.SVS,
+            type=type,
+            dimension=dimension,
+            distance_metric=distance_metric,
+            initial_cap=initial_cap,
+            compression=compression,
+            construction_window_size=construction_window_size,
+            graph_max_degree=graph_max_degree,
+            search_window_size=search_window_size,
+            training_threshold=training_threshold,
+            reduce=reduce,
+            epsilon=epsilon,
+        )
+
     @property
     def schema(self):
         attr = []
@@ -3552,7 +3623,9 @@ class VectorFieldOptions:
                 ]
             )
 
-        return " ".join([f"VECTOR {self.algorithm.name} {len(attr)}"] + attr)
+        return " ".join(
+            [f"VECTOR {self.algorithm.value} {len(attr)}"] + attr
+        )
 
 
 def Field(
@@ -3586,6 +3659,8 @@ def Field(
     index: Union[bool, UndefinedType] = Undefined,
     full_text_search: Union[bool, UndefinedType] = Undefined,
     vector_options: Optional[VectorFieldOptions] = None,
+    vectorizer: Any = None,
+    source: Optional[str] = None,
     separator: str = SINGLE_VALUE_TAG_FIELD_SEPARATOR,
     schema_extra: Optional[Dict[str, Any]] = None,
 ) -> Any:
@@ -3616,6 +3691,8 @@ def Field(
         index=index,
         full_text_search=full_text_search,
         vector_options=vector_options,
+        vectorizer=vectorizer,
+        source=source,
         separator=separator,
         **current_schema_extra,
     )
@@ -3644,6 +3721,15 @@ class BaseMeta(Protocol):
     # When True, unmarked fields are auto-indexed unless explicitly opted out
     # with ``Field(index=False)``.
     index_enabled: bool
+    # Auto-embedding fields (U1): mapping of vector field name ->
+    # ``aredis_om.ai.embeddings.EmbeddingSpec``, populated by ``ModelMeta``
+    # from ``Field(vectorizer=..., source=...)`` declarations. Empty/None on
+    # models without auto-embedding (the overwhelmingly common case — the
+    # save path guards with a single getattr).
+    embedding_fields: Optional[Dict[str, Any]]
+    # Embedding cache setting (U2): ``True`` (auto-named cache wired to the
+    # model's database), an ``EmbeddingsCache`` instance, or None (off).
+    embedding_cache: Any
     # Bookkeeping for lazy database resolution; not part of the public API.
     _database_generated: bool
     _database_loop: Optional[asyncio.AbstractEventLoop]
@@ -3679,6 +3765,12 @@ class DefaultMeta:
     index_health_checked: bool = False
     # Whether the model was declared with class-level ``index=True``.
     index_enabled: Optional[bool] = False
+    # Auto-embedding fields (U1) — populated by ``ModelMeta``. ``None``
+    # distinguishes "not set" for inheritance purposes; the save-path guard
+    # treats both ``None`` and ``{}`` as "no auto-embedding".
+    embedding_fields: Optional[Dict[str, Any]] = None
+    # Embedding cache (U2): True = auto-named, instance = explicit, None = off.
+    embedding_cache: Any = None
     _database_generated: bool = False
     _database_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -3776,6 +3868,21 @@ class ModelMeta(ModelMetaclass):
                 score_attr = f"_{field_name}_score"
                 setattr(new_class, score_attr, None)
                 new_class.__annotations__[score_attr] = Union[float, None]
+
+        # Collect auto-embedding declarations (U1). Deferred to a helper in
+        # ``aredis_om.ai.embeddings`` — a lazy, import-safe module — because
+        # this metaclass runs during ``aredis_om``'s own import (the very
+        # first model class). Models without ``vectorizer=`` fields (the
+        # common case) skip the helper entirely.
+        if any(
+            getattr(f, "vectorizer", None) is not None
+            for f in new_class.model_fields.values()
+        ):
+            from aredis_om.ai.embeddings import build_embedding_specs
+
+            new_class._meta.embedding_fields = build_embedding_specs(new_class)
+        else:
+            new_class._meta.embedding_fields = None
 
         # Pydantic v2 copies the class-level attribute into the core schema as
         # the field default.  Because ``setattr(new_class, field_name, ExpressionProxy)``
@@ -4073,6 +4180,19 @@ class RedisModel(BaseModel, abc.ABC, metaclass=ModelMeta):
         await self.apply_default_ttl(pipeline=pipeline)
         # Re-check index health on the next query after writes.
         type(self)._meta.index_health_checked = False
+
+    async def _apply_auto_embeddings(self) -> None:
+        """Populate empty vector fields from their ``source`` text (U1).
+
+        No-op (a single ``getattr``) for models without auto-embedding
+        fields. Import of ``aredis_om.ai.embeddings`` is deferred to the
+        uncommon path so models without vectorizers never touch it.
+        """
+        if not getattr(type(self)._meta, "embedding_fields", None):
+            return
+        from aredis_om.ai.embeddings import embed_model_fields
+
+        await embed_model_fields(self)
 
     async def apply_default_ttl(
         self, pipeline: Optional[redis.client.Pipeline] = None
@@ -4418,9 +4538,24 @@ class HashModel(RedisModel, abc.ABC):
             for name, default in cls.__dict__.items()
             if getattr(default, "vector_options", None) is not None
         }
+        # Fields declaring ``vectorizer=`` without ``vector_options`` would
+        # otherwise surface as a confusing container-type error below —
+        # raise the actionable message instead.
+        vectorizer_without_options = {
+            name
+            for name, default in cls.__dict__.items()
+            if getattr(default, "vectorizer", None) is not None
+            and getattr(default, "vector_options", None) is None
+        }
 
         if hasattr(cls, "__annotations__"):
             for name, field_type in cls.__annotations__.items():
+                if name in vectorizer_without_options:
+                    raise RedisModelError(
+                        f"Field {name!r} declares vectorizer= but is not a "
+                        "vector field: add "
+                        "vector_options=VectorFieldOptions.flat/hnsw/svs(...)."
+                    )
                 if name in vector_field_names:
                     # Vector fields store raw bytes regardless of the
                     # declared container annotation (e.g. ``bytes`` or
@@ -4479,6 +4614,9 @@ class HashModel(RedisModel, abc.ABC):
         self: "Model", pipeline: Optional[redis.client.Pipeline] = None
     ) -> "Model":
         self.check()
+        # U1: embed empty vector fields from their declared sources before
+        # serialization (no-op for models without auto-embedding fields).
+        await self._apply_auto_embeddings()
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime/bytes/dataclass fields using
@@ -5033,6 +5171,9 @@ class JsonModel(RedisModel, abc.ABC):
         self: "Model", pipeline: Optional[redis.client.Pipeline] = None
     ) -> "Model":
         self.check()
+        # U1: embed empty vector fields from their declared sources before
+        # serialization (no-op for models without auto-embedding fields).
+        await self._apply_auto_embeddings()
         db = self._get_db(pipeline)
 
         # Get model data and convert datetime/bytes/dataclass fields using

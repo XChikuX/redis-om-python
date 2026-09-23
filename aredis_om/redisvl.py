@@ -145,7 +145,10 @@ def _get_field_type(
         attrs: Dict[str, Any] = {
             "dims": vector_options.dimension,
             "distance_metric": vector_options.distance_metric.name.lower(),
-            "algorithm": vector_options.algorithm.name.lower(),
+            # ``.value`` (not ``.name``) so SVS renders as "svs-vamana" —
+            # redisvl's algorithm discriminator string. FLAT/HNSW are
+            # unchanged (name == value for them).
+            "algorithm": vector_options.algorithm.value.lower(),
             "datatype": vector_options.type.name.lower(),
         }
         if vector_options.initial_cap:
@@ -160,6 +163,27 @@ def _get_field_type(
                 attrs["ef_construction"] = vector_options.ef_construction
             if vector_options.ef_runtime:
                 attrs["ef_runtime"] = vector_options.ef_runtime
+            if vector_options.epsilon:
+                attrs["epsilon"] = vector_options.epsilon
+        elif vector_options.algorithm.name == "SVS":
+            # SVS-VAMANA attributes (Redis 8.2+). ``compression`` must match
+            # one of redisvl's enum values exactly: LVQ4, LVQ4x4, LVQ4x8,
+            # LVQ8 (all already uppercase) and LeanVec4x8 / LeanVec8x8
+            # (mixed case — RedisVL's ``CompressionType`` ``Enum`` values).
+            if vector_options.compression:
+                attrs["compression"] = vector_options.compression
+            if vector_options.construction_window_size:
+                attrs["construction_window_size"] = (
+                    vector_options.construction_window_size
+                )
+            if vector_options.graph_max_degree:
+                attrs["graph_max_degree"] = vector_options.graph_max_degree
+            if vector_options.search_window_size:
+                attrs["search_window_size"] = vector_options.search_window_size
+            if vector_options.training_threshold:
+                attrs["training_threshold"] = vector_options.training_threshold
+            if vector_options.reduce:
+                attrs["reduce"] = vector_options.reduce
             if vector_options.epsilon:
                 attrs["epsilon"] = vector_options.epsilon
         return [{"name": field_name, "type": "vector", "attrs": attrs}]
@@ -440,9 +464,26 @@ async def hybrid_search(
     # ``hybrid_search`` does, then pin it to the default node (an index
     # name hashes to a single slot, so fan-out is neither possible nor
     # correct — this mirrors redisvl's async_cluster_search).
+    #
+    # ``_convert_and_drop_empty_rows`` is a *private* redisvl symbol (0.27.x)
+    # and ``get_protocol_version`` is undocumented — both can drift across
+    # minor releases. Load them through the compat shim below so a rename
+    # raises a clear, actionable error instead of an ImportError deep in
+    # this function.
     from redis.client import NEVER_DECODE
-    from redisvl.index.index import _convert_and_drop_empty_rows
-    from redisvl.utils.redis_protocol import get_protocol_version
+
+    try:
+        from redisvl.index.index import _convert_and_drop_empty_rows
+        from redisvl.utils.redis_protocol import get_protocol_version
+    except ImportError as e:
+        raise ImportError(
+            "redis-om's hybrid_search() relies on redisvl internals that "
+            "changed in this redisvl version (expected in 0.27.x: "
+            "redisvl.index.index._convert_and_drop_empty_rows, "
+            "redisvl.utils.redis_protocol.get_protocol_version). Pin "
+            "redisvl to a compatible version or open an issue at "
+            "https://github.com/redis/redis-om-python."
+        ) from e
 
     HYBRID_CMD = "FT.HYBRID"
     index_name = index.schema.index.name
@@ -469,3 +510,163 @@ async def hybrid_search(
     res = await client.execute_command(*pieces, target_nodes=[node], **options)
     results = ft._parse_results(HYBRID_CMD, res, **options)
     return _convert_and_drop_empty_rows(results.results, "hybrid")
+
+
+def to_redisvl_mcp_config(
+    model_classes: List[Type[RedisModel]],
+    redis_url: Optional[str] = None,
+    *,
+    read_only: bool = True,
+    search_type: str = "vector",
+    descriptions: Optional[Dict[str, str]] = None,
+    vectorizers: Optional[Dict[str, Dict[str, Any]]] = None,
+    runtime_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+    schema_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Generate a redisvl MCP server config (YAML-ready dict) for OM models (U7).
+
+    The returned dict matches redisvl's MCPConfig schema — dump it to
+    YAML and run rvl mcp --config om_models.yaml (requires
+    redisvl[mcp]). OM never owns the server lifecycle (decision D5 in
+    PLAN.md); this is pure serialization and imports nothing from
+    redisvl.mcp.
+
+    The MCP server reconstructs schemas from *live index metadata*, so each
+    model's index must already exist (e.g. via Migrator().run()). For
+    vector/hybrid search, vectorizer entries name the vectorizer class
+    redisvl should embed queries with; vector attribute reconstruction may
+    need schema_overrides (passed through verbatim to the binding).
+
+    Args:
+        model_classes: One or more OM model classes (index=True).
+        redis_url: Redis connection URL for the MCP server. Defaults to the
+            REDIS_OM_URL environment variable.
+        read_only: Disable the upsert-records built-in tool (default).
+        search_type: "vector", "fulltext", or "hybrid".
+        descriptions: Optional per-model binding descriptions
+            ({model.__name__: text}).
+        vectorizers: Optional per-model vectorizer config
+            ({model.__name__: {"class": "OpenAITextVectorizer",
+            "model": "text-embedding-3-small", ...extra kwargs}}).
+            Required for "vector"/"hybrid" search unless the model
+            declares auto-embedding (then derived automatically).
+        runtime_overrides: Optional per-model runtime config overrides
+            (merged over the generated defaults).
+        schema_overrides: Optional per-model schema_overrides passed
+            through to the binding verbatim.
+
+    Returns:
+        The MCP server configuration as a nested dict (JSON/YAML-serializable).
+
+    Example::
+
+        config = to_redisvl_mcp_config([Doc], read_only=True)
+        import yaml, pathlib
+        pathlib.Path("mcp.yaml").write_text(yaml.safe_dump(config))
+        # then: rvl mcp --config mcp.yaml
+    """
+    import os
+
+    if redis_url is None:
+        redis_url = os.environ.get("REDIS_OM_URL", "redis://localhost:6379")
+
+    descriptions = descriptions or {}
+    vectorizers = vectorizers or {}
+    runtime_overrides = runtime_overrides or {}
+    schema_overrides = schema_overrides or {}
+
+    builtin_tools: Dict[str, str] = {}
+    if read_only:
+        builtin_tools["upsert-records"] = "disabled"
+
+    indexes: Dict[str, Any] = {}
+    for model_cls in model_classes:
+        is_json = issubclass(model_cls, JsonModel)
+        binding_id = model_cls.__name__
+
+        runtime: Dict[str, Any] = {}
+        vectorizer_cfg: Optional[Dict[str, Any]] = None
+
+        # Vector field discovery: first field with vector_options, favoring
+        # auto-embedding fields (they carry a known vectorizer).
+        specs = getattr(getattr(model_cls, "_meta", None), "embedding_fields", None)
+        vector_field_name = None
+        if specs:
+            vector_field_name = next(iter(specs))
+            if binding_id not in vectorizers:
+                spec = specs[vector_field_name]
+                ref = spec.vectorizer_ref
+                if isinstance(ref, str) and ":" in ref:
+                    provider, _, model_name = ref.partition(":")
+                    class_name = {
+                        "openai": "OpenAITextVectorizer",
+                        "azure_openai": "AzureOpenAITextVectorizer",
+                        "cohere": "CohereTextVectorizer",
+                        "vertexai": "VertexAITextVectorizer",
+                        "bedrock": "BedrockTextVectorizer",
+                        "mistral": "MistralAITextVectorizer",
+                        "gemini": "GoogleGenAIVectorizer",
+                        "hf": "HFTextVectorizer",
+                    }.get(provider)
+                    if class_name is not None:
+                        vectorizer_cfg = {"class": class_name, "model": model_name}
+        else:
+            for fname, field in model_cls.model_fields.items():
+                if getattr(field, "vector_options", None) is not None:
+                    vector_field_name = fname
+                    break
+
+        text_field_name = None
+        for fname, field in model_cls.model_fields.items():
+            if getattr(field, "full_text_search", False) is True:
+                text_field_name = f"{fname}_fts"
+                break
+
+        if search_type in ("vector", "hybrid"):
+            if vector_field_name is None:
+                raise ValueError(
+                    f"{binding_id} has no vector field; search_type="
+                    f"{search_type!r} requires one."
+                )
+            runtime["vector_field_name"] = vector_field_name
+            if vectorizer_cfg is None:
+                vectorizer_cfg = vectorizers.get(binding_id)
+            if vectorizer_cfg is None:
+                raise ValueError(
+                    f"{binding_id}: search_type={search_type!r} requires a "
+                    "vectorizer. Pass vectorizers="
+                    f'{{"{binding_id}": {{"class": "OpenAITextVectorizer", '
+                    '"model": "text-embedding-3-small"}}} or declare '
+                    "Field(vectorizer=...) on the vector field."
+                )
+        if search_type in ("fulltext", "hybrid"):
+            if text_field_name is None:
+                raise ValueError(
+                    f"{binding_id} has no full_text_search field; "
+                    f"search_type={search_type!r} requires one."
+                )
+            runtime["text_field_name"] = text_field_name
+
+        runtime.update(runtime_overrides.get(binding_id, {}))
+
+        binding: Dict[str, Any] = {
+            "redis_name": model_cls.Meta.index_name,
+            "search": {"type": search_type},
+            "runtime": runtime,
+        }
+        if binding_id in descriptions:
+            binding["description"] = descriptions[binding_id]
+        binding["read_only"] = read_only
+        if vectorizer_cfg is not None:
+            binding["vectorizer"] = vectorizer_cfg
+        if binding_id in schema_overrides:
+            binding["schema_overrides"] = schema_overrides[binding_id]
+        indexes[binding_id] = binding
+
+    return {
+        "server": {
+            "redis_url": redis_url,
+            "builtin_tools": builtin_tools,
+        },
+        "indexes": indexes,
+    }
