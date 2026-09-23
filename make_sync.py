@@ -41,21 +41,49 @@ ADDITIONAL_REPLACEMENTS = {
     "pytest.mark.asyncio(f)": "f",
     "pytest.mark.asyncio": "py_test_mark_sync",
     ".aclose()": ".close()",
-    # Vectorizers expose sync ``embed`` and async ``aembed`` variants. OM's
-    # async source calls ``aembed`` (awaited); the sync mirror must call the
-    # sync ``embed``. unasync matches full NAME tokens, so the keys are bare
-    # identifiers. Call sites only exist in ``aredis_om/ai/*``.
-    "aembed": "embed",
-    "aembed_many": "embed_many",
     # unasync has a built-in rule that converts any ``Async``-prefixed
-    # class name to ``Sync`` (e.g. ``AsyncMock`` → ``SyncMock``),
-    # but ``SyncMock`` does not exist. Override it for the common
-    # mock class used in tests so the sync mirror uses ``MagicMock``.
+    # class name to ``Sync`` (e.g. ``AsyncMock`` → ``SyncMock``), but
+    # ``SyncMock`` does not exist. Override it for the mock class used in
+    # tests so the sync mirror uses ``MagicMock``.
     "AsyncMock": "MagicMock",
 }
 
 
 POST_SYNC_FIXES = {
+    # The async source calls ``await vectorizer.aembed(...)`` (redisvl
+    # vectorizers expose both sync ``embed`` and async ``aembed``). unasync
+    # strips the ``await``/``async`` keywords but cannot know that the sync
+    # mirror must call ``embed`` instead of ``aembed`` — so only the
+    # *generated* mirror gets the rename below. Never add a source entry
+    # here: it would corrupt the async source on every ``make sync``.
+    "redis_om/ai/embeddings.py": {
+        "vectorizer.aembed(": "vectorizer.embed(",
+    },
+    # RedisVL's ``SemanticCache`` / ``EmbeddingsCache`` expose both sync
+    # (``store``/``check``) and async (``astore``/``acheck``) variants.
+    # The async AI extension tests ``await cache.astore(`` /
+    # ``await cache.acheck(``; the sync mirror must drop ``await`` and
+    # switch to the sync method names. Scoped per file so test code in
+    # other files is unaffected.
+    "tests_sync/test_ai_extensions.py": {
+        # ``_eventually`` uses ``await asyncio.sleep(...)``; the sync mirror
+        # needs the stdlib ``time`` module for the post-sync ``time.sleep``.
+        "import asyncio": "import time",
+        "await cache.astore(": "cache.store(",
+        "await cache.acheck(": "cache.check(",
+        "await cache.aset(": "cache.set(",
+        "await cache.aget(": "cache.get(",
+        # After unasync strips ``await``, the standalone async-method
+        # call still resolves to a coroutine — swap to the sync variant.
+        "cache.astore(": "cache.store(",
+        "cache.acheck(": "cache.check(",
+        "cache.aset(": "cache.set(",
+        "cache.aget(": "cache.get(",
+    },
+    # The global ADDITIONAL_REPLACEMENTS rule misses it).
+    "tests_sync/test_auto_embedding.py": {
+        "conn.aclose()": "conn.close()",
+    },
     # Fix Redis imports and remove async gather wrappers in cluster tests.
     "tests_sync/test_cluster_operations.py": {
         "import redis.asyncio as aioredis": "import redis as aioredis",

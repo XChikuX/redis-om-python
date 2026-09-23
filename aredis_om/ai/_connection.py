@@ -14,11 +14,14 @@ without redisvl installed.
 from __future__ import annotations
 
 import inspect
-from typing import Any, Optional, Type
+from typing import TYPE_CHECKING, Any, Optional, Type
 
 import redis
 import redis.cluster
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+
+if TYPE_CHECKING:  # pragma: no cover
+    from aredis_om.model.model import RedisModel
 
 
 def _lazy_import_message() -> str:
@@ -54,7 +57,7 @@ def _standalone_sync_twin(async_client: Any) -> redis.Redis:
 
 
 def sync_client_for_model(
-    model_cls: Optional[type] = None,
+    model_cls: Optional[Type["RedisModel"]] = None,
     client: Optional[Any] = None,
     *,
     caller: str = "this helper",

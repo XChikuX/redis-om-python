@@ -23,7 +23,7 @@ on first use — models without vectorizers never trigger it.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
 if TYPE_CHECKING:  # pragma: no cover
     from aredis_om.model.model import KNNExpression, RedisModel
@@ -164,7 +164,7 @@ def _maybe_attach_embedding_cache(vectorizer: Any, model_cls: Optional[type]) ->
         vectorizer.cache = setting
 
 
-def build_embedding_specs(model_cls: type) -> Dict[str, EmbeddingSpec]:
+def build_embedding_specs(model_cls: Type[RedisModel]) -> Dict[str, EmbeddingSpec]:
     """Collect ``Field(vectorizer=...)`` declarations into specs.
 
     Called from ``ModelMeta.__new__`` after OM field metadata has been applied
@@ -236,7 +236,9 @@ def _check_dimension(spec: EmbeddingSpec, vector: Any) -> None:
         )
 
 
-async def embed_text(spec: EmbeddingSpec, text: str, model_cls: Optional[type] = None) -> Any:
+async def embed_text(
+    spec: EmbeddingSpec, text: str, model_cls: Optional[type] = None
+) -> Any:
     """Embed one text with the spec's vectorizer (dimension-checked)."""
     try:
         vectorizer = spec.resolve(model_cls)
@@ -279,7 +281,7 @@ async def embed_model_fields(instance: Any) -> None:
 
 
 async def text_knn(
-    model_cls: type,
+    model_cls: Type[RedisModel],
     text: str,
     field_name: Optional[str] = None,
     k: int = 10,
@@ -330,6 +332,11 @@ async def text_knn(
     vector_field = getattr(model_cls, field_name)
     field_info = model_cls.model_fields[field_name]
     opts = getattr(field_info, "vector_options", None)
+    if opts is None:  # pragma: no cover - build_embedding_specs guarantees it
+        raise EmbeddingError(
+            f"Field {field_name!r} on {model_cls.__name__} lost its "
+            "vector_options; cannot build a KNN expression."
+        )
     reference = _pack_vector(vector, opts.type, opts.dimension)
     return KNNExpression(
         k=k,

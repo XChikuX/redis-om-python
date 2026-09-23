@@ -512,6 +512,26 @@ async def hybrid_search(
     return _convert_and_drop_empty_rows(results.results, "hybrid")
 
 
+def _validate_json_schema_overrides(binding_id: str, overrides: Dict[str, Any]) -> None:
+    """Validate JSON ``schema_overrides`` paths before the MCP server does.
+
+    The MCP server inspects a JSON index with the field *alias* as ``name``
+    and ``$.<alias>`` as the field path, and rejects overrides that change
+    the discovered path. Validating here turns a server-start failure into
+    a clear, early error.
+    """
+    for field in overrides.get("fields", []) or []:
+        if not isinstance(field, dict):
+            continue
+        path = field.get("path")
+        name = field.get("name")
+        if path is not None and path != f"$.{name}":
+            raise ValueError(
+                f"{binding_id}: JSON schema_overrides paths must be "
+                f"'$.<field>' (got {path!r} for field {name!r})."
+            )
+
+
 def to_redisvl_mcp_config(
     model_classes: List[Type[RedisModel]],
     redis_url: Optional[str] = None,
@@ -660,6 +680,10 @@ def to_redisvl_mcp_config(
         if vectorizer_cfg is not None:
             binding["vectorizer"] = vectorizer_cfg
         if binding_id in schema_overrides:
+            if is_json:
+                _validate_json_schema_overrides(
+                    binding_id, schema_overrides[binding_id]
+                )
             binding["schema_overrides"] = schema_overrides[binding_id]
         indexes[binding_id] = binding
 

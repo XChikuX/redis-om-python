@@ -70,7 +70,7 @@ def __getattr__(name: str) -> Any:
     module_name, attr = entry
     import importlib
 
-    module = importlib.import_module(f"aredis_om.ai.{module_name}")
+    module = importlib.import_module(f"{__package__}.{module_name}")
     return getattr(module, attr)
 
 

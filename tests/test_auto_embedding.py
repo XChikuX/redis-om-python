@@ -73,6 +73,7 @@ async def binary_redis(key_prefix):
 
     conn = get_redis_connection(decode_responses=False)
     yield conn
+    await conn.aclose()
 
 
 @pytest_asyncio.fixture
@@ -214,6 +215,7 @@ async def test_bulk_add_embeds_each(doc_model):
 async def test_no_vectorizer_model_untouched(redis, key_prefix):
     """Models without vectorizers keep a None embedding_fields and an
     unchanged schema; saving works without importing redisvl."""
+
     class Base(HashModel, abc.ABC):
         class Meta:
             global_key_prefix = key_prefix
@@ -387,9 +389,7 @@ async def test_embedding_cache_round_trip(redis, key_prefix, binary_redis):
             await cache.delete(*keys)
         from aredis_om.model.model import model_registry
 
-        model_registry.pop(
-            f"{CachedDoc.__module__}.{CachedDoc.__qualname__}", None
-        )
+        model_registry.pop(f"{CachedDoc.__module__}.{CachedDoc.__qualname__}", None)
 
 
 @py_test_mark_asyncio

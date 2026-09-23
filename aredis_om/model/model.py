@@ -3623,9 +3623,7 @@ class VectorFieldOptions:
                 ]
             )
 
-        return " ".join(
-            [f"VECTOR {self.algorithm.value} {len(attr)}"] + attr
-        )
+        return " ".join([f"VECTOR {self.algorithm.value} {len(attr)}"] + attr)
 
 
 def Field(

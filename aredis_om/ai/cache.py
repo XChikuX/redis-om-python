@@ -35,11 +35,21 @@ def _check_namespace(model_cls: Optional[type], name: str) -> None:
 
 
 def _default_cache_name(model_cls: Optional[type], infix: str) -> str:
-    """Derive a namespaced cache name from the model's key prefix."""
-    prefix = getattr(getattr(model_cls, "Meta", None), "model_key_prefix", None)
-    if not prefix:
+    """Derive a namespaced cache name from the model's key prefixes.
+
+    Mirrors :meth:`RedisModel.make_key` (``<global>:<model>:<part>``) so a
+    cache cannot collide with another model's cache or any model key/index,
+    and two deployments sharing a Redis (different ``global_key_prefix``)
+    get distinct caches.
+    """
+    meta = getattr(model_cls, "_meta", None)
+    global_prefix = (getattr(meta, "global_key_prefix", None) or "").strip(":")
+    model_prefix = (getattr(meta, "model_key_prefix", None) or "").strip(":")
+    if not model_prefix:
         return infix
-    return f"{prefix}:{infix}"
+    if global_prefix:
+        return f"{global_prefix}:{model_prefix}:{infix}"
+    return f"{model_prefix}:{infix}"
 
 
 def get_embedding_cache(
@@ -52,7 +62,8 @@ def get_embedding_cache(
     Used automatically when ``class Meta: embedding_cache = True`` is set on
     a model with auto-embedding fields; also useful standalone.
 
-    The cache name defaults to ``<model_key_prefix>:embcache`` — a separate
+    The cache name defaults to
+    ``<global_key_prefix>:<model_key_prefix>:embcache`` — a separate
     namespace from the model's own keys and index.
 
     Args:
@@ -76,20 +87,21 @@ def get_embedding_cache(
     cache_name = name or _default_cache_name(model_cls, "embcache")
     _check_namespace(model_cls, cache_name)
 
-    from aredis_om.ai._connection import is_async_client
-
-    db = model_cls.db() if model_cls is not None else None
-    kwargs: dict = {"name": cache_name}
+    # Always hand redisvl a *sync* client. ``EmbeddingsCache`` uses its
+    # synchronous ``get``/``set`` from ``vectorizer.embed`` and its async
+    # ``aget``/``aset`` from ``vectorizer.aembed``; it derives the async
+    # twin from the sync one (``sync_to_async_redis``) when needed. Passing
+    # an async client as ``redis_client`` would make the sync path read a
+    # coroutine (always truthy → every lookup looks like a cache hit).
+    # ``sync_client_for_model`` converts an async OM client to a sync twin,
+    # returns a sync client unchanged, and falls back to the default OM
+    # connection when ``model_cls`` is None.
+    kwargs: dict = {
+        "name": cache_name,
+        "redis_client": sync_client_for_model(model_cls, caller="get_embedding_cache"),
+    }
     if ttl is not None:
         kwargs["ttl"] = ttl
-
-    if db is not None:
-        if is_async_client(db):
-            # Async OM client → hand redisvl the async pool directly; the
-            # vectorizers' ``aembed`` path uses it for cache get/set.
-            kwargs["async_redis_client"] = db
-        else:
-            kwargs["redis_client"] = db
     return EmbeddingsCache(**kwargs)
 
 
@@ -151,9 +163,7 @@ def get_semantic_cache(
                     "explicitly."
                 )
 
-    client = sync_client_for_model(
-        model_cls, redis_client, caller="get_semantic_cache"
-    )
+    client = sync_client_for_model(model_cls, redis_client, caller="get_semantic_cache")
     kwargs: dict = {
         "name": name,
         "distance_threshold": distance_threshold,

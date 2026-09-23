@@ -74,9 +74,7 @@ def get_router(
                     "explicitly."
                 )
 
-    client = sync_client_for_model(
-        model_cls, redis_client, caller="get_router"
-    )
+    client = sync_client_for_model(model_cls, redis_client, caller="get_router")
 
     try:
         from redisvl.extensions.router import SemanticRouter

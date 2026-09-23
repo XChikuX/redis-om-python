@@ -7,7 +7,7 @@ estimated memory saving.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
 
 from aredis_om.ai._connection import _lazy_import_message
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from aredis_om.model.model import RedisModel
 
 
-def _get_vector_options(model_cls: type, field_name: str) -> Any:
+def _get_vector_options(model_cls: Type[RedisModel], field_name: str) -> Any:
     field_info = model_cls.model_fields.get(field_name)
     if field_info is None:
         raise ValueError(
@@ -31,7 +31,7 @@ def _get_vector_options(model_cls: type, field_name: str) -> Any:
 
 
 def recommend_compression(
-    model_cls: type,
+    model_cls: Type[RedisModel],
     field_name: str,
     priority: str = "balanced",
 ) -> "Tuple[Any, Dict[str, Any]]":
@@ -82,7 +82,7 @@ def recommend_compression(
 
 
 def estimate_memory_savings(
-    model_cls: type,
+    model_cls: Type[RedisModel],
     field_name: str,
     compression: Optional[str] = None,
     reduce: Optional[int] = None,

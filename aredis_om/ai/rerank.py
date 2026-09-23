@@ -59,9 +59,10 @@ async def rerank_results(
 
     if is_model:
         if content_field is None:
-            specs = getattr(
-                getattr(type(first), "_meta", None), "embedding_fields", None
-            ) or {}
+            specs = (
+                getattr(getattr(type(first), "_meta", None), "embedding_fields", None)
+                or {}
+            )
             sources = [s.source_field for s in specs.values() if s.source_field]
             if len(sources) == 1:
                 content_field = sources[0]
