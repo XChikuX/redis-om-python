@@ -61,11 +61,29 @@ acceptance, and effort. Everything below honors the repo's core invariants
 
 | # | Question (§7) | Decision | Rationale | Revisit trigger |
 | --- | --- | --- | --- | --- |
-| D1 | One module vs new `redisvl_ai.py`? | **New `aredis_om/redisvl_ai.py`** for U2/U3/U4/U5 helpers. U1's hooks live in `aredis_om/model/` (save pipeline + query builder) with lazy vectorizer resolution in a small `aredis_om/model/embeddings.py`. `redisvl.py` stays the interop escape hatch. | `redisvl.py` is already 471 lines; U1–U7 would double it. AI extensions have different optional-extra surfaces (`redisvl[llm-cache]`, `redisvl[mcp]`) and different lifecycles than index interop. | If `redisvl_ai.py` exceeds ~600 lines, split per extension. |
+| D1 | One module vs new `redisvl_ai.py`? | **New `aredis_om/ai/` package**, one module per extension, auto-mirrored to `redis_om/ai/` by `make sync` (the unasync walker is recursive — no `make_sync.py` changes needed). Helper names drop the `redisvl_` prefix (`get_semantic_cache`, not `get_redisvl_semantic_cache`) because the package provides the namespace. `redisvl.py` stays the interop escape hatch for redisvl-shaped outputs (schema, index, MCP config) and keeps its prefixed names. | A flat `redisvl_ai.py` would exceed 1000 lines and force `redisvl_`-prefixed names to avoid collisions. A package gives file-level cohesion and clean imports (`from aredis_om.ai import get_semantic_cache`). Distinct from `aredis_om/integrations/` (async-only bridge, excluded via `_ASYNC_ONLY_DIRS`): `ai/` MUST be sync-mirrored, so it must NOT be added to `_ASYNC_ONLY_DIRS`. | Split a module if any single file exceeds ~400 lines. |
 | D2 | Is auto-embedding (U1) in scope for an ODM? | **Yes — but strictly opt-in and zero-cost when unused.** A model with no vectorizer must behave byte-identically to today: no redisvl import, no schema change, no save-path overhead beyond one dict lookup. | Biggest AI gap in the ODM (handoff §6 M1 rationale); standard in peer ODMs. The escape hatch (U2/U3 hand-out helpers) ships regardless, so U1 is additive not load-bearing. | If save-path overhead measurably regresses CodSpeed, move embedding resolution to explicit `await doc.embed()` calls only. |
 | D3 | redis-py 7.4.x vs 8.x? | **Stay locked on 7.4.1** for releases. Add a **non-gating CI leg** with `redis>=8.0.1` + redisvl 0.27.x to catch drift (M0-A3). | redisvl excludes 8.0.0 (RESP3 defect); OM's RESP3 paths (`resp3_shim.py`, `test_protocol_compat.py`) are sensitive. A non-gating leg gives signal without betting releases on it. | When redisvl declares redis-py 8 support explicitly, promote the leg to gating. |
 | D4 | LangCache (managed/paid) first-class? | **Docs-only.** Ship the local `SemanticCache` helper (U3); document LangCache's `server_url`/`cache_id`/`api_key` REST contract and the `redisvl[langcache]` extra in `docs/redisvl.mdx`. | Managed/paid REST service — wrong default for a library helper; users who want it can use redisvl directly with OM's connection URL. | Sustained user demand for a `LangCacheSemanticCache` wiring helper. |
 | D5 | OM-owned MCP server? | **Config generator only** (`to_redisvl_mcp_config`, U7). OM never owns server lifecycle. | Server ownership = support burden; generation is pure serialization with no runtime dep on `redisvl[mcp]` (only the *consumer* needs it). | — |
+
+**Package layout (D1):**
+
+```text
+aredis_om/ai/                 # mirrored to redis_om/ai/ by `make sync`
+├── __init__.py               # re-exports only; NO redisvl imports (invariant 1)
+├── cache.py                  # U2 get_embedding_cache · U3 get_semantic_cache
+├── memory.py                 # U4 get_message_history, get_session_manager
+├── router.py                 # U5 get_router
+├── rerank.py                 # U6 rerank_results
+├── embeddings.py             # U1 EmbeddingSpec (plain data) + lazy vectorizer resolution
+└── compression.py            # U8 recommend_compression
+```
+
+Import-cycle note: `model.py` imports `EmbeddingSpec` from `aredis_om.ai.embeddings`
+(a plain-data module, redisvl-free) and calls its resolver at save time; `ai/*`
+modules reference model types only under `TYPE_CHECKING` and resolve
+`model_cls.db()` at runtime — no cycle, no import-time redisvl.
 
 ---
 
@@ -150,7 +168,7 @@ Implementation steps:
    reconstruction on subclassing). Validate at class-creation time in
    `ModelMeta`: `source` field exists, is `str` (v1), target field has
    `vector_options`.
-2. **Lazy resolution** (`aredis_om/model/embeddings.py`, new): store specs as
+2. **Lazy resolution** (`aredis_om/ai/embeddings.py`, new): store specs as
    plain data until first use; resolve a string spec to a vectorizer instance
    on first `save()`/query via `_import_redisvl()` + provider factories.
    **No redisvl import at model-definition time.**
@@ -167,7 +185,7 @@ Implementation steps:
 5. **Sync mirror:** `unasync` handles `aembed` → `embed`; verify generated
    code compiles and passes mirrored tests.
 
-Files: `aredis_om/model/model.py`, `aredis_om/model/embeddings.py` (new),
+Files: `aredis_om/model/model.py`, `aredis_om/ai/embeddings.py` (new),
 `tests/test_auto_embedding.py` (new).
 
 Tests (async + sync mirror):
@@ -190,7 +208,7 @@ OM surface: `class Meta: embedding_cache = True` (auto: reuse
 `EmbeddingsCache` instance (vectorizers accept `cache=`).
 
 Implementation steps:
-1. Factory in `aredis_om/redisvl_ai.py` (D1): `get_redisvl_embedding_cache(model_cls)` →
+1. Factory in `aredis_om/ai/cache.py` (D1): `get_embedding_cache(model_cls)` →
    lazily constructs `EmbeddingsCache` bound to `model_cls.db()`, with a
    namespace that cannot collide with model keys.
 2. Wire into U1's resolution step: when `Meta.embedding_cache` is set, pass
@@ -198,7 +216,7 @@ Implementation steps:
 3. Docs: TTL + invalidation notes (`cache.delete()`), keying on
    `(content, model_name)`.
 
-Files: `aredis_om/redisvl_ai.py` (new), `aredis_om/model/model.py`
+Files: `aredis_om/ai/cache.py` (new), `aredis_om/model/model.py`
 (`_meta.embedding_cache`), `tests/test_auto_embedding.py` (extend).
 
 Tests: second embed of identical text hits Redis (assert via cache stats or
@@ -211,34 +229,35 @@ CodSpeed show no regression on non-embedding save paths (this is the D2 guard).
 
 ### M2 — AI extension helpers: U3, U4, U5 (effort: S each, ~1 week total)
 
-All in `aredis_om/redisvl_ai.py`, all following the `get_redisvl_index()`
-pattern (schema/wiring via `Meta.database`, lifecycle with caller), all with
-namespace isolation (§1.5).
+All in the `aredis_om/ai/` package (one module per extension — see D1 layout),
+all following the `get_redisvl_index()` pattern (schema/wiring via
+`Meta.database`, lifecycle with caller), all with namespace isolation (§1.5).
 
 **U3 — Semantic cache helper.**
-- `get_redisvl_semantic_cache(name, model_cls=None, *, vectorizer=None, ttl=None, distance_threshold=0.1)`
-  → `SemanticCache` bound to `model_cls.db()` (or `Meta.database` default).
-  Name is required-or-derived **with a `:vl-cache:` infix** and must differ
-  from any OM index name (assert).
+- `get_semantic_cache(name, model_cls=None, *, vectorizer=None, ttl=None, distance_threshold=0.1)`
+  in `aredis_om/ai/cache.py` → `SemanticCache` bound to `model_cls.db()`
+  (or `Meta.database` default). Name is required-or-derived **with a
+  `:vl-cache:` infix** and must differ from any OM index name (assert).
 - LangCache: **docs-only** (D4).
 - Tests: store/check round-trip; paraphrased prompt hits; namespace assertion
   raises on collision; cluster leg in `test_redisvl_cluster.py` (async-only).
 
 **U4 — LLM memory / session helper.**
-- `get_redisvl_message_history(name, *, semantic=False, model_cls=None, session_tag=None)`
-  → `MessageHistory` / `SemanticMessageHistory`; optional
-  `get_redisvl_session_manager(...)` thin wrapper.
+- `get_message_history(name, *, semantic=False, model_cls=None, session_tag=None)`
+  in `aredis_om/ai/memory.py` → `MessageHistory` / `SemanticMessageHistory`;
+  optional `get_session_manager(...)` thin wrapper.
 - Tests: `add_messages` → `get_recent`; semantic variant `get_relevant`;
   session tags isolate conversations.
 
 **U5 — Semantic-router helper.**
-- `get_redisvl_router(name, routes, model_cls=None)` → `SemanticRouter`.
+- `get_router(name, routes, model_cls=None)` in `aredis_om/ai/router.py` →
+  `SemanticRouter`.
 - Tests: `router("...")` returns `RouteMatch`; `to_dict/from_dict` round-trip.
 
 **M2 gate:** all three helpers work end-to-end against compose Redis; lazy
-import preserved (import `aredis_om.redisvl_ai` without redisvl → helpers
-raise the friendly `_LAZY_IMPORT_MESSAGE`-style error only on call); cluster
-leg green or explicitly skipped with reasons.
+import preserved (importing `aredis_om.ai` without redisvl installed works;
+helpers raise the friendly `_LAZY_IMPORT_MESSAGE`-style error only on call);
+cluster leg green or explicitly skipped with reasons.
 
 ---
 
@@ -247,7 +266,7 @@ leg green or explicitly skipped with reasons.
 **U6 — Reranking support.**
 - Start with a **standalone helper** (non-invasive):
   `rerank_results(query_or_results, reranker, rank_by=None, limit=None)` in
-  `aredis_om/redisvl_ai.py` → delegates to `HFCrossEncoderReranker` /
+  `aredis_om/ai/rerank.py` → delegates to `HFCrossEncoderReranker` /
   `CohereReranker` / `VoyageAIReranker.rank()`, returns `(results, scores)`
   with OM models rehydrated where applicable.
 - Only if maintainers want chaining: `FindQuery.rerank(...)` as sugar.
@@ -264,9 +283,9 @@ leg green or explicitly skipped with reasons.
 - Schema rendering: `_get_field_type` + `Migrator` FT.CREATE branch for SVS
   attrs; `to_redisvl_schema` maps to redisvl's `SVSConfig`
   (`redisvl.utils.compression`).
-- Compression advisor: `recommend_compression(model_cls, field_name, sample_vectors)`
-  helper delegating to `CompressionAdvisor.recommend()` +
-  `estimate_memory_savings()`.
+- Compression advisor: `recommend_compression(model_cls, field_name,
+  sample_vectors)` in `aredis_om/ai/compression.py`, delegating to
+  `CompressionAdvisor.recommend()` + `estimate_memory_savings()`.
 - Tests: FT.CREATE string golden tests (schema level, no server needed);
   integration gated on Redis ≥8.2 (`tests/` version-detect skip);
   FLAT/HNSW golden schemas **unchanged** (regression); redisvl round-trip
@@ -337,13 +356,13 @@ docs build; no new runtime deps in core extras.
 | --- | --- | --- | --- | --- |
 | M0 | §2.3 guards, §2.2 CI leg, surface test | S | — | friendly errors + CI leg |
 | M1 | U1, U2 | M | M0 | auto-embed + cache acceptance |
-| M2 | U3, U4, U5 | S ×3 | M1 (U2 shares `redisvl_ai.py`) | helpers end-to-end |
+| M2 | U3, U4, U5 | S ×3 | M1 (U2 shares `ai/cache.py`) | helpers end-to-end |
 | M3 | U6, U8 | M ×2 | M1 (vector plumbing) | golden-schema regression |
 | M4 | U7, U9, U10, U11 | M | M2 | MCP launch + docs |
 | M5 | U12 | S | M2–M4 | docs + benchmarks |
 
 Parallelization: M2 and M3 are independent after M1 and can run concurrently
-(disjoint files: `redisvl_ai.py`+docs vs `model.py` schema paths — coordinate
+(disjoint files: `ai/` package + docs vs `model.py` schema paths — coordinate
 on `redisvl.py` touchpoints via M0-A2 landing first).
 
 ---
@@ -362,7 +381,7 @@ on `redisvl.py` touchpoints via M0-A2 landing first).
 - **Regression anchors:** (a) golden FLAT/HNSW `FT.CREATE` strings; (b) no-
   vectorizer model schema identical pre/post U1; (c) rerank no-op identical
   results; (d) `aredis_om` imports without redisvl (existing test — extend to
-  cover `redisvl_ai`).
+  cover every module in `aredis_om/ai/`).
 - **CI:** add redisvl axis `{0.27.x}` × redis-py `{7.4.x, 8.0.1+}` (8.x leg
   non-gating per D3); CodSpeed on push/PR (existing workflow).
 
