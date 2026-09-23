@@ -1,6 +1,6 @@
 [project]
 name = "pyredis-om"
-version = "0.11.1"
+version = "0.11.2"
 description = "An unoffical (and better) drop-in replacement for `redis-om`, built out of frustration."
 authors = [
     { name = "Srikanth", email = "oss@psync.club" },
@@ -35,13 +35,13 @@ dependencies = [
 [project.optional-dependencies]
 full = [
     "hiredis>=3.4.0,<5.0.0",
-    "redisvl>=0.27.0"
+    "redisvl>=0.27.2"
 ]
 hiredis = [
     "hiredis>=3.4.0,<5.0.0"
 ]
 redisvl = [
-    "redisvl>=0.27.0"
+    "redisvl>=0.27.2"
 ]
 
 [project.urls]

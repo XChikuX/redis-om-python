@@ -1792,7 +1792,7 @@ wheels = [
 
 [[package]]
 name = "pyredis-om"
-version = "0.11.1"
+version = "0.11.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1842,8 +1842,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
     { name = "python-ulid", specifier = ">=3.0.0" },
     { name = "redis", specifier = ">=7.4.1,<9.0.0" },
-    { name = "redisvl", marker = "extra == 'full'", specifier = ">=0.27.0" },
-    { name = "redisvl", marker = "extra == 'redisvl'", specifier = ">=0.27.0" },
+    { name = "redisvl", marker = "extra == 'full'", specifier = ">=0.27.2" },
+    { name = "redisvl", marker = "extra == 'redisvl'", specifier = ">=0.27.2" },
 ]
 provides-extras = ["full", "hiredis", "redisvl"]
 
@@ -2099,7 +2099,7 @@ wheels = [
 
 [[package]]
 name = "redisvl"
-version = "0.27.0"
+version = "0.27.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpath-ng" },
@@ -2113,9 +2113,9 @@ dependencies = [
     { name = "redis" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/d2/194a9476cced8df9ed86ec111911fd65bfa02edff71d17ed4de7c6d4fe71/redisvl-0.27.0.tar.gz", hash = "sha256:7a1b29f2d0a3b95884e6c818a1e5beb95bd9d0cdab038e6a2c628576cb5c327e", size = 1315642, upload-time = "2026-09-02T13:13:16.563Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/a9/e1b9e23febbb3c2c5ab2ee3a3072d657fb39c6e35d18514a414ff19c31e9/redisvl-0.27.2.tar.gz", hash = "sha256:9a08c7ce107056d7aa9cc8e390d049350b1c7acc2801e34bd731f4dd014a1d09", size = 1354907, upload-time = "2026-09-10T10:51:36.614Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/dc/424039fccc1aceb67c9c423a476940796054bcc55d213d9de47329cf9576/redisvl-0.27.0-py3-none-any.whl", hash = "sha256:9428b37687206798f2cecd73371395d0520d626900109d7d6015633bd6f07c28", size = 412189, upload-time = "2026-09-02T13:13:14.504Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/f0/ad05c7f9b1830301ac90858f5b2da1f090119c736cbac748b6043546a056/redisvl-0.27.2-py3-none-any.whl", hash = "sha256:d6fb9138b17f01baaa7fd9c2f1476e3f30078dec1baff01867ad996683985843", size = 424647, upload-time = "2026-09-10T10:51:35.148Z" },
 ]
 
 [[package]]
