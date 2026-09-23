@@ -346,7 +346,7 @@ field when declared. Works with redisvl's `HFCrossEncoderReranker`,
 `CohereReranker`, and `VoyageAIReranker`; returns
 `(reranked_results, scores)` ordered best-first.
 
-## SVS-VAMANA vectors + compression advisor
+## SVS-VAMANA vectors and compression advisor
 
 `VectorFieldOptions.svs(...)` exposes Redis 8.2's SVS-VAMANA index with
 its own attribute set (not a copy of the HNSW knobs) — `FLOAT16`/
@@ -358,7 +358,7 @@ embedding: list[float] = Field(
         type=VectorFieldOptions.TYPE.FLOAT32,
         dimension=768,
         distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
-        compression="LVQ4x",            # optional SVS-specific attrs
+        compression="LVQ4x8",           # optional SVS-specific attrs
         construction_window_size=300,
         graph_max_degree=64,
         search_window_size=100,
@@ -376,7 +376,7 @@ from aredis_om.ai import estimate_memory_savings, recommend_compression
 
 svs_cfg, summary = recommend_compression(Doc, "embedding", priority="memory")
 print(summary["compression"], summary["memory_saving_fraction"])
-saving = estimate_memory_savings(Doc, "embedding", compression="LVQ4x")
+saving = estimate_memory_savings(Doc, "embedding", compression="LVQ4x8")
 ```
 
 ## MCP server config generator
@@ -438,7 +438,8 @@ index object — these are not re-wrapped by OM:
 
 - **`FT.AGGREGATE`** — server-side group-by / reduce / sort / limit via
   `index.aggregate(AggregateQuery(...))`.
-- **Vector field policies** — compression, runtime tuning knobs.
+- **Vector field policies** — pre/post-filtering, runtime swap-in of
+  index parameters.
 
 ## What changes for existing users?
 
