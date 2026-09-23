@@ -28,13 +28,26 @@ pip install 'pyredis-om[redisvl]'   # requires redisvl >= 0.27.0
 | `to_redisvl_schema(Model)` | Converts the model's RediSearch schema into a redisvl `IndexSchema` (index name, key prefix, storage type, field types — all faithful to what OM's `Migrator` creates). |
 | `get_redisvl_index(Model, async_client=True)` | Returns a ready-to-use redisvl `AsyncSearchIndex` (or sync `SearchIndex`) wired to the model's `Meta.database`. |
 | `hybrid_search(index, query, timeout=None)` | Runs a redisvl `HybridQuery` (`FT.HYBRID`, Redis 8.4+) with **Redis Cluster support** — redisvl itself cannot route `FT.HYBRID` on a cluster. |
+| `to_redisvl_mcp_config(models, ...)` | Generates a YAML-ready [MCP](https://modelcontextprotocol.io) server config exposing your OM models' indexes to LLM clients (read-only by default). |
+
+On top of the escape hatch, the `aredis_om.ai` package wraps redisvl's AI
+extensions with OM-style connection reuse — auto-embedding, semantic
+caching, LLM memory, semantic routing, reranking, and the compression
+advisor (see [AI extensions](#ai-extensions-connection-reusing-helpers)
+below).
 
 Import from the async package (`aredis_om`) or the generated sync
-package (`redis_om`) — both expose the same three helpers:
+package (`redis_om`) — both expose the same helpers:
 
 ```python
-from aredis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
-# sync: from redis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
+from aredis_om.redisvl import (
+    get_redisvl_index,
+    hybrid_search,
+    to_redisvl_mcp_config,
+    to_redisvl_schema,
+)
+from aredis_om.ai import get_semantic_cache, rerank_results, text_knn
+# sync: from redis_om.redisvl import ... / from redis_om.ai import ...
 ```
 
 ## Quickstart
@@ -177,6 +190,247 @@ cluster slot), and redisvl has no cluster helper for it — so call
 `hybrid_search()` simply delegates to `index.query()`. The optional
 `timeout` argument (milliseconds) is applied on cluster clients only.
 
+## Auto-embedding for vector fields
+
+`Field(vectorizer=..., source=...)` makes OM embed the source text
+automatically at `save()` time whenever the vector field is empty — the
+vectorizer resolves lazily, so **models without vectorizers never import
+redisvl** and behave exactly as before:
+
+```python
+from aredis_om import Field, JsonModel, VectorFieldOptions
+
+
+class Doc(JsonModel, index=True):
+    body: str = Field(full_text_search=True)
+    embedding: list[float] = Field(
+        vector_options=VectorFieldOptions.flat(
+            type=VectorFieldOptions.TYPE.FLOAT32,
+            dimension=1536,
+            distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+        ),
+        vectorizer="openai:text-embedding-3-small",  # or a BaseVectorizer instance
+        source="body",
+    )
+
+
+await Doc(body="light running shoes").save()   # embedding filled in for you
+```
+
+String specs map through redisvl's provider factories — supported
+prefixes: `openai:`, `azure_openai:`, `cohere:`, `vertexai:`, `bedrock:`,
+`mistral:`, `gemini:`, `hf:`. Pass any redisvl `BaseVectorizer` instance
+for other providers (or wrap a local callable with
+`redisvl.utils.vectorize.CustomVectorizer` — handy for tests).
+
+Manual vectors win: a populated vector field is stored as-is, and an
+empty `source` field is skipped. Dimension mismatches between what the
+provider returns and `vector_options` raise `EmbeddingError` with field
+context. Provider outages surface as `EmbeddingError` on `save()` — pass
+the vector yourself if you want to control that failure mode.
+
+### Raw-text KNN queries
+
+`text_knn` embeds the query text with the field's vectorizer and returns
+a KNN expression usable anywhere OM accepts one (still routed through
+OM's escaped, `PARAMS`-based KNN path):
+
+```python
+from aredis_om.ai import text_knn
+
+knn = await text_knn(Doc, "running shoes", field_name="embedding", k=5)
+results = await Doc.find(knn=knn).all()
+```
+
+### Embedding cache (`Meta.embedding_cache`)
+
+Set `embedding_cache = True` on the model's `Meta` to cache embeddings in
+Redis — keyed on `(content, model_name)`, named from the model's key
+prefix (`<global>:<model>:embcache`, so it can never collide with model
+keys or indexes), and wired to the model's own database connection:
+
+```python
+class Doc(JsonModel, index=True):
+    ...
+
+    class Meta:
+        embedding_cache = True        # auto: cache + connection from the model
+```
+
+Second saves of identical text hit the cache instead of the provider. For
+standalone use (or a custom TTL), build the cache yourself:
+
+```python
+from aredis_om.ai import get_embedding_cache
+
+cache = get_embedding_cache(Doc, ttl=3600)
+vectorizer = OpenAITextVectorizer(model="text-embedding-3-small", cache=cache)
+```
+
+## AI extensions: connection-reusing helpers
+
+The `aredis_om.ai` package wraps redisvl's AI extensions (U3–U5 in
+`PLAN.md`) so they reuse your model's `Meta.database` connection instead
+of requiring their own URLs. Every helper creates its **own index
+namespace** derived from the `name` you pass and refuses to reuse a
+model's OM index name. redisvl stays optional — importing the package is
+free; helpers raise a friendly `ImportError` on call when it's missing.
+
+### Semantic LLM cache
+
+Cache prompt/response pairs and retrieve them by semantic similarity:
+
+```python
+from aredis_om.ai import get_semantic_cache
+
+cache = get_semantic_cache("answers", model_cls=Doc, distance_threshold=0.1)
+await cache.astore(prompt="What is Redis?", response="An in-memory data store.")
+hits = await cache.acheck(prompt="What exactly is Redis?")   # semantic hit
+```
+
+When `model_cls` declares exactly one auto-embedding field, its
+vectorizer is reused automatically. Managed
+[LangCache](https://redis.io/langcache/) is a separate REST service —
+use redisvl's `redisvl[langcache]` extra directly for it.
+
+### LLM message history
+
+Per-session conversation memory, optionally semantic:
+
+```python
+from aredis_om.ai import get_message_history
+
+history = get_message_history("tutor", model_cls=Doc, session_tag="s1")
+history.add_messages([{"role": "user", "content": "Hi"}])
+recent = history.get_recent()
+
+semantic = get_message_history(
+    "tutor", model_cls=Doc, session_tag="s2", semantic=True
+)
+relevant = semantic.get_relevant("what were we saying?")
+```
+
+### Semantic router
+
+Classify free text against route definitions by vector similarity:
+
+```python
+from aredis_om.ai import get_router
+from redisvl.extensions.router import Route
+
+routes = [Route(name="greet", references=["hello", "hi", "good morning"])]
+router = get_router("dispatch", routes, model_cls=Doc)
+match = router("hey there")
+assert match.name == "greet"
+```
+
+## Reranking
+
+`rerank_results` reorders OM query results (models or dicts) with a
+redisvl reranker — pure delegation; without calling it, query results
+are untouched:
+
+```python
+from aredis_om.ai import rerank_results
+from redisvl.utils.rerank import HFCrossEncoderReranker
+
+reranker = HFCrossEncoderReranker(limit=3)
+docs = await Doc.find().all()
+top, scores = await rerank_results(
+    docs, "cheap running shoes", reranker, content_field="body"
+)
+```
+
+`content_field` defaults to the model's single auto-embedding source
+field when declared. Works with redisvl's `HFCrossEncoderReranker`,
+`CohereReranker`, and `VoyageAIReranker`; returns
+`(reranked_results, scores)` ordered best-first.
+
+## SVS-VAMANA vectors + compression advisor
+
+`VectorFieldOptions.svs(...)` exposes Redis 8.2's SVS-VAMANA index with
+its own attribute set (not a copy of the HNSW knobs) — `FLOAT16`/
+`FLOAT32` only:
+
+```python
+embedding: list[float] = Field(
+    vector_options=VectorFieldOptions.svs(
+        type=VectorFieldOptions.TYPE.FLOAT32,
+        dimension=768,
+        distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+        compression="LVQ4x",            # optional SVS-specific attrs
+        construction_window_size=300,
+        graph_max_degree=64,
+        search_window_size=100,
+    )
+)
+```
+
+The OM `Migrator` and `to_redisvl_schema()` render identical SVS schemas
+(`SVSConfig` on the redisvl side), so either engine can create the index.
+To pick a compression strategy, ask the advisor — it delegates to
+redisvl's `CompressionAdvisor` and needs no data sample:
+
+```python
+from aredis_om.ai import estimate_memory_savings, recommend_compression
+
+svs_cfg, summary = recommend_compression(Doc, "embedding", priority="memory")
+print(summary["compression"], summary["memory_saving_fraction"])
+saving = estimate_memory_savings(Doc, "embedding", compression="LVQ4x")
+```
+
+## MCP server config generator
+
+`to_redisvl_mcp_config` serializes your models into a redisvl MCP server
+config (pure serialization — OM never owns the server lifecycle; running
+`rvl mcp` needs the `redisvl[mcp]` extra):
+
+```python
+from aredis_om.redisvl import to_redisvl_mcp_config
+
+config = to_redisvl_mcp_config(
+    [Doc, Article],
+    read_only=True,                     # default: upsert tool disabled
+    vectorizers={"Doc.embedding": {"type": "openai", "model": "text-embedding-3-small"}},
+)
+# dump config to YAML, then: rvl mcp --config om_models.yaml
+```
+
+The MCP server reconstructs schemas from *live index metadata* — run
+`Migrator().run()` first, and use `schema_overrides=` for vector
+attributes it cannot infer. For HTTP transports, protect the server with
+JWT auth and keep `read_only=True` unless the client is trusted.
+
+## Advanced queries and the index data plane
+
+Everything else on the returned redisvl index is yours — no OM re-wrap,
+docs show the raw-index path side-by-side where relevant:
+
+```python
+index = get_redisvl_index(Doc)
+
+# Multi-vector similarity (multiple vector fields in one query).
+from redisvl.query import MultiVectorQuery
+results = await index.query(MultiVectorQuery(...))
+
+# SQL-style querying over the index (redisvl SQLQuery).
+from redisvl.query import SQLQuery
+rows = await index.query(SQLQuery("SELECT title FROM Doc WHERE views > 10"))
+
+# Data-plane helpers: batched/paginated search, filter updates.
+results = await index.batch_search([query1, query2])
+page = await index.paginate(query, page_size=100)
+await index.update_by_filter(filter_expr, patch)
+await index.drop_by_filter(filter_expr)
+await index.expire_keys(filter_expr, ttl=60)
+```
+
+`SearchResults.complete` tells you whether a paginated/limited result
+set is partial. For big schema changes that should preserve documents,
+redisvl's `MigrationWizard` / `SchemaPatch` are the migration path —
+but **never run both engines against the same index name** concurrently
+(alias conflicts corrupt routing).
+
 ## Still delegated to redisvl (use the index directly)
 
 The escape hatch gives you the *entire* redisvl API through the returned
@@ -185,12 +439,6 @@ index object — these are not re-wrapped by OM:
 - **`FT.AGGREGATE`** — server-side group-by / reduce / sort / limit via
   `index.aggregate(AggregateQuery(...))`.
 - **Vector field policies** — compression, runtime tuning knobs.
-- **Embedding cache and LLM helpers** — see the
-  [redisvl docs](https://docs.redisvl.com/).
-
-Note: `VectorFieldOptions` exposes the `FLAT` and `HNSW` algorithms.
-SVS-VAMANA (Redis 8.2+) is not exposed through OM's model
-declarations — configure it through redisvl directly if you need it.
 
 ## What changes for existing users?
 

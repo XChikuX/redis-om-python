@@ -80,6 +80,13 @@ POST_SYNC_FIXES = {
         "cache.aset(": "cache.set(",
         "cache.aget(": "cache.get(",
     },
+    # Same SemanticCache sync-method rule for the redisvl benchmarks.
+    "tests_sync/test_performance_benchmark.py": {
+        "await cache.astore(": "cache.store(",
+        "await cache.acheck(": "cache.check(",
+        "cache.astore(": "cache.store(",
+        "cache.acheck(": "cache.check(",
+    },
     # The global ADDITIONAL_REPLACEMENTS rule misses it).
     "tests_sync/test_auto_embedding.py": {
         "conn.aclose()": "conn.close()",
