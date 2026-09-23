@@ -726,3 +726,189 @@ class TestHybridSearchRouting:
         assert "ALPHA" in args
         assert "BETA" in args
         assert results == [{"id": "doc1"}]
+
+
+# --------------------------------------------------------------------------
+# Maintenance upgrade surfaces (M0).
+# --------------------------------------------------------------------------
+
+
+class TestM0Maintenance:
+    """M0-A1 + M0-A2: redisvl version is current, private-API guard works."""
+
+    def test_redisvl_version_meets_floor(self):
+        """aredis_om pins ``redisvl>=0.27.2``; runtime must match or exceed."""
+        from importlib.metadata import version as _pkg_version
+
+        raw = _pkg_version("redisvl")
+        parts = [int(p) for p in raw.split(".")[:3] if p.isdigit()]
+        assert (parts + [0, 0, 0])[:3] >= [0, 27, 2], (
+            f"redisvl=={raw} but aredis_om requires >=0.27.2"
+        )
+
+    def test_public_redisvl_surface_available(self):
+        """The public helpers exported by ``aredis_om.redisvl`` exist and
+        are imported from the local module, not just redisvl."""
+        for name in (
+            "to_redisvl_schema",
+            "get_redisvl_index",
+            "hybrid_search",
+            "to_redisvl_mcp_config",
+        ):
+            assert hasattr(om_redisvl, name), f"missing helper: {name}"
+
+    @py_test_mark_asyncio
+    async def test_hybrid_search_guard_raises_helpful_error(
+        self, json_document_model, monkeypatch
+    ):
+        """M0-A2: a future redisvl rename of the private helper we rely on
+        surfaces a pinned-version hint, not a bare ``ImportError`` deep in
+        the pipeline. The guard fires only on the cluster path — force
+        ``_is_cluster_client`` to True so the FT.HYBRID codepath runs."""
+        Document = json_document_model
+        index = get_redisvl_index(Document)
+
+        # Force the cluster path regardless of the actual index client.
+        monkeypatch.setattr(om_redisvl, "_is_cluster_client", lambda c: True)
+
+        # Drop the private symbol redisvl exposes in 0.27.x so the guard
+        # triggers even on a server that advertises FT.HYBRID support.
+        from redisvl.index import index as redisvl_index_module
+
+        saved = redisvl_index_module.__dict__.pop("_convert_and_drop_empty_rows", None)
+        try:
+            from redisvl.query import HybridQuery
+
+            query = HybridQuery(
+                text="x",
+                text_field_name="body_fts",
+                vector=[0.0] * DIMENSIONS,
+                vector_field_name="embedding",
+            )
+            with pytest.raises(ImportError, match="hybrid_search"):
+                await hybrid_search(index, query)
+        finally:
+            if saved is not None:
+                redisvl_index_module._convert_and_drop_empty_rows = saved
+
+
+class TestMcpConfig:
+    """U7: ``to_redisvl_mcp_config`` shapes a dict that matches redisvl's MCP server config schema."""
+
+    def test_fulltext_binding(self, json_document_model):
+        from aredis_om.redisvl import to_redisvl_mcp_config
+
+        Document = json_document_model
+        cfg = to_redisvl_mcp_config(
+            [Document], redis_url="redis://localhost:6379", search_type="fulltext"
+        )
+        assert cfg["server"]["redis_url"] == "redis://localhost:6379"
+        assert cfg["server"]["builtin_tools"]["upsert-records"] == "disabled"
+
+        binding = cfg["indexes"][Document.__name__]
+        assert binding["redis_name"] == Document.Meta.index_name
+        assert binding["search"]["type"] == "fulltext"
+        assert binding["runtime"]["text_field_name"].endswith("_fts")
+        assert "vectorizer" not in binding
+        assert binding["read_only"] is True
+
+    def test_vector_binding_requires_vectorizer(self, key_prefix):
+        """Models with a vector field but no vectorizer fail with a vectorizer hint."""
+        import abc as _abc
+
+        from aredis_om.redisvl import to_redisvl_mcp_config
+
+        class Base(JsonModel, _abc.ABC):
+            class Meta:
+                global_key_prefix = key_prefix
+
+        class WithVec(Base, index=True):
+            body: str
+            embedding: List[float] = Field(
+                vector_options=VectorFieldOptions.flat(
+                    type=VectorFieldOptions.TYPE.FLOAT32,
+                    dimension=DIMENSIONS,
+                    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+                )
+            )
+
+        with pytest.raises(ValueError, match="vectorizer"):
+            to_redisvl_mcp_config(
+                [WithVec],
+                redis_url="redis://localhost:6379",
+                search_type="vector",
+            )
+
+    def test_vectorizer_from_auto_embedding(self, key_prefix):
+        """Auto-embedding-derived vectorizer is forwarded verbatim."""
+        import abc as _abc
+
+        from aredis_om.ai import build_embedding_specs
+        from aredis_om.redisvl import to_redisvl_mcp_config
+
+        class Base(JsonModel, _abc.ABC):
+            class Meta:
+                global_key_prefix = key_prefix
+
+        # Wire up the spec collection manually since it relies on the model
+        # class module path; this keeps the test self-contained.
+        class DocWithVec(Base, index=True):
+            body: str
+            embedding: List[float] = Field(
+                vector_options=VectorFieldOptions.flat(
+                    type=VectorFieldOptions.TYPE.FLOAT32,
+                    dimension=DIMENSIONS,
+                    distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+                ),
+                vectorizer="openai:text-embedding-3-small",
+                source="body",
+            )
+
+        DocWithVec._meta.embedding_fields = build_embedding_specs(DocWithVec)
+
+        cfg = to_redisvl_mcp_config(
+            [DocWithVec], search_type="vector", redis_url="redis://localhost"
+        )
+        binding = cfg["indexes"][DocWithVec.__name__]
+        assert binding["vectorizer"]["class"] == "OpenAITextVectorizer"
+        assert binding["vectorizer"]["model"] == "text-embedding-3-small"
+        assert binding["runtime"]["vector_field_name"] == "embedding"
+
+    def test_json_schema_override_path_validated(self, json_document_model):
+        """JSON overrides must use ``$.<field>`` paths; a path the MCP server
+        would reject at startup fails early with a JSON-specific message."""
+        from aredis_om.redisvl import to_redisvl_mcp_config
+
+        Document = json_document_model
+        binding_id = Document.__name__
+
+        # A matching JSON path is accepted and passed through verbatim.
+        ok = to_redisvl_mcp_config(
+            [Document],
+            search_type="fulltext",
+            schema_overrides={
+                binding_id: {
+                    "fields": [
+                        {"name": "body_fts", "type": "text", "path": "$.body_fts"}
+                    ]
+                }
+            },
+        )
+        assert (
+            ok["indexes"][binding_id]["schema_overrides"]["fields"][0]["path"]
+            == "$.body_fts"
+        )
+
+        # A bare (hash-style) path would be rejected by the server; fail early.
+        with pytest.raises(ValueError, match="JSON schema_overrides paths"):
+            to_redisvl_mcp_config(
+                [Document],
+                search_type="fulltext",
+                schema_overrides={
+                    binding_id: {
+                        "fields": [
+                            {"name": "body_fts", "type": "text", "path": "body_fts"}
+                        ]
+                    }
+                },
+            )

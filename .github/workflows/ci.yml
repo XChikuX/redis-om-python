@@ -139,6 +139,59 @@ jobs:
                   env_vars: OS
                   fail_ci_if_error: false
 
+    # D3 (PLAN.md M0-A3): non-gating redis-py 8 drift leg. Releases stay
+    # locked on redis-py 7.4.1; this job installs redis>=8.0.1 on top of the
+    # locked environment and runs the redisvl + protocol-compat suites so
+    # upstream drift is visible without betting releases on it. Promote to
+    # gating once redisvl declares explicit redis-py 8 support.
+    test-redis-py8:
+        name: Test redis-py 8 (non-gating)
+        needs: lint
+        continue-on-error: true
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        services:
+            redis:
+                image: redis:8-alpine
+                ports:
+                    - 6379:6379
+                options: >-
+                    --health-cmd "redis-cli ping"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        env:
+            REDIS_OM_URL: "redis://localhost:6379?decode_responses=True"
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - name: Setup Python
+              uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+              with:
+                  python-version: "3.12"
+            - name: Setup uv
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --group dev
+            - name: Make sync version of library (redis_om)
+              run: make sync
+            - name: Override redis-py with 8.x
+              run: |
+                  uv pip install --upgrade 'redis>=8.0.1'
+                  uv pip show redis
+            - name: Run redisvl + protocol-compat suites on redis-py 8
+              run: |
+                  uv run pytest \
+                      tests/test_redisvl_integration.py \
+                      tests/test_ai_extensions.py \
+                      tests/test_svs_vectors.py \
+                      tests/test_auto_embedding.py \
+                      tests/test_protocol_compat.py \
+                      -vv
+
     test-cluster:
         name: Test Cluster
         needs: lint

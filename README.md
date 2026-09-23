@@ -75,6 +75,7 @@ The current release includes:
 - **Cluster admin** (`ClusterAdmin`: `CLUSTER SLOT-STATS`, `CLUSTER MIGRATION ...`) for Redis 8.2+ cluster mode — see [`docs/cluster_admin.mdx`](docs/cluster_admin.mdx)
 - **Keyspace notification helpers** (`KeyspaceEvents`, `build_flags`, `enable_keyspace_events`) for Redis 2.8+ — see [`docs/keyspace_notifications.mdx`](docs/keyspace_notifications.mdx)
 - **RedisVL escape hatch** (`to_redisvl_schema`, `get_redisvl_index`, cluster-aware `hybrid_search` for `FT.HYBRID`) — use the full redisvl query API directly from your OM models; optional extra `pip install 'pyredis-om[redisvl]'` — see [`docs/redisvl.mdx`](docs/redisvl.mdx)
+- **AI extensions (RedisVL-powered)** — auto-embedding via `Field(vectorizer=..., source=...)` with `Meta.embedding_cache`, raw-text KNN (`text_knn`), semantic LLM cache, message history, semantic router, reranking, SVS-VAMANA vectors + compression advisor, and an MCP server config generator — optional extra `pip install 'pyredis-om[redisvl]'` — see [`docs/redisvl.mdx`](docs/redisvl.mdx)
 - **OpenTelemetry observability** wrapper around redis-py 8.0 instrumentation — see [`docs/observability.mdx`](docs/observability.mdx)
 
 ## ⚡ Why `execute_command`?

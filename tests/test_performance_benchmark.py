@@ -44,6 +44,7 @@ try:
     from redisvl.query import FilterQuery, HybridQuery, VectorQuery
     from redisvl.query.filter import Num
 
+    from aredis_om.ai import get_semantic_cache, rerank_results
     from aredis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
 except ImportError:  # pragma: no cover - dev extras always include redisvl
     HAS_REDISVL = False
@@ -1239,6 +1240,131 @@ async def test_bench_redisvl_hybrid_search(redisvl_model, redis):
     seeded_prefix = docs[0].key().rpartition(":")[0]
     assert results[0]["__key"].startswith(seeded_prefix)
     assert "__score" in results[0]
+
+
+def _bench_vectorizer(dim=REDISVL_DIMENSIONS):
+    """Deterministic local vectorizer (no network) for the AI benchmarks."""
+    from redisvl.utils.vectorize import CustomVectorizer
+
+    def embed(text):
+        return _onehot(len(text) % dim)
+
+    def embed_many(texts):
+        return [embed(t) for t in texts]
+
+    async def aembed(text):
+        return embed(text)
+
+    async def aembed_many(texts):
+        return embed_many(texts)
+
+    return CustomVectorizer(
+        embed=embed,
+        embed_many=embed_many,
+        aembed=aembed,
+        aembed_many=aembed_many,
+    )
+
+
+class _FakeReranker:
+    """Deterministic mock reranker — no network, no model load."""
+
+    def rank(self, *, query, docs, **kwargs):
+        ranked = [dict(d) for d in docs]
+        # Stable, query-independent order: longest text first.
+        ranked.sort(key=lambda d: len(d.get("text", "")), reverse=True)
+        scores = [1.0 - i / max(len(ranked), 1) for i in range(len(ranked))]
+        return ranked, scores
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_semantic_cache_hit(key_prefix):
+    """Benchmark: SemanticCache hit path (fake embedding + KNN lookup)."""
+    if not HAS_REDISVL:
+        pytest.skip("requires the optional redisvl package")
+    cache = get_semantic_cache(
+        f"{key_prefix}:bench_semcache",
+        vectorizer=_bench_vectorizer(),
+        distance_threshold=0.1,
+    )
+    try:
+        await cache.astore(prompt="what is redis?", response="an in-memory database")
+        # Warm-up: cache indexes update asynchronously, so poll until the
+        # entry is visible — the timed loop must measure hits only.
+        hits = []
+        for _ in range(100):
+            hits = await cache.acheck(prompt="what is redis?")
+            if hits:
+                break
+        assert hits, "expected a cache hit during warm-up"
+
+        start = time.perf_counter()
+        for _ in range(20):
+            hits = await cache.acheck(prompt="what is redis?")
+        elapsed = time.perf_counter() - start
+        record_benchmark("redisvl_semantic_cache_hit", elapsed, ops=20)
+        assert hits
+    finally:
+        cache.delete()
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_embed_save(key_prefix, redis):
+    """Benchmark: save() with auto-embedding — vectorizer mocked to isolate
+    the OM overhead (spec resolution + packing + serialization)."""
+    if not HAS_REDISVL:
+        pytest.skip("requires the optional redisvl package")
+    model_registry.clear()
+
+    class BaseJson(JsonModel, abc.ABC):
+        class Meta:
+            global_key_prefix = key_prefix
+            database = redis
+
+    class EmbBenchDoc(BaseJson, index=True):
+        body: str = Field(full_text_search=True)
+        embedding: List[float] = Field(
+            [],
+            vector_options=VectorFieldOptions.flat(
+                type=VectorFieldOptions.TYPE.FLOAT32,
+                dimension=REDISVL_DIMENSIONS,
+                distance_metric=VectorFieldOptions.DISTANCE_METRIC.COSINE,
+            ),
+            vectorizer=_bench_vectorizer(),
+            source="body",
+        )
+
+        class Meta:
+            model_key_prefix = "bench_redisvl_emb"
+
+    await Migrator().run()
+
+    docs = [EmbBenchDoc(body=f"embed me {i}") for i in range(20)]
+    start = time.perf_counter()
+    await EmbBenchDoc.add(docs)
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_embed_save", elapsed, ops=20)
+    assert docs[0].embedding and len(docs[0].embedding) == REDISVL_DIMENSIONS
+
+
+@py_test_mark_asyncio
+async def test_bench_redisvl_rerank(redisvl_model):
+    """Benchmark: rerank_results overhead with a mocked reranker."""
+    docs = await _seed_redisvl_docs(redisvl_model)
+
+    reranker = _FakeReranker()
+    start = time.perf_counter()
+    for _ in range(50):
+        top, scores = await rerank_results(
+            docs,
+            "body text benchmark",
+            reranker,
+            content_field="body",
+            limit=5,
+        )
+    elapsed = time.perf_counter() - start
+    record_benchmark("redisvl_rerank", elapsed, ops=50)
+    assert len(top) == 5 and len(scores) == 5
 
 
 # ══════════════════════════════════════════════════════════════════════
