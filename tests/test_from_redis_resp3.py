@@ -22,7 +22,7 @@ from aredis_om import Field, HashModel, JsonModel
 from aredis_om.connections import get_redis_connection
 from tests._sync_redis import has_redisearch as sync_has_redisearch
 
-from .conftest import py_test_mark_asyncio, skip_redis_py_lt_8
+from .conftest import py_test_mark_asyncio, redis_host_port, skip_redis_py_lt_8
 
 HAS_REDISEARCH = sync_has_redisearch()
 
@@ -336,9 +336,7 @@ class TestLiveRespParity:
         This case was *already* robust: the legacy ``to_string`` helper
         decodes bytes values, and the flat list shape doesn't use dict keys.
         """
-        db = get_redis_connection(
-            url="redis://localhost:6380?decode_responses=True&protocol=2"
-        )
+        db = get_redis_connection(protocol=2)
         idx = "live_resp2_dec"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, "*")
@@ -361,9 +359,8 @@ class TestLiveRespParity:
         # decode_responses=False is in the query string.
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(
-            host="localhost", port=6380, decode_responses=False, protocol=2
-        )
+        host, port = redis_host_port()
+        db = aioredis.Redis(host=host, port=port, decode_responses=False, protocol=2)
         idx = "live_resp2_raw"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, "*")
@@ -379,7 +376,7 @@ class TestLiveRespParity:
     @py_test_mark_asyncio
     async def test_resp3_decoded_works(self):
         """RESP3 wire + decode_responses=True (the default)."""
-        db = get_redis_connection(url="redis://localhost:6380?decode_responses=True")
+        db = get_redis_connection()
         idx = "live_resp3_dec"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, "*")
@@ -405,7 +402,8 @@ class TestLiveRespParity:
         # decode_responses=False still surfaces dict keys as str.
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(host="localhost", port=6380, decode_responses=False)
+        host, port = redis_host_port()
+        db = aioredis.Redis(host=host, port=port, decode_responses=False)
         idx = "live_resp3_raw"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, "*")
@@ -423,7 +421,8 @@ class TestLiveRespParity:
         """The exact empty-results payload from the user's bug report."""
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(host="localhost", port=6380, decode_responses=False)
+        host, port = redis_host_port()
+        db = aioredis.Redis(host=host, port=port, decode_responses=False)
         idx = "live_resp3_raw_empty"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, r"@email:{does\@not\@exist}")
@@ -441,9 +440,8 @@ class TestLiveRespParity:
         """RESP2 with empty results is just ``[0]``; confirm parity."""
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(
-            host="localhost", port=6380, decode_responses=False, protocol=2
-        )
+        host, port = redis_host_port()
+        db = aioredis.Redis(host=host, port=port, decode_responses=False, protocol=2)
         idx = "live_resp2_raw_empty"
         await self._setup_index(db, idx)
         raw = await db.execute_command("FT.SEARCH", idx, r"@email:{does\@not\@exist}")
@@ -472,7 +470,8 @@ class TestEndToEndViaFindQuery:
         # namespace.
         from redis import asyncio as aioredis
 
-        db = aioredis.Redis(host="localhost", port=6380, decode_responses=False)
+        host, port = redis_host_port()
+        db = aioredis.Redis(host=host, port=port, decode_responses=False)
         ns = {"HashModel": HashModel, "Field": Field, "db": db}
         code = """
 class _E2EUser(HashModel):

@@ -19,7 +19,7 @@ from aredis_om import connections as connections_module
 from aredis_om.connections import get_redis_connection, protocol_version
 from aredis_om.util import protocol_version as util_protocol_version
 
-from .conftest import TEST_PREFIX, py_test_mark_asyncio, skip_redis_py_lt_8
+from .conftest import TEST_PREFIX, py_test_mark_asyncio, redis_url, skip_redis_py_lt_8
 
 # ── protocol_version ────────────────────────────────────────────────────
 
@@ -37,15 +37,11 @@ class TestProtocolVersion:
         assert protocol_version(redis) == 3
 
     def test_returns_2_for_explicit_protocol_2(self):
-        conn = get_redis_connection(
-            url="redis://localhost:6380?decode_responses=True&protocol=2"
-        )
+        conn = get_redis_connection(url=redis_url(protocol=2))
         assert protocol_version(conn) == 2
 
     def test_returns_3_for_explicit_protocol_3(self):
-        conn = get_redis_connection(
-            url="redis://localhost:6380?decode_responses=True&protocol=3"
-        )
+        conn = get_redis_connection(url=redis_url(protocol=3))
         assert protocol_version(conn) == 3
 
     def test_util_module_re_exports_connection_helper(self, redis):
@@ -74,16 +70,12 @@ class TestProtocolVersion:
 class TestConnectionProtocolPassthrough:
     @skip_redis_py_lt_8
     def test_url_protocol_2_query_param(self):
-        conn = get_redis_connection(
-            url="redis://localhost:6380?protocol=2&decode_responses=True"
-        )
+        conn = get_redis_connection(url=redis_url(protocol=2))
         assert conn.connection_pool.connection_kwargs.get("protocol") == 2
 
     @skip_redis_py_lt_8
     def test_url_protocol_3_query_param(self):
-        conn = get_redis_connection(
-            url="redis://localhost:6380?protocol=3&decode_responses=True"
-        )
+        conn = get_redis_connection(url=redis_url(protocol=3))
         assert conn.connection_pool.connection_kwargs.get("protocol") == 3
 
     def test_protocol_kwarg_is_honored_when_no_url_protocol(self):
@@ -91,13 +83,13 @@ class TestConnectionProtocolPassthrough:
         # both are present, redis-py itself parses the URL first and the URL
         # wins — we do not silently mutate that behaviour here.
         conn = get_redis_connection(
-            url="redis://localhost:6380?decode_responses=True",
+            url=redis_url(protocol=None),
             protocol=2,
         )
         assert conn.connection_pool.connection_kwargs.get("protocol") == 2
 
     def test_no_protocol_defaults_to_none(self):
-        conn = get_redis_connection(url="redis://localhost:6380")
+        conn = get_redis_connection(url=redis_url(protocol=None))
         assert conn.connection_pool.connection_kwargs.get("protocol") is None
 
     def test_cluster_url_strips_cluster_flag_and_keeps_protocol(self, monkeypatch):
@@ -178,9 +170,7 @@ class TestLiveProtocolHandshake:
 
     @py_test_mark_asyncio
     async def test_hello_returns_proto_2_for_explicit_protocol(self):
-        conn = get_redis_connection(
-            url="redis://localhost:6380?decode_responses=True&protocol=2"
-        )
+        conn = get_redis_connection(url=redis_url(protocol=2))
         hello = await conn.execute_command("HELLO")
         if isinstance(hello, dict):
             assert hello.get("proto") == 2

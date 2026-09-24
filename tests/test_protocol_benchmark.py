@@ -41,14 +41,12 @@ def _pct_diff(resp2: float, resp3: float) -> float:
 
 @pytest.fixture
 def resp2_redis():
-    return get_redis_connection(
-        url="redis://localhost:6380?decode_responses=True&protocol=2"
-    )
+    return get_redis_connection(protocol=2)
 
 
 @pytest.fixture
 def resp3_redis():
-    return get_redis_connection(url="redis://localhost:6380?decode_responses=True")
+    return get_redis_connection()
 
 
 def _make_hash_model(prefix, db, name):

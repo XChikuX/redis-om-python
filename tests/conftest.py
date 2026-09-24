@@ -1,5 +1,8 @@
 import asyncio
+import os
 import random
+from typing import Tuple
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pytest
 from importlib.metadata import version as _pkg_version
@@ -10,6 +13,45 @@ from aredis_om.model.model import model_registry
 from ._sync_redis import get_sync_redis_connection
 
 TEST_PREFIX = "redis-om:testing"
+
+# Fallback for the rare case ``REDIS_OM_URL`` is unset: the same host/port
+# redis-py (and therefore ``get_redis_connection()``) defaults to.
+DEFAULT_REDIS_URL = "redis://localhost:6379"
+
+
+def redis_url(**params) -> str:
+    """The suite's Redis URL, with extra query-string parameters applied.
+
+    Every test must talk to the same server as the rest of the suite — CI's
+    Redis service listens on 6379, the local compose stack on 6380 — so
+    anything that needs a URL builds it here instead of hardcoding a host
+    and port. ``REDIS_OM_URL`` wins when set; otherwise this falls back to
+    the same default as ``get_redis_connection()``.
+
+    Pass ``param=None`` to remove a parameter (e.g. ``protocol=None`` for
+    the “no protocol pinned” cases).
+    """
+    parsed = urlparse(os.environ.get("REDIS_OM_URL") or DEFAULT_REDIS_URL)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in params.items():
+        if value is None:
+            query.pop(key, None)
+        elif isinstance(value, bool):
+            query[key] = "true" if value else "false"
+        else:
+            query[key] = str(value)
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def redis_host_port() -> Tuple[str, int]:
+    """``(host, port)`` of the suite's Redis, for positional client construction.
+
+    Some tests must build clients positionally — ``from_url(...)`` with
+    ``decode_responses=False`` still decodes RESP3 map keys — and those
+    clients must target the suite's server rather than an invented one.
+    """
+    parsed = urlparse(redis_url())
+    return parsed.hostname or "localhost", parsed.port or 6379
 
 
 def _split_version(version: str):

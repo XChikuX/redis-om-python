@@ -83,34 +83,26 @@ class {name}(JsonModel):
 
 @pytest.fixture
 def resp2_redis():
-    """A Redis client pinned to RESP2."""
-    return get_redis_connection(
-        url="redis://localhost:6380?decode_responses=True&protocol=2"
-    )
+    """A Redis client pinned to RESP2 (same server as the rest of the suite)."""
+    return get_redis_connection(protocol=2)
 
 
 @pytest.fixture
 def resp3_redis():
     """A Redis client using the default (auto-negotiated, RESP3) protocol."""
-    return get_redis_connection(url="redis://localhost:6380?decode_responses=True")
+    return get_redis_connection()
 
 
 @pytest.fixture
 def legacy_false_resp2_redis():
     """RESP2 wire + unified response shapes (``legacy_responses=False``)."""
-    return get_redis_connection(
-        url="redis://localhost:6380?decode_responses=True&protocol=2",
-        legacy_responses=False,
-    )
+    return get_redis_connection(protocol=2, legacy_responses=False)
 
 
 @pytest.fixture
 def legacy_false_resp3_redis():
     """RESP3 wire + unified response shapes (``legacy_responses=False``)."""
-    return get_redis_connection(
-        url="redis://localhost:6380?decode_responses=True",
-        legacy_responses=False,
-    )
+    return get_redis_connection(protocol=3, legacy_responses=False)
 
 
 # ── Shim trusts the wire shape over the claimed protocol ────────────────
