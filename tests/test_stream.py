@@ -15,7 +15,12 @@ from unittest import mock
 import pytest
 
 from aredis_om import RedisStream, get_redis_connection
-from aredis_om.model.stream import clear_stream_capability_cache
+from aredis_om.model.stream import (
+    _DEFAULT_PRODUCER_ID,
+    _parse_entries,
+    _parse_read_response,
+    clear_stream_capability_cache,
+)
 from aredis_om.util import ASYNC_MODE
 from redis import ResponseError
 
@@ -60,8 +65,11 @@ class TestStreamProduce:
 
     @py_test_mark_asyncio
     async def test_add_idempotent_no_error(self, stream):
-        # On Redis < 8.6 the IDMP keyword is silently dropped.
-        eid = await stream.add({"event": "x"}, idempotent=True)
+        # On Redis < 8.6 the IDMP option is dropped with a one-time
+        # warning; on 8.6+ the append is deduplicated.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            eid = await stream.add({"event": "x"}, idempotent=True)
         assert isinstance(eid, str)
 
 
@@ -236,25 +244,49 @@ class TestStreamInfo:
 # ---------------------------------------------------------------------------
 
 
-def _mock_db(key, probe_supported=True):
+def _mock_db(key, read_limits=True, idmp=True):
     """Build an AsyncMock db that records ``execute_command`` calls.
 
-    The capability probe (``XREAD MAXCOUNT 1 STREAMS <key> $``) is matched
-    by its exact argument list and returns ``None`` when
-    ``probe_supported``; it raises ``ResponseError`` when not — mirroring
-    Redis 8.10+ vs older servers.  Every other command returns an empty
-    read response.
+    The capability probes are matched by their exact argument lists:
+
+    - read limits: ``XREAD MAXCOUNT 1 STREAMS <key> $``
+    - idempotency: ``XADD <key>:__idmp_probe__ NOMKSTREAM IDMPAUTO
+      probe * probe probe`` (side-effect-free trial, mirroring Redis
+      8.10+ vs pre-8.6 behaviour).
+
+    Each returns ``None`` when the corresponding flag is ``True`` and
+    raises the ``ResponseError`` a pre-8.6/pre-8.10 server would raise
+    when not.  Real ``XADD`` calls return a fixed entry id; everything
+    else returns an empty read response.
     """
     db = mock.AsyncMock()
     calls = []
-    probe_args = ["XREAD", "MAXCOUNT", 1, "STREAMS", key, "$"]
+    read_probe = ["XREAD", "MAXCOUNT", 1, "STREAMS", key, "$"]
+    idmp_probe = [
+        "XADD",
+        f"{key}:__idmp_probe__",
+        "NOMKSTREAM",
+        "IDMPAUTO",
+        "probe",
+        "*",
+        "probe",
+        "probe",
+    ]
 
     def _record(*args):
         calls.append(list(args))
-        if list(args) == probe_args:
-            if not probe_supported:
-                raise ResponseError("ERR unknown argument 'MAXCOUNT'")
+        if list(args) == read_probe:
+            if not read_limits:
+                raise ResponseError("ERR syntax error")
             return None
+        if list(args) == idmp_probe:
+            if not idmp:
+                raise ResponseError(
+                    "ERR Invalid stream ID specified as stream command argument"
+                )
+            return None
+        if args and args[0] == "XADD":
+            return "1-0"
         return []
 
     db.execute_command = mock.AsyncMock(side_effect=_record)
@@ -375,7 +407,7 @@ class TestStreamReadLimitsUnit:
     @asyncio_skip
     async def test_unsupported_server_drops_caps_and_warns_once(self, reset_cache):
         """On pre-8.10 servers the caps are dropped with a single warning."""
-        db, calls = _mock_db("orders", probe_supported=False)
+        db, calls = _mock_db("orders", read_limits=False)
         stream = RedisStream(db, "orders")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", UserWarning)
@@ -497,4 +529,320 @@ class TestStreamReadLimits:
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             entries = await stream.read(last_id="0")
+        assert len(entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# IDMP / IDMPAUTO (Redis 8.6+) — unit tests (no Redis required)
+# ---------------------------------------------------------------------------
+
+_IDMP_PROBE_SUFFIX = ":__idmp_probe__"
+
+
+class TestStreamIdmpUnit:
+    @pytest.fixture
+    def reset_cache(self):
+        clear_stream_capability_cache()
+        yield
+        clear_stream_capability_cache()
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_idempotent_auto_args(self, reset_cache):
+        """idempotent=True probes once, then sends IDMPAUTO + default pid."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        eid = await stream.add({"event": "x"}, idempotent=True)
+        assert eid == "1-0"
+        assert calls[0] == [
+            "XADD",
+            f"orders{_IDMP_PROBE_SUFFIX}",
+            "NOMKSTREAM",
+            "IDMPAUTO",
+            "probe",
+            "*",
+            "probe",
+            "probe",
+        ]
+        assert calls[1] == [
+            "XADD",
+            "orders",
+            "IDMPAUTO",
+            _DEFAULT_PRODUCER_ID,
+            "*",
+            "event",
+            "x",
+        ]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_idempotent_explicit_ids(self, reset_cache):
+        """producer_id + idempotent_id switch to the IDMP form."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.add(
+            {"event": "x"},
+            idempotent=True,
+            producer_id="producer-1",
+            idempotent_id="order-123",
+        )
+        assert calls[1] == [
+            "XADD",
+            "orders",
+            "IDMP",
+            "producer-1",
+            "order-123",
+            "*",
+            "event",
+            "x",
+        ]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_idempotent_before_maxlen(self, reset_cache):
+        """Canonical order: IDMP/IDMPAUTO precede MAXLEN/MINID."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.add({"event": "x"}, idempotent=True, maxlen=100)
+        assert calls[1] == [
+            "XADD",
+            "orders",
+            "IDMPAUTO",
+            _DEFAULT_PRODUCER_ID,
+            "MAXLEN",
+            "~",
+            100,
+            "*",
+            "event",
+            "x",
+        ]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_idempotent_rejects_explicit_entry_id(self, reset_cache):
+        """The server requires auto-generated ids with IDMP (verified)."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        with pytest.raises(ValueError, match="auto-generated"):
+            await stream.add({"event": "x"}, idempotent=True, id="1-0")
+        assert calls == []  # nothing sent — not even the probe
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_unsupported_idmp_drops_and_warns_once(self, reset_cache):
+        """Pre-8.6 servers: IDMP dropped, plain XADD, one-time warning."""
+        db, calls = _mock_db("orders", idmp=False)
+        stream = RedisStream(db, "orders")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", UserWarning)
+            await stream.add({"event": "x"}, idempotent=True)
+            await stream.add({"event": "y"}, idempotent=True)
+        # calls[0] is the failed probe; both adds went out without IDMP.
+        assert calls[1] == ["XADD", "orders", "*", "event", "x"]
+        assert calls[2] == ["XADD", "orders", "*", "event", "y"]
+        user_warnings = [w for w in caught if w.category is UserWarning]
+        assert len(user_warnings) == 1
+        assert "IDMP" in str(user_warnings[0].message)
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_plain_never_probes(self, reset_cache):
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.add({"event": "x"})
+        assert calls == [["XADD", "orders", "*", "event", "x"]]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_add_idempotent_probe_cached(self, reset_cache):
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.add({"event": "x"}, idempotent=True)
+        await stream.add({"event": "y"}, idempotent=True)
+        probes = [
+            c for c in calls if len(c) == 8 and c[0] == "XADD" and c[3] == "IDMPAUTO"
+        ]
+        assert len(probes) == 1
+        assert len(calls) == 3  # 1 probe + 2 adds
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_configure_idempotency_args(self, reset_cache):
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.configure_idempotency(duration=300, maxsize=1000)
+        assert calls[-1] == [
+            "XCFGSET",
+            "orders",
+            "IDMP-DURATION",
+            300,
+            "IDMP-MAXSIZE",
+            1000,
+        ]
+        await stream.configure_idempotency(duration=500)
+        assert calls[-1] == ["XCFGSET", "orders", "IDMP-DURATION", 500]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_configure_idempotency_requires_argument(self, reset_cache):
+        db, _calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        with pytest.raises(ValueError):
+            await stream.configure_idempotency()
+
+
+# ---------------------------------------------------------------------------
+# IDMP / IDMPAUTO (Redis 8.6+) — integration tests (any server version)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamIdmp:
+    """Version-tolerant: dedup works on Redis 8.6+, degrades on older."""
+
+    @py_test_mark_asyncio
+    async def test_idempotent_add_dedups_retries(self, stream):
+        """The core fix: identical idempotent adds return the same id."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            eid1 = await stream.add({"event": "created"}, idempotent=True)
+            eid2 = await stream.add({"event": "created"}, idempotent=True)
+        if await stream._supports_idmp():
+            assert eid1 == eid2
+            assert await stream.length() == 1
+        else:
+            assert eid1 != eid2
+            assert await stream.length() == 2
+
+    @py_test_mark_asyncio
+    async def test_idempotent_add_explicit_idempotent_id(self, stream):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            eid1 = await stream.add(
+                {"event": "x"},
+                idempotent=True,
+                producer_id="p1",
+                idempotent_id="order-123",
+            )
+            eid2 = await stream.add(
+                {"event": "different-fields"},
+                idempotent=True,
+                producer_id="p1",
+                idempotent_id="order-123",
+            )
+            eid3 = await stream.add(
+                {"event": "x"},
+                idempotent=True,
+                producer_id="p1",
+                idempotent_id="order-456",
+            )
+        if await stream._supports_idmp():
+            # Same (pid, iid) dedups even with different fields.
+            assert eid1 == eid2
+            assert eid3 != eid1
+            assert await stream.length() == 2
+        else:
+            assert await stream.length() == 3
+
+    @py_test_mark_asyncio
+    async def test_idempotent_add_producer_isolation(self, stream):
+        """Same fields but different producers do not deduplicate."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            eid1 = await stream.add({"event": "x"}, idempotent=True, producer_id="p1")
+            eid2 = await stream.add({"event": "x"}, idempotent=True, producer_id="p2")
+        if await stream._supports_idmp():
+            assert eid1 != eid2
+            assert await stream.length() == 2
+        else:
+            assert await stream.length() == 2
+
+    @py_test_mark_asyncio
+    async def test_idempotent_add_rejects_explicit_entry_id(self, stream):
+        with pytest.raises(ValueError, match="auto-generated"):
+            await stream.add({"event": "x"}, idempotent=True, id="1-0")
+
+    @py_test_mark_asyncio
+    async def test_configure_idempotency_reflected_in_info(self, stream):
+        await stream.add({"event": "x"})  # XCFGSET requires an existing stream
+        if not await stream._supports_idmp():
+            pytest.skip("XCFGSET requires Redis 8.6+")
+        await stream.configure_idempotency(duration=500, maxsize=500)
+        info = await stream.info()
+        assert info["idmp-duration"] == 500
+        assert info["idmp-maxsize"] == 500
+
+    @py_test_mark_asyncio
+    async def test_probe_leaves_no_side_effects(self, stream):
+        """The NOMKSTREAM trial probe must not create keys or entries."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            await stream.add({"event": "x"}, idempotent=True)
+        # Only the real entry exists; the probe key was never created.
+        assert await stream.length() == 1
+        probe_key = f"{stream.key}:__idmp_probe__"
+        exists = await stream._db.exists(probe_key)
+        assert not exists
+
+
+# ---------------------------------------------------------------------------
+# Reply-shape parsing: RESP2/RESP3 x decode_responses (pure unit tests)
+# ---------------------------------------------------------------------------
+
+
+class TestParseReadResponseShapes:
+    """_parse_read_response must handle every redis-py reply shape:
+
+    RESP2: [[key, [(id, fields), ...]], ...]
+    RESP3: {key: [[(id, fields), ...]]} (extra list nesting)
+    decode_responses=False: keys/ids/field names as bytes
+    """
+
+    def test_resp2_str_keys(self):
+        raw = [["orders", [("1-0", {"f": "v"})]]]
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 1
+        assert entries[0].id == "1-0"
+        assert entries[0].fields == {"f": "v"}
+
+    def test_resp2_skips_other_streams(self):
+        raw = [["other", [("1-0", {"f": "v"})]], ["orders", [("2-0", {"g": "w"})]]]
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 1
+        assert entries[0].id == "2-0"
+
+    def test_resp3_dict_shape(self):
+        raw = {"orders": [[("1-0", {"f": "v"}), ("2-0", {"g": "w"})]]}
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 2
+        assert entries[1].fields == {"g": "w"}
+
+    def test_resp3_single_entry_nesting(self):
+        # One entry: [[("1-0", {...})]] — the wrapper list must not be
+        # mistaken for an entry.
+        raw = {"orders": [[("1-0", {"f": "v"})]]}
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 1
+        assert entries[0].fields == {"f": "v"}
+
+    def test_resp2_bytes_keys(self):
+        raw = [[b"orders", [(b"1-0", {b"f": b"v"})]]]
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 1
+        assert entries[0].id == b"1-0"
+        assert entries[0].fields == {b"f": b"v"}
+
+    def test_resp3_bytes_keys(self):
+        raw = {b"orders": [[(b"1-0", {b"f": b"v"})]]}
+        entries = _parse_read_response(raw, "orders")
+        assert len(entries) == 1
+        assert entries[0].fields == {b"f": b"v"}
+
+    def test_empty_shapes(self):
+        assert _parse_read_response(None, "k") == []
+        assert _parse_read_response([], "k") == []
+        assert _parse_read_response({}, "k") == []
+
+    def test_none_entries_skipped(self):
+        # redis-py pads XCLAIM misses with (None, None).
+        entries = _parse_entries([("1-0", {"f": "v"}), (None, None)])
         assert len(entries) == 1

@@ -1,4 +1,4 @@
-"""Redis Streams helper with Redis 7.4–8.8 extensions.
+"""Redis Streams helper with Redis 7.4–8.10 extensions.
 
 Redis Streams are a core data type that redis-om-python did not previously
 expose at the helper level.  This module provides a thin, typed wrapper
@@ -8,9 +8,11 @@ were previously unsupported:
 * **Redis 8.2** — ``XACKDEL`` and ``XDELEX`` (ack-and-delete /
   delete-by-id strategies: ``DELREF``, ``ACKED``).
 * **Redis 8.4** — ``XREADGROUP ... CLAIM <min-idle>`` for consuming idle
-  pending entries and new incoming entries in a single call.
+  pending entries *and* new incoming entries in a single call.
 * **Redis 8.6** — ``XADD ... IDMP`` / ``IDMPAUTO`` for at-most-once
-  idempotent production.
+  idempotent production: the server deduplicates appends by
+  ``(producer-id, idempotent-id)`` within a per-stream retention window
+  (see ``configure_idempotency()``).
 * **Redis 8.8** — ``XNACK`` for explicitly releasing pending messages
   without acknowledging them.
 * **Redis 8.10** — ``XREAD``/``XREADGROUP ... MAXCOUNT``/``MAXSIZE`` for
@@ -25,18 +27,21 @@ Example — producer/consumer::
 
     stream = RedisStream(db, "orders")
 
-    # Idempotent produce (Redis 8.6+): retries are safe.
+    # Idempotent produce (Redis 8.6+): retries are safe.  The server
+    # deduplicates by producer id + a hash of the entry fields.
     await stream.add({"event": "created"}, idempotent=True)
 
     # Read and process in a consumer group.
-    async for entry in await stream.read_group("workers", "w1", count=10):
+    for entry in await stream.read_group("workers", "w1", count=10):
         await process(entry)
         await stream.ack_and_delete("workers", entry.id)
 
-The class degrades gracefully on older servers: idempotency is silently
-ignored, and ``XACKDEL`` / ``XDELEX`` fall back to ``XACK`` + ``XDEL``.
+The class degrades gracefully on older servers: unsupported options are
+dropped with a one-time ``UserWarning`` per connection, and ``XACKDEL`` /
+``XDELEX`` fall back to ``XACK`` + ``XDEL``.
 """
 
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import warnings
@@ -46,15 +51,26 @@ import warnings
 _capability_cache: "Dict[int, set]" = {}
 # Cache: connection id → whether XREAD/XREADGROUP accept MAXCOUNT/MAXSIZE.
 _read_limits_cache: "Dict[int, bool]" = {}
+# Cache: connection id → whether XADD accepts IDMP/IDMPAUTO.
+_idmp_cache: "Dict[int, bool]" = {}
 # Connection ids already warned about missing MAXCOUNT/MAXSIZE support.
 _read_limits_warned: "set" = set()
+# Connection ids already warned about missing IDMP/IDMPAUTO support.
+_idmp_warned: "set" = set()
+
+# Stable per-process default producer id for ``add(idempotent=True)``.
+# Retries within one process deduplicate against each other; pass an
+# explicit ``producer_id`` for dedup across process restarts.
+_DEFAULT_PRODUCER_ID = uuid.uuid4().hex
 
 
 def clear_stream_capability_cache() -> None:
     """Clear the cached stream capability results (for testing)."""
     _capability_cache.clear()
     _read_limits_cache.clear()
+    _idmp_cache.clear()
     _read_limits_warned.clear()
+    _idmp_warned.clear()
 
 
 def _warn_read_limits_unsupported(conn_id: int) -> None:
@@ -68,6 +84,25 @@ def _warn_read_limits_unsupported(conn_id: int) -> None:
             UserWarning,
             stacklevel=3,
         )
+
+
+def _warn_idmp_unsupported(conn_id: int) -> None:
+    """Warn once per connection that IDMP/IDMPAUTO is being dropped."""
+    if conn_id not in _idmp_warned:
+        _idmp_warned.add(conn_id)
+        warnings.warn(
+            "RedisStream: server does not support XADD IDMP/IDMPAUTO "
+            "(requires Redis 8.6+); the entry is appended without "
+            "idempotency for this connection.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _conn_id(db: Any) -> int:
+    """Identity of a connection.  A helper because ``RedisStream.add``
+    shadows the ``id`` builtin with its entry-id parameter."""
+    return id(db)
 
 
 class StreamEntry:
@@ -157,6 +192,42 @@ class RedisStream:
         _read_limits_cache[conn_id] = supported
         return supported
 
+    async def _supports_idmp(self) -> bool:
+        """Return ``True`` when ``XADD`` accepts ``IDMP``/``IDMPAUTO``
+        (Redis 8.6+).
+
+        ``COMMAND INFO`` cannot detect this — ``IDMP`` is an argument,
+        not a command (``COMMAND INFO xadd.idmp`` returns ``nil`` on every
+        server), and redis-py's ``COMMAND`` callback cannot parse
+        ``COMMAND DOCS`` replies.  Instead we execute a side-effect-free
+        trial ``XADD`` against a sibling key that does not exist:
+        ``NOMKSTREAM`` makes the server return ``nil`` without creating
+        the key (verified against Redis 8.10), and because the stream
+        object does not exist the trial cannot register idempotency
+        state.  Pre-8.6 servers reject the misparsed ``IDMP`` token with
+        "Invalid stream ID" (verified against Redis 8.4).
+        """
+        conn_id = id(self._db)
+        cached = _idmp_cache.get(conn_id)
+        if cached is not None:
+            return cached
+        try:
+            await self._db.execute_command(
+                "XADD",
+                f"{self._key}:__idmp_probe__",
+                "NOMKSTREAM",
+                "IDMPAUTO",
+                "probe",
+                "*",
+                "probe",
+                "probe",
+            )
+            supported = True
+        except Exception:
+            supported = False
+        _idmp_cache[conn_id] = supported
+        return supported
+
     # ── producing ──────────────────────────────────────────────────
 
     async def add(
@@ -168,27 +239,62 @@ class RedisStream:
         approximate: bool = True,
         minid: Optional[str] = None,
         idempotent: bool = False,
-        idempotent_duration: Optional[int] = None,
+        producer_id: Optional[str] = None,
+        idempotent_id: Optional[str] = None,
     ) -> str:
         """``XADD`` — append an entry, returning the new entry id.
 
         Args:
             fields: Field/value mapping for the entry.
-            id: Entry id.  ``*`` (default) lets Redis assign one.
+            id: Entry id.  ``*`` (default) lets Redis assign one.  Explicit
+                ids cannot be combined with ``idempotent`` (server
+                restriction: IDMP requires auto-generated ids).
             maxlen: Trim the stream to at most this many entries.
             approximate: Use approximate trimming (``~``) — faster.
             minid: Trim entries with ids lower than this.
             idempotent: Enable at-most-once idempotency (Redis 8.6+).
-                With ``id="*"`` Redis assigns an id and deduplicates by
-                field hash within ``idempotent_duration``.
-            idempotent_duration: Idempotency window in seconds.  Required
-                when ``idempotent=True`` on some servers; defaults to the
-                server-configured ``stream-idmp-duration``.
+                Retrying the same append returns the original entry id
+                instead of duplicating the entry.  Without an explicit
+                ``idempotent_id`` the server derives the dedup key from
+                the entry fields (``IDMPAUTO``), so identical fields
+                deduplicate.  Ignored (with a one-time ``UserWarning``)
+                on servers older than 8.6.
+            producer_id: Stable producer identity for dedup.  Defaults to
+                a per-process id, so retries deduplicate within this
+                process only; pass an explicit id to deduplicate across
+                process restarts.
+            idempotent_id: Explicit dedup key (uses ``IDMP`` instead of
+                ``IDMPAUTO``).  Retries with the same
+                ``(producer_id, idempotent_id)`` pair return the original
+                entry id.
 
         Returns:
-            The entry id assigned by Redis.
+            The entry id assigned by Redis (or the original id on a
+            deduplicated retry).
+
+        Raises:
+            ValueError: When ``idempotent`` is combined with an explicit
+                entry ``id`` (the server requires auto-generated ids).
         """
+        use_idmp = idempotent
+        if use_idmp:
+            if id != "*":
+                raise ValueError(
+                    "idempotent=True requires id='*' (the server only "
+                    "supports IDMP/IDMPAUTO with auto-generated ids)"
+                )
+            if await self._supports_idmp():
+                pid = producer_id if producer_id is not None else _DEFAULT_PRODUCER_ID
+            else:
+                use_idmp = False
+                _warn_idmp_unsupported(_conn_id(self._db))
+
         args: List[Any] = ["XADD", self._key]
+        if use_idmp:
+            if idempotent_id is not None:
+                args.extend(["IDMP", pid, str(idempotent_id)])
+            else:
+                args.extend(["IDMPAUTO", pid])
         if maxlen is not None:
             args.append("MAXLEN")
             if approximate:
@@ -200,21 +306,42 @@ class RedisStream:
                 args.append("~")
             args.append(minid)
 
-        if idempotent and await self._supports("xadd.idmp"):
-            # Redis 8.6+ exposes idempotency via the ``IDMP`` keyword
-            # followed by an optional duration (ms).
-            args.append("IDMP")
-            if idempotent_duration is not None:
-                args.append(int(idempotent_duration * 1000))
-            elif await self._supports("xadd.idmpauto"):
-                args.append("IDMPAUTO")
-        elif idempotent and await self._supports("xadd.idmpauto"):
-            args.append("IDMPAUTO")
-
         args.append(id)
         for k, v in fields.items():
             args.extend([k, v])
         return await self._db.execute_command(*args)
+
+    async def configure_idempotency(
+        self,
+        duration: Optional[int] = None,
+        maxsize: Optional[int] = None,
+    ) -> bool:
+        """``XCFGSET`` — configure the per-stream idempotency window.
+
+        Controls how long the server remembers ``(producer-id,
+        idempotent-id)`` pairs for ``add(idempotent=True)`` dedup.
+
+        Args:
+            duration: Retention window in seconds (1-86400; server
+                default 100).
+            maxsize: Maximum remembered ids per producer (1-10000;
+                server default 1000).
+
+        Returns:
+            ``True`` on success.  Raises ``ResponseError`` when the
+            stream does not exist or a value is out of bounds (the
+            stream must already exist — append at least one entry
+            first).
+        """
+        if duration is None and maxsize is None:
+            raise ValueError("configure_idempotency requires duration and/or maxsize")
+        args: List[Any] = ["XCFGSET", self._key]
+        if duration is not None:
+            args.extend(["IDMP-DURATION", duration])
+        if maxsize is not None:
+            args.extend(["IDMP-MAXSIZE", maxsize])
+        await self._db.execute_command(*args)
+        return True
 
     # ── reading ────────────────────────────────────────────────────
 
@@ -582,16 +709,44 @@ class RedisStream:
 
 
 def _parse_read_response(raw: Any, key: str) -> List[StreamEntry]:
-    """Parse the ``XREAD``/``XREADGROUP`` response for a single stream."""
+    """Parse the ``XREAD``/``XREADGROUP`` response for a single stream.
+
+    Handles the reply shapes redis-py's response callbacks produce in
+    every protocol/decoding combination:
+
+    - RESP2: ``[[stream_key, [(id, fields), ...]], ...]``
+    - RESP3: ``{stream_key: [[(id, fields), ...]]}`` (dict reply with a
+      list-wrapped entries list)
+    - ``decode_responses=False``: stream keys (and ids/field names) as
+      ``bytes``
+    """
     if not raw:
         return []
-    # raw is [[stream_key, [[id, [k,v,...]], ...]], ...]
-    for stream_key, entries in raw:
-        if stream_key != key:
-            continue
-        return _parse_entries(entries)
+    if isinstance(raw, dict):  # RESP3
+        for stream_key, entries in raw.items():
+            if _key_matches(stream_key, key):
+                return _parse_entries(_unwrap_entries(entries))
+        return []
+    for stream_key, entries in raw:  # RESP2: [[key, entries], ...]
+        if _key_matches(stream_key, key):
+            return _parse_entries(_unwrap_entries(entries))
     # Fallback: if response shape differs, parse what we can.
     return _parse_entries(raw)
+
+
+def _key_matches(stream_key: Any, key: str) -> bool:
+    """Compare a (possibly ``bytes``) reply stream key against *key*."""
+    if isinstance(stream_key, bytes):
+        return stream_key.decode("utf-8", "replace") == key
+    return stream_key == key
+
+
+def _unwrap_entries(entries: Any) -> Any:
+    """Unwrap the extra list nesting redis-py's RESP3 ``XREAD`` callback
+    produces (``[[(id, fields), ...]]`` vs RESP2's ``[(id, fields), ...]``)."""
+    if isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], list):
+        return entries[0]
+    return entries
 
 
 def _parse_entries(raw: Any) -> List[StreamEntry]:
@@ -599,7 +754,13 @@ def _parse_entries(raw: Any) -> List[StreamEntry]:
     entries: List[StreamEntry] = []
     if not raw:
         return entries
-    for entry_id, fields_raw in raw:
+    for entry in raw:
+        # redis-py pads missing XCLAIM results with ``(None, None)``.
+        if entry is None:
+            continue
+        entry_id, fields_raw = entry
+        if entry_id is None:
+            continue
         fields: Dict[str, Any] = {}
         if isinstance(fields_raw, list):
             for i in range(0, len(fields_raw) - 1, 2):

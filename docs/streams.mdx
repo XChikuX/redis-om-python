@@ -26,12 +26,12 @@ from aredis_om import RedisStream
 
 stream = RedisStream(db, "orders")
 
-# Idempotent produce (Redis 8.6+): retries are safe.
+# Idempotent produce (Redis 8.6+): retries are safe. The server
+# deduplicates by producer id + a hash of the entry fields.
 await stream.add({"event": "created"}, idempotent=True)
 
 # Read and process in a consumer group.
-entries = await stream.read_group("workers", "w1", count=10)
-for entry in entries:
+for entry in await stream.read_group("workers", "w1", count=10):
     await process(entry)
     await stream.ack_and_delete("workers", entry.id)
 ```
@@ -92,21 +92,45 @@ asyncio.run(main())
 
 ### Idempotent production (Redis 8.6+)
 
-Pass `idempotent=True` to enable at-most-once semantics. Repeated calls
-with the same field payload within the idempotency window are
-deduplicated by the server, so retries are safe.
+Pass `idempotent=True` to enable at-most-once semantics. The server
+records the `(producer-id, idempotent-id)` pair and returns the
+*original* entry id on retries instead of appending a duplicate.
 
 ```python
-# Retries are safe — the server deduplicates by field hash.
-await stream.add(
+# Retries are safe. Without an explicit idempotent_id the server derives
+# the dedup key from the entry fields, so identical payloads deduplicate.
+eid = await stream.add(
     {"event": "created", "order_id": "abc"},
     idempotent=True,
-    idempotent_duration=60,  # seconds
+)
+
+# Explicit dedup key: retries with the same (producer_id, idempotent_id)
+# pair return the original entry id even if the fields differ.
+eid = await stream.add(
+    {"event": "created"},
+    idempotent=True,
+    producer_id="orders-service",      # stable across restarts
+    idempotent_id="order-abc-attempt-1",
 )
 ```
 
-On servers older than 8.6 the `IDMP` keyword is silently dropped and
-the call behaves like a normal `XADD`.
+- `producer_id` defaults to a per-process id: retries deduplicate within
+  the process only. Pass an explicit stable id to deduplicate across
+  process restarts.
+- Idempotency requires an auto-generated entry id (`id="*"`, the
+  default); combining it with an explicit `id` raises `ValueError`
+  (a server restriction).
+- The retention window is per-stream, configured server-side via
+  `configure_idempotency()`:
+
+```python
+# Remember dedup keys for 5 minutes, at most 500 per producer.
+await stream.configure_idempotency(duration=300, maxsize=500)
+```
+
+On servers older than 8.6 the `IDMP`/`IDMPAUTO` arguments are dropped
+and a one-time `UserWarning` is emitted per connection (the append
+itself succeeds, without dedup guarantees).
 
 ## Reading
 
@@ -302,7 +326,8 @@ print(info.get("length"))
 
 | Method | Returns | Notes |
 | --- | --- | --- |
-| `await stream.add(fields, *, id="*", maxlen=None, approximate=True, minid=None, idempotent=False, idempotent_duration=None)` | `str` | `XADD`. Returns the entry id. |
+| `await stream.add(fields, *, id="*", maxlen=None, approximate=True, minid=None, idempotent=False, producer_id=None, idempotent_id=None)` | `str` | `XADD`. Returns the entry id (the original id on a deduplicated retry). `idempotent` enables Redis 8.6+ `IDMP`/`IDMPAUTO`; requires `id="*"`. |
+| `await stream.configure_idempotency(duration=None, maxsize=None)` | `bool` | `XCFGSET` (Redis 8.6+): per-stream dedup retention window in seconds and max ids per producer. Requires an existing stream. |
 
 ### Reading
 
