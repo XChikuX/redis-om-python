@@ -13,6 +13,8 @@ were previously unsupported:
   idempotent production.
 * **Redis 8.8** — ``XNACK`` for explicitly releasing pending messages
   without acknowledging them.
+* **Redis 8.10** — ``XREAD``/``XREADGROUP ... MAXCOUNT``/``MAXSIZE`` for
+  capping the cumulative reply across all streams in a single call.
 
 All methods use ``execute_command`` so they work on any redis-py client
 without depending on the version-bound high-level method bindings.
@@ -37,14 +39,35 @@ ignored, and ``XACKDEL`` / ``XDELEX`` fall back to ``XACK`` + ``XDEL``.
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
+import warnings
+
 # Cache: connection id → set of unsupported command names.  We probe once
 # per connection so we don't repeat ``COMMAND INFO`` round trips.
 _capability_cache: "Dict[int, set]" = {}
+# Cache: connection id → whether XREAD/XREADGROUP accept MAXCOUNT/MAXSIZE.
+_read_limits_cache: "Dict[int, bool]" = {}
+# Connection ids already warned about missing MAXCOUNT/MAXSIZE support.
+_read_limits_warned: "set" = set()
 
 
 def clear_stream_capability_cache() -> None:
     """Clear the cached stream capability results (for testing)."""
     _capability_cache.clear()
+    _read_limits_cache.clear()
+    _read_limits_warned.clear()
+
+
+def _warn_read_limits_unsupported(conn_id: int) -> None:
+    """Warn once per connection that MAXCOUNT/MAXSIZE are being dropped."""
+    if conn_id not in _read_limits_warned:
+        _read_limits_warned.add(conn_id)
+        warnings.warn(
+            "RedisStream: server does not support XREAD/XREADGROUP "
+            "MAXCOUNT/MAXSIZE (requires Redis 8.10+); the read caps are "
+            "ignored for this connection.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 class StreamEntry:
@@ -107,6 +130,32 @@ class RedisStream:
         except Exception:
             missing.add(command)
             return False
+
+    async def _supports_read_limits(self) -> bool:
+        """Return ``True`` when ``XREAD``/``XREADGROUP`` accept
+        ``MAXCOUNT``/``MAXSIZE`` (Redis 8.10+).
+
+        Both arguments shipped in the same release, so a single probe
+        covers both commands.  ``COMMAND INFO`` cannot be used here:
+        ``MAXCOUNT``/``MAXSIZE`` are arguments, not commands —
+        ``COMMAND INFO xread.maxcount`` returns ``nil`` on every server
+        version.  Instead we execute a harmless ``XREAD ... MAXCOUNT``
+        against this stream key: ``XREAD`` never creates keys and ``$``
+        returns immediately with no entries.
+        """
+        conn_id = id(self._db)
+        cached = _read_limits_cache.get(conn_id)
+        if cached is not None:
+            return cached
+        try:
+            await self._db.execute_command(
+                "XREAD", "MAXCOUNT", 1, "STREAMS", self._key, "$"
+            )
+            supported = True
+        except Exception:
+            supported = False
+        _read_limits_cache[conn_id] = supported
+        return supported
 
     # ── producing ──────────────────────────────────────────────────
 
@@ -175,22 +224,47 @@ class RedisStream:
         count: Optional[int] = None,
         block: Optional[int] = None,
         last_id: str = "$",
+        max_count: Optional[int] = None,
+        max_size: Optional[int] = None,
     ) -> List[StreamEntry]:
         """``XREAD`` — read new entries from the stream.
 
         Args:
-            count: Maximum number of entries to return.
+            count: Maximum number of entries to return *per stream*.
             block: Milliseconds to block waiting for new entries (``None``
                 → non-blocking).
             last_id: Start reading after this id.  ``$`` (default) reads
                 only new entries.  Use ``"0"`` to read from the start.
+            max_count: Redis 8.10+ ``MAXCOUNT`` — cap the cumulative
+                number of entries returned across *all* streams in the
+                reply.  Unlike ``count`` (which applies per stream),
+                ``max_count`` bounds the total.  Must be greater than or
+                equal to ``count`` when both are given.
+            max_size: Redis 8.10+ ``MAXSIZE`` — cap the cumulative reply
+                size in bytes across *all* streams.  The limit is checked
+                before delivering each entry, so an entry that would
+                exceed it is neither returned nor added to a consumer
+                group's PEL.
 
         Returns:
             A list of :class:`StreamEntry`.
+
+        Note:
+            ``max_count``/``max_size`` require Redis 8.10+.  On older
+            servers they are ignored (a single-stream ``count`` still
+            applies).
         """
         args: List[Any] = ["XREAD"]
         if count is not None:
             args.extend(["COUNT", count])
+        if max_count is not None or max_size is not None:
+            if await self._supports_read_limits():
+                if max_count is not None:
+                    args.extend(["MAXCOUNT", max_count])
+                if max_size is not None:
+                    args.extend(["MAXSIZE", max_size])
+            else:
+                _warn_read_limits_unsupported(id(self._db))
         if block is not None:
             args.extend(["BLOCK", block])
         args.extend(["STREAMS", self._key, last_id])
@@ -206,25 +280,49 @@ class RedisStream:
         block: Optional[int] = None,
         noack: bool = False,
         claim_min_idle: Optional[int] = None,
+        max_count: Optional[int] = None,
+        max_size: Optional[int] = None,
     ) -> List[StreamEntry]:
         """``XREADGROUP`` — read entries for a consumer group.
 
         Args:
             group: Consumer group name.
             consumer: Consumer name within the group.
-            count: Maximum number of entries to return.
+            count: Maximum number of entries to return *per stream*.
             block: Milliseconds to block waiting for new entries.
             noack: Skip adding entries to the PEL (auto-acknowledge).
             claim_min_idle: Redis 8.4+ ``CLAIM`` option.  When set,
                 return both idle pending entries older than this many
                 milliseconds *and* new incoming entries in a single call.
+            max_count: Redis 8.10+ ``MAXCOUNT`` — cap the cumulative
+                number of entries returned across *all* streams in the
+                reply.  Unlike ``count`` (which applies per stream),
+                ``max_count`` bounds the total.  Must be greater than or
+                equal to ``count`` when both are given.
+            max_size: Redis 8.10+ ``MAXSIZE`` — cap the cumulative reply
+                size in bytes across *all* streams.  The limit is checked
+                before delivering each entry, so an entry that would
+                exceed it is neither returned nor added to the PEL.
 
         Returns:
             A list of :class:`StreamEntry`.
+
+        Note:
+            ``max_count``/``max_size`` require Redis 8.10+.  On older
+            servers they are ignored (a single-stream ``count`` still
+            applies).
         """
         args: List[Any] = ["XREADGROUP", "GROUP", group, consumer]
         if count is not None:
             args.extend(["COUNT", count])
+        if max_count is not None or max_size is not None:
+            if await self._supports_read_limits():
+                if max_count is not None:
+                    args.extend(["MAXCOUNT", max_count])
+                if max_size is not None:
+                    args.extend(["MAXSIZE", max_size])
+            else:
+                _warn_read_limits_unsupported(id(self._db))
         if block is not None:
             args.extend(["BLOCK", block])
         if noack:

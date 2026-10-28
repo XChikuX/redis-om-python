@@ -120,7 +120,7 @@ docker-compose(.cluster).yml # Single-node (6380/6381) and 6-node Cluster
 * **Explicit Logicals:** `Or`, `And`, `Not` now render true RediSearch syntax (`|`, space, `-`). Resolves to strings; delegates to `.query` for end-to-end `Model.find()`.
 * **Cluster & Integrity:** Index health warnings (`FT.INFO`), Cluster-safe migrations, RESP3 parity (protocol-aware parsers, URL kwarg passthrough).
 * **Advanced Redis Features Supported:**
-* *Streams:* `RedisStream` (Redis 8.2-8.8: XADD/READ/READGROUP, XACKDEL/XDELEX, CLAIM, IDMP/IDMPAUTO, XNACK).
+* *Streams:* `RedisStream` (Redis 8.2-8.10: XADD/READ/READGROUP, XACKDEL/XDELEX, CLAIM, IDMP/IDMPAUTO, XNACK, XREAD/XREADGROUP MAXCOUNT/MAXSIZE cumulative reply caps with per-connection trial-probe + graceful UserWarning degradation).
 * *Hash TTL:* `HashModel` field TTLs (Redis 7.4+).
 * *Atomic Strings:* SET IFEQ/IFNE, DELEX IFEQ, DIGEST, `msetex` (Redis 8.4+).
 * *Vector Sets:* VADD/VSIM/VINFO/VCARD/VDIM/VEMB/VLINKS/VRANDMEMBER/VREM/VSETATTR/VGETATTR (Redis 8.8+).

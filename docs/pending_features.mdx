@@ -168,15 +168,17 @@ Status: **not wrapped.** A backup/restore story for OM-managed data
 would be a larger feature (cross-cluster restore, schema re-application,
 key-prefix rewriting). Tracked for a future milestone.
 
-### `XREAD` / `XREADGROUP` `MAXCOUNT` / `MAXSIZE` — pending
+### `XREAD` / `XREADGROUP` `MAXCOUNT` / `MAXSIZE` — SHIPPED
 
 Redis 8.10 adds new `MAXCOUNT` and `MAXSIZE` arguments that cap the
 **cumulative** reply entries and byte size across all streams in a single
 `XREAD` / `XREADGROUP` call.
 
-Status: **not exposed.** `RedisStream.read()` / `.readgroup()` do not
-currently forward these arguments. Easy follow-up: add them as kwargs on
-the existing methods.
+Status: **shipped.** `RedisStream.read()` / `.read_group()` accept
+`max_count=` / `max_size=` kwargs. The capability is probed once per
+connection with a trial `XREAD ... MAXCOUNT` (COMMAND INFO cannot detect
+arguments); on pre-8.10 servers the caps are dropped with a one-time
+`UserWarning`.
 
 ### `FT.ALIASLIST` — pending
 

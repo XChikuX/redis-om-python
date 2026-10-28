@@ -3,14 +3,21 @@
 
 Standard stream commands run on any Redis version.  Newer commands
 (``XACKDEL``, ``XDELEX``, ``XNACK``, ``IDMP``) require Redis 8.2+/8.6+/
-8.8+ and fall back gracefully on older servers, so all tests run
-regardless of server version.
+8.8+ and fall back gracefully on older servers.  The Redis 8.10
+``MAXCOUNT``/``MAXSIZE`` read caps degrade to plain reads (with a
+one-time ``UserWarning``) on older servers, so all tests run regardless
+of server version.
 """
+
+import warnings
+from unittest import mock
 
 import pytest
 
 from aredis_om import RedisStream, get_redis_connection
 from aredis_om.model.stream import clear_stream_capability_cache
+from aredis_om.util import ASYNC_MODE
+from redis import ResponseError
 
 from .conftest import py_test_mark_asyncio
 
@@ -222,3 +229,272 @@ class TestStreamInfo:
         info = await stream.info()
         # ``XINFO STREAM`` returns many fields; at least length should be present.
         assert info  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# MAXCOUNT / MAXSIZE (Redis 8.10+) — unit tests (no Redis required)
+# ---------------------------------------------------------------------------
+
+
+def _mock_db(key, probe_supported=True):
+    """Build an AsyncMock db that records ``execute_command`` calls.
+
+    The capability probe (``XREAD MAXCOUNT 1 STREAMS <key> $``) is matched
+    by its exact argument list and returns ``None`` when
+    ``probe_supported``; it raises ``ResponseError`` when not — mirroring
+    Redis 8.10+ vs older servers.  Every other command returns an empty
+    read response.
+    """
+    db = mock.AsyncMock()
+    calls = []
+    probe_args = ["XREAD", "MAXCOUNT", 1, "STREAMS", key, "$"]
+
+    def _record(*args):
+        calls.append(list(args))
+        if list(args) == probe_args:
+            if not probe_supported:
+                raise ResponseError("ERR unknown argument 'MAXCOUNT'")
+            return None
+        return []
+
+    db.execute_command = mock.AsyncMock(side_effect=_record)
+    return db, calls
+
+
+asyncio_skip = pytest.mark.skipif(
+    not ASYNC_MODE, reason="AsyncMock-based unit tests are async-only"
+)
+
+
+class TestStreamReadLimitsUnit:
+    @pytest.fixture
+    def reset_cache(self):
+        clear_stream_capability_cache()
+        yield
+        clear_stream_capability_cache()
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_read_maxcount_args(self, reset_cache):
+        """MAXCOUNT is sent after the capability probe succeeds."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(last_id="0", max_count=5)
+        assert calls[0] == ["XREAD", "MAXCOUNT", 1, "STREAMS", "orders", "$"]
+        assert calls[1] == ["XREAD", "MAXCOUNT", 5, "STREAMS", "orders", "0"]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_read_count_maxcount_maxsize_arg_order(self, reset_cache):
+        """COUNT → MAXCOUNT → MAXSIZE → BLOCK → STREAMS (canonical order)."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(count=2, max_count=5, max_size=1024, block=100)
+        assert calls[1] == [
+            "XREAD",
+            "COUNT",
+            2,
+            "MAXCOUNT",
+            5,
+            "MAXSIZE",
+            1024,
+            "BLOCK",
+            100,
+            "STREAMS",
+            "orders",
+            "$",
+        ]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_read_maxsize_only(self, reset_cache):
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(max_size=2048)
+        assert calls[1] == ["XREAD", "MAXSIZE", 2048, "STREAMS", "orders", "$"]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_read_group_maxcount_maxsize_args(self, reset_cache):
+        """XREADGROUP probes XREAD (same 8.10 release) and keeps its own
+        option order: COUNT → MAXCOUNT → MAXSIZE → BLOCK → NOACK → CLAIM."""
+        db, calls = _mock_db("tasks")
+        stream = RedisStream(db, "tasks")
+        await stream.read_group(
+            "workers",
+            "w1",
+            count=2,
+            max_count=5,
+            max_size=1024,
+            noack=True,
+            claim_min_idle=100,
+        )
+        # The probe is an XREAD, not an XREADGROUP.
+        assert calls[0][0] == "XREAD"
+        assert calls[1] == [
+            "XREADGROUP",
+            "GROUP",
+            "workers",
+            "w1",
+            "COUNT",
+            2,
+            "MAXCOUNT",
+            5,
+            "MAXSIZE",
+            1024,
+            "NOACK",
+            "CLAIM",
+            100,
+            "STREAMS",
+            "tasks",
+            ">",
+        ]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_probe_cached_per_connection(self, reset_cache):
+        """The capability probe runs once; subsequent reads reuse it."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(max_count=5)
+        await stream.read(max_count=5)
+        probes = [c for c in calls if c[2] == 1]  # probe uses MAXCOUNT 1
+        assert len(probes) == 1
+        assert len(calls) == 3  # 1 probe + 2 reads
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_no_probe_without_caps(self, reset_cache):
+        """Plain reads never probe — zero overhead when caps are unused."""
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(last_id="0")
+        assert calls == [["XREAD", "STREAMS", "orders", "0"]]
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_unsupported_server_drops_caps_and_warns_once(self, reset_cache):
+        """On pre-8.10 servers the caps are dropped with a single warning."""
+        db, calls = _mock_db("orders", probe_supported=False)
+        stream = RedisStream(db, "orders")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", UserWarning)
+            await stream.read(last_id="0", max_count=5, max_size=1024)
+            await stream.read(last_id="0", max_count=5, max_size=1024)
+        # calls[0] is the failed probe; both reads went out without caps...
+        assert calls[1] == ["XREAD", "STREAMS", "orders", "0"]
+        assert calls[2] == ["XREAD", "STREAMS", "orders", "0"]
+        # ...but the warning fired exactly once (per connection).
+        user_warnings = [w for w in caught if w.category is UserWarning]
+        assert len(user_warnings) == 1
+        assert "MAXCOUNT" in str(user_warnings[0].message)
+
+    @py_test_mark_asyncio
+    @asyncio_skip
+    async def test_clear_cache_reprobes(self, reset_cache):
+        db, calls = _mock_db("orders")
+        stream = RedisStream(db, "orders")
+        await stream.read(max_count=5)
+        clear_stream_capability_cache()
+        await stream.read(max_count=5)
+        probes = [c for c in calls if c[2] == 1]  # probe uses MAXCOUNT 1
+        assert len(probes) == 2
+
+
+# ---------------------------------------------------------------------------
+# MAXCOUNT / MAXSIZE (Redis 8.10+) — integration tests (any server version)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamReadLimits:
+    """Version-tolerant: caps take effect on Redis 8.10+, degrade on older."""
+
+    async def _seed(self, stream, n=5, pad=None):
+        for i in range(n):
+            fields = {"i": str(i)}
+            if pad is not None:
+                fields["pad"] = pad
+            await stream.add(fields)
+
+    @py_test_mark_asyncio
+    async def test_read_max_count_caps_entries(self, stream):
+        await self._seed(stream)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            entries = await stream.read(last_id="0", max_count=2)
+        if await stream._supports_read_limits():
+            assert len(entries) == 2
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_read_max_count_with_count(self, stream):
+        await self._seed(stream)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Per-stream COUNT governs when both are given.
+            entries = await stream.read(last_id="0", count=1, max_count=4)
+            assert len(entries) == 1
+            # MAXCOUNT alone caps the cumulative reply.
+            entries = await stream.read(last_id="0", max_count=4)
+        if await stream._supports_read_limits():
+            assert len(entries) == 4
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_read_max_size_caps_reply(self, stream):
+        await self._seed(stream, pad="x" * 64)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            entries = await stream.read(last_id="0", max_size=64)
+        if await stream._supports_read_limits():
+            # Each entry exceeds 64 bytes; at least one is always returned.
+            assert len(entries) == 1
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_read_group_max_count(self, stream):
+        await self._seed(stream)
+        await stream.create_group("workers", id="0", mkstream=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            entries = await stream.read_group("workers", "w1", max_count=2)
+        if await stream._supports_read_limits():
+            assert len(entries) == 2
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_read_group_max_size(self, stream):
+        await self._seed(stream, pad="x" * 64)
+        await stream.create_group("workers", id="0", mkstream=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            entries = await stream.read_group("workers", "w1", max_size=64)
+        if await stream._supports_read_limits():
+            assert len(entries) == 1
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_read_group_max_count_noack(self, stream):
+        """Caps compose with NOACK and CLAIM options."""
+        await self._seed(stream)
+        await stream.create_group("workers", id="0", mkstream=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            entries = await stream.read_group("workers", "w1", max_count=3, noack=True)
+        if await stream._supports_read_limits():
+            assert len(entries) == 3
+        else:
+            assert len(entries) == 5
+
+    @py_test_mark_asyncio
+    async def test_no_warning_when_caps_unused(self, stream):
+        await self._seed(stream, n=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            entries = await stream.read(last_id="0")
+        assert len(entries) == 1

@@ -1,6 +1,6 @@
 ---
 title: Streams
-description: Typed helper for the Redis X* stream command family with 7.4–8.8 extensions.
+description: Typed helper for the Redis X* stream command family with 7.4–8.10 extensions.
 ---
 
 # RedisStream (Redis Streams)
@@ -18,6 +18,8 @@ and adds typed support for the newer stream extensions:
   idempotent production.
 - **Redis 8.8** — `XNACK` for explicitly releasing pending messages
   without acknowledging them.
+- **Redis 8.10** — `XREAD`/`XREADGROUP ... MAXCOUNT`/`MAXSIZE` for capping
+  the cumulative reply across all streams in a single call.
 
 ```python
 from aredis_om import RedisStream
@@ -139,6 +141,28 @@ asyncio.run(main())
 ```
 
 Each entry is a `StreamEntry` with `.id` (str) and `.fields` (dict).
+
+### Capping the reply (Redis 8.10+)
+
+`read()` and `read_group()` accept `max_count` and `max_size` — the Redis
+8.10 `MAXCOUNT` and `MAXSIZE` arguments. Unlike `count` (which applies
+*per stream*), these cap the **cumulative reply across all streams** in a
+single call:
+
+- `max_count` — cap the total number of entries returned. Must be `>=`
+  `count` when both are given.
+- `max_size` — cap the total reply size in **bytes**. The limit is
+  checked before delivering each entry, so an entry that would exceed it
+  is neither returned nor added to a consumer group's PEL.
+
+```python
+# At most 500 entries and at most 1 MiB of reply, no matter how many
+# streams are read in one call.
+entries = await stream.read(last_id="0", max_count=500, max_size=1024**2)
+```
+
+On servers older than 8.10 the caps are ignored and a one-time
+`UserWarning` is emitted per connection (the read itself succeeds).
 
 ## Consumer groups
 
@@ -284,8 +308,8 @@ print(info.get("length"))
 
 | Method | Returns | Notes |
 | --- | --- | --- |
-| `await stream.read(*, count=None, block=None, last_id="$")` | `list[StreamEntry]` | `XREAD`. |
-| `await stream.read_group(group, consumer, *, count=None, block=None, noack=False, claim_min_idle=None)` | `list[StreamEntry]` | `XREADGROUP`. `claim_min_idle` enables the Redis 8.4+ `CLAIM` option. |
+| `await stream.read(*, count=None, block=None, last_id="$", max_count=None, max_size=None)` | `list[StreamEntry]` | `XREAD`. `max_count`/`max_size` enable the Redis 8.10+ cumulative reply caps. |
+| `await stream.read_group(group, consumer, *, count=None, block=None, noack=False, claim_min_idle=None, max_count=None, max_size=None)` | `list[StreamEntry]` | `XREADGROUP`. `claim_min_idle` enables the Redis 8.4+ `CLAIM` option; `max_count`/`max_size` the Redis 8.10+ caps. |
 
 ### Consumer groups
 
