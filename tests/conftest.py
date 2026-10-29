@@ -65,8 +65,11 @@ def _split_version(version: str):
 
 
 # RESP3 auto-negotiation and unified dict responses (``legacy_responses=False``)
-# are redis-py 8.0+ features. On redis-py < 8.0 (e.g. 7.4.1, forced by redisvl's
-# ``redis<8.0`` constraint) these code paths cannot be exercised.
+# are redis-py 8.0+ features. On redis-py < 8.0 (e.g. 7.4.1, the version pinned
+# by this repo's uv.lock) these code paths cannot be exercised. redisvl itself
+# does NOT constrain redis-py below 8.0 — both redisvl 0.27.2 and 0.28.0 allow
+# ``redis>=6.3.0,!=8.0.0,<9`` — so the suite is also run against redis-py
+# 8.0.1 / 8.1.0 (see CLAUDE.md §9).
 def _redis_py_at_least(major: int, minor: int = 0) -> bool:
     # Read the installed distribution version to avoid clashes with modules
     # that rebind the top-level ``redis`` name (e.g. aredis_om.redis).

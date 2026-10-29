@@ -421,6 +421,7 @@ def get_redisvl_index(
     from aredis_om.ai._connection import (
         _redisvl_compatible_client,
         _standalone_sync_twin,
+        _strip_async_incompatible_pool_kwargs,
         is_async_client,
     )
 
@@ -441,6 +442,7 @@ def get_redisvl_index(
             redis_client = _standalone_sync_twin(redis_client)
         else:
             redis_client = _redisvl_compatible_client(redis_client)
+        _strip_async_incompatible_pool_kwargs(redis_client)
         return SearchIndex(schema=schema, redis_client=redis_client)
 
 

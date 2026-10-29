@@ -127,6 +127,73 @@ def _redisvl_native_resp3_shapes(client: Any) -> bool:
     return bool(kwargs.get("legacy_responses", True))
 
 
+# redis-py stores maintenance-notification state in the pool's
+# ``connection_kwargs`` whenever the connection speaks RESP3. redisvl copies
+# those kwargs verbatim when it derives an async twin from a sync client
+# (``RedisConnectionFactory.sync_to_async_redis``), and redis-py < 8.1's
+# async ``Connection`` rejects the maintenance-notification kwargs:
+#
+#   TypeError: AbstractConnection.__init__() got an unexpected keyword
+#   argument 'maint_notifications_config'
+#
+# redis-py 8.1+ accepts them, so keys are only removed where they break.
+_MAINT_NOTIFICATION_POOL_KWARGS = (
+    "maint_notifications_config",
+    "maint_notifications_pool_handler",
+    "maintenance_state",
+    "maintenance_notification_hash",
+    "orig_host_address",
+    "orig_socket_timeout",
+    "orig_socket_connect_timeout",
+    "oss_cluster_maint_notifications_handler",
+)
+
+
+def _async_connection_accepts(kwarg: str) -> bool:
+    """True when this redis-py's async ``Connection`` accepts *kwarg*.
+
+    Walks the connection class' MRO looking for an ``__init__`` that names
+    *kwarg* explicitly. Only explicit parameters count: the connection
+    classes forward unknown keywords down the chain, so a name that no
+    ``__init__`` declares is rejected by the innermost one.
+    """
+    try:
+        import redis.asyncio.connection as aconn
+    except Exception:  # pragma: no cover - redis.asyncio is always present
+        return True
+    cls = getattr(aconn, "Connection", None)
+    if cls is None:  # pragma: no cover - defensive
+        return True
+    for klass in getattr(cls, "__mro__", ()):
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        try:
+            params = inspect.signature(init).parameters
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+        if kwarg in params:
+            return True
+    return False
+
+
+def _strip_async_incompatible_pool_kwargs(client: Any) -> None:
+    """Drop pool kwargs this redis-py's async ``Connection`` cannot accept.
+
+    RedisVL derives an async client from a sync one by copying the pool's
+    ``connection_kwargs`` verbatim, so a redis-py-internal kwarg that the
+    async connection class rejects would break the derived client. Only
+    removes the key on the redis-py versions that actually reject it.
+    """
+    pool = getattr(client, "connection_pool", None)
+    kwargs = getattr(pool, "connection_kwargs", None)
+    if not isinstance(kwargs, dict):
+        return
+    for kwarg in _MAINT_NOTIFICATION_POOL_KWARGS:
+        if kwarg in kwargs and not _async_connection_accepts(kwarg):
+            kwargs.pop(kwarg, None)
+
+
 def _standalone_sync_twin(async_client: Any) -> redis.Redis:
     """Build a sync ``redis.Redis`` sharing an async client's connection kwargs.
 
@@ -222,7 +289,9 @@ def sync_client_for_model(
     if not is_async_client(client):
         # Clients using native RESP3 reply shapes get a default-protocol
         # clone for redisvl; everything else is returned unchanged.
-        return _redisvl_compatible_client(client)
+        compatible = _redisvl_compatible_client(client)
+        _strip_async_incompatible_pool_kwargs(compatible)
+        return compatible
     if isinstance(client, AsyncRedisCluster):
         from aredis_om.model.model import RedisModelError
 
@@ -231,4 +300,6 @@ def sync_client_for_model(
             "connection is not supported. Pass an explicit sync "
             "RedisCluster client instead."
         )
-    return _standalone_sync_twin(client)
+    twin = _standalone_sync_twin(client)
+    _strip_async_incompatible_pool_kwargs(twin)
+    return twin

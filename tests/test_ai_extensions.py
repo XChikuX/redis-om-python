@@ -31,17 +31,24 @@ from .conftest import py_test_mark_asyncio
 DIMENSIONS = 8
 
 
-async def _eventually(fn, predicate, attempts: int = 40, delay: float = 0.02):
-    """Poll ``fn()`` until ``predicate`` holds (or attempts run out).
+async def _eventually(fn, predicate, timeout: float = 10.0, delay: float = 0.05):
+    """Poll ``fn()`` until ``predicate`` holds (or the timeout expires).
 
     Redis Search indexes writes asynchronously, so a read immediately after
     a write (e.g. ``add_messages`` → ``get_recent``, ``astore`` → ``acheck``)
-    can miss entries. Retrying briefly keeps these tests deterministic
-    instead of asserting on a racy first read. Works for sync and async
-    ``fn`` (the generated sync mirror only ever sees sync results).
+    can miss entries. Retrying keeps these tests deterministic instead of
+    asserting on a racy first read. Works for sync and async ``fn`` (the
+    generated sync mirror only ever sees sync results).
+
+    The budget is a wall-clock timeout rather than a fixed attempt count:
+    under ``pytest -n auto`` the whole suite contends for one Redis, and an
+    index write can take noticeably longer to become visible than it does
+    when the test runs alone. The default of 10s keeps a genuinely broken
+    test failing reasonably fast while removing the load-dependent flake.
     """
     result = None
-    for _ in range(attempts):
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
         try:
             result = fn()
             if inspect.isawaitable(result):
@@ -50,8 +57,9 @@ async def _eventually(fn, predicate, attempts: int = 40, delay: float = 0.02):
             result = None
         if result is not None and predicate(result):
             return result
+        if asyncio.get_event_loop().time() >= deadline:
+            return result
         await asyncio.sleep(delay)
-    return result
 
 
 def _hash_vec(text: str, dim: int = DIMENSIONS) -> List[float]:

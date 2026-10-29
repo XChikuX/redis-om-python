@@ -69,6 +69,8 @@ POST_SYNC_FIXES = {
         # ``_eventually`` uses ``await asyncio.sleep(...)``; the sync mirror
         # needs the stdlib ``time`` module for the post-sync ``time.sleep``.
         "import asyncio": "import time",
+        # The async mirror's deadline uses the event loop clock.
+        "asyncio.get_event_loop().time()": "time.monotonic()",
         "await cache.astore(": "cache.store(",
         "await cache.acheck(": "cache.check(",
         "await cache.aset(": "cache.set(",

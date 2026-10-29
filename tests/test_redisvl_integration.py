@@ -600,6 +600,86 @@ class TestResp3ReplyShapeMatrix:
         assert isinstance(results, list)
 
 
+class TestRedisvlSyncToAsyncTwinCompatibility:
+    """RedisVL derives an async client from a sync one by copying the pool's
+    ``connection_kwargs`` verbatim
+    (``RedisConnectionFactory.sync_to_async_redis``).
+
+    redis-py stores maintenance-notification state in those kwargs whenever
+    the connection speaks RESP3, and redis-py < 8.1's *async* ``Connection``
+    rejects those kwargs:
+    ``TypeError: AbstractConnection.__init__() got an unexpected keyword
+    argument 'maint_notifications_config'``. redis-py 8.1+ accepts them.
+
+    The client OM hands redisvl must therefore not carry kwargs the local
+    redis-py's async connection cannot accept.
+    """
+
+    @staticmethod
+    def _sync_client(**extra):
+        return get_redis_connection(url=redis_url(protocol=None), **extra)
+
+    @py_test_mark_asyncio
+    async def test_sync_client_has_redisvl_compatible_pool_kwargs(self):
+        from aredis_om.ai._connection import (
+            _MAINT_NOTIFICATION_POOL_KWARGS,
+            _async_connection_accepts,
+            sync_client_for_model,
+        )
+
+        sync_client = self._sync_client()
+        try:
+            twin = sync_client_for_model(client=sync_client)
+            pool_kwargs = twin.connection_pool.connection_kwargs
+
+            for kwarg in _MAINT_NOTIFICATION_POOL_KWARGS:
+                if kwarg in pool_kwargs:
+                    # Present only when this redis-py accepts it on the
+                    # async connection; otherwise OM strips it.
+                    assert _async_connection_accepts(kwarg), (
+                        f"{kwarg} would break redisvl's async twin on this "
+                        "redis-py version"
+                    )
+        finally:
+            twin.close()
+
+    @py_test_mark_asyncio
+    async def test_async_twin_can_be_derived_by_redisvl(self):
+        """The exact operation redisvl performs: sync client -> async twin."""
+        from redisvl.redis.connection import RedisConnectionFactory
+
+        from aredis_om.ai._connection import sync_client_for_model
+
+        sync_client = self._sync_client()
+        try:
+            twin = sync_client_for_model(client=sync_client)
+            async_twin = RedisConnectionFactory.sync_to_async_redis(twin)
+            try:
+                assert await async_twin.ping() is True
+            finally:
+                await async_twin.aclose()
+        finally:
+            twin.close()
+
+    @py_test_mark_asyncio
+    async def test_async_twin_derivable_from_explicit_protocol_3(self):
+        """Explicit protocol=3 clients hit the same path (RESP3 pool)."""
+        from redisvl.redis.connection import RedisConnectionFactory
+
+        from aredis_om.ai._connection import sync_client_for_model
+
+        sync_client = self._sync_client(protocol=3)
+        try:
+            twin = sync_client_for_model(client=sync_client)
+            async_twin = RedisConnectionFactory.sync_to_async_redis(twin)
+            try:
+                assert await async_twin.ping() is True
+            finally:
+                await async_twin.aclose()
+        finally:
+            twin.close()
+
+
 class TestLazyImport:
     def test_module_imports_without_redisvl(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "redisvl", None)

@@ -147,6 +147,45 @@ In short: Redis OM's own query path never touches redisvl, and redisvl
 never re-configures your connection — both engines share the single
 connection resolved from `Meta.database`.
 
+## RESP2 / RESP3 connections
+
+redisvl reads `results.docs` off redis-py's `FT.SEARCH` reply, and redis-py
+returns **different Python shapes** depending on the connection options:
+
+| `protocol` | `legacy_responses` | `FT.SEARCH` reply | redisvl |
+| --- | --- | --- | --- |
+| unset (default) | default | `Result` (has `.docs`) | works |
+| `2` | any | `Result` | works |
+| `3` | `False` | `Result` (unified) | works |
+| `3` | default (legacy) | plain `dict` | **breaks** |
+
+Only the last row is a problem — redisvl would raise
+`AttributeError: 'dict' object has no attribute 'docs'`. When OM hands
+redisvl a client built with an explicit `protocol=3` *and* legacy
+responses, it transparently clones the client onto **redis-py's default
+protocol** for redisvl's use:
+
+- redis-py 8.x — the clone still speaks **RESP3 on the wire** (the default
+  negotiates RESP3) but returns the legacy reply shapes redisvl parses.
+- redis-py 7.x — the clone speaks RESP2, as redis-py's default does there.
+
+Everything else — the redis-py 8+ default, `protocol=2`, and
+`protocol=3` with `legacy_responses=False` — is passed through
+**unchanged**, so you keep full control of the wire protocol.
+
+```python
+# Native RESP3 replies: OM adapts the redisvl-facing clone for you.
+conn = get_redis_connection(url="redis://localhost:6379?protocol=3")
+index = get_redisvl_index(MyModel)   # redisvl still works
+results = await index.query(VectorQuery(...))
+```
+
+<Note>
+This is about **reply shapes**, not throughput: redis-py's default
+negotiates RESP3 on the wire wherever the server supports it, so you do
+not need `protocol=3` to get RESP3.
+</Note>
+
 ## Hybrid search (BM25 + vector)
 
 `FT.HYBRID` combines full-text BM25 ranking with vector similarity in a
