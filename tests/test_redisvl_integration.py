@@ -41,7 +41,7 @@ from aredis_om import (
 from aredis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
 
 from ._sync_redis import has_redis_json
-from .conftest import py_test_mark_asyncio
+from .conftest import REDIS_PY_LT_8, py_test_mark_asyncio, redis_url
 
 if not has_redis_json():
     pytestmark = pytest.mark.skip
@@ -458,6 +458,146 @@ class TestGetRedisvlIndex:
         assert isinstance(index, AsyncSearchIndex)
         assert index.schema.index.name == ClusterDoc.Meta.index_name
         assert index._redis_client is cluster_client
+
+
+class TestResp3ReplyShapeMatrix:
+    """End-to-end over the redis-py reply-shape matrix.
+
+    redis-py picks the FT.SEARCH parser from (``protocol``,
+    ``legacy_responses``); only an explicit ``protocol=3`` with legacy
+    responses yields the native dict shape redisvl cannot parse (it reads
+    ``results.docs``). Verified against redis-py 7.4.1 and 8.1.0, redisvl
+    0.27.2 and 0.28.0. These tests pin the *actual* end-to-end behavior:
+    redisvl queries must succeed through OM on every connection mode.
+    """
+
+    @staticmethod
+    def _client(conn, **extra):
+        url = redis_url(protocol=None)
+        return get_redis_connection(url=url, **extra)
+
+    @staticmethod
+    async def _make_model(conn, key_prefix):
+        class BaseJsonModel(JsonModel, abc.ABC):
+            class Meta:
+                global_key_prefix = key_prefix
+                database = conn
+
+        class Document(BaseJsonModel, index=True):
+            title: str = Field(index=True)
+            body: str = Field(full_text_search=True)
+            embedding: List[float] = Field(vector_options=_flat_vector_options())
+
+        await Migrator(conn=conn).run()
+        await Document(
+            title="running shoes",
+            body="light running shoes",
+            embedding=[1.0] + [0.0] * (DIMENSIONS - 1),
+        ).save()
+        return Document
+
+    @staticmethod
+    async def _vector_query(Document):
+        index = get_redisvl_index(Document)
+        results = await index.query(
+            VectorQuery(
+                vector=[1.0] + [0.0] * (DIMENSIONS - 1),
+                vector_field_name="embedding",
+                num_results=1,
+            )
+        )
+        return results
+
+    @py_test_mark_asyncio
+    async def test_default_connection(self, key_prefix):
+        conn = self._client(None)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_explicit_protocol_2(self, key_prefix):
+        conn = self._client(None, protocol=2)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_explicit_protocol_3_is_adapted(self, key_prefix):
+        """The one mode redisvl cannot parse natively — must be adapted."""
+        conn = self._client(None, protocol=3)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_protocol_3_with_legacy_responses_false(self, key_prefix):
+        """Unified RESP3 replies still carry ``.docs`` — passed through."""
+        if REDIS_PY_LT_8:
+            pytest.skip("legacy_responses requires redis-py >= 8")
+        conn = self._client(None, protocol=3, legacy_responses=False)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_decode_responses_false(self, key_prefix):
+        conn = self._client(None, decode_responses=False)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_decode_responses_false_with_protocol_3(self, key_prefix):
+        conn = self._client(None, decode_responses=False, protocol=3)
+        Document = await self._make_model(conn, key_prefix)
+        results = await self._vector_query(Document)
+        assert len(results) == 1
+
+    @py_test_mark_asyncio
+    async def test_native_resp3_client_is_adapted_to_default_protocol(self, key_prefix):
+        """The adaptation clone keeps RESP3 on the wire (redis-py >= 8)
+        instead of downgrading to RESP2."""
+        conn = self._client(None, protocol=3)
+        from aredis_om.ai._connection import (
+            _redisvl_compatible_client,
+            _redisvl_native_resp3_shapes,
+        )
+
+        assert _redisvl_native_resp3_shapes(conn)
+        adapted = _redisvl_compatible_client(conn)
+        assert adapted is not conn
+        assert not _redisvl_native_resp3_shapes(adapted)
+        # The clone uses redis-py's *default* protocol — not a forced RESP2.
+        clone_protocol = adapted.connection_pool.connection_kwargs.get("protocol")
+        if REDIS_PY_LT_8:
+            # redis-py 7.x hard-codes ``protocol=2`` as its constructor default.
+            assert clone_protocol == 2
+        else:
+            assert clone_protocol is None  # -> RESP3 wire, legacy reply shapes
+        # Same flavour (async in / async out).
+        assert type(adapted) is type(conn)
+
+    @py_test_mark_asyncio
+    async def test_hybrid_search_native_resp3(self, key_prefix, redis):
+        if not await _has_ft_hybrid(redis):
+            pytest.skip("FT.HYBRID requires Redis 8.4+")
+        conn = self._client(None, protocol=3)
+        Document = await self._make_model(conn, key_prefix)
+        index = get_redisvl_index(Document)
+        results = await hybrid_search(
+            index,
+            HybridQuery(
+                text="running",
+                text_field_name="body_fts",
+                vector=[1.0] + [0.0] * (DIMENSIONS - 1),
+                vector_field_name="embedding",
+                combination_method="LINEAR",
+                linear_alpha=0.5,
+                num_results=1,
+            ),
+        )
+        assert isinstance(results, list)
 
 
 class TestLazyImport:

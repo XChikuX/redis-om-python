@@ -413,13 +413,16 @@ def get_redisvl_index(
     schema = to_redisvl_schema(model_cls)
     redis_client = model_cls.db()
 
-    # redisvl's reply post-processing cannot parse native/unified RESP3
+    # redisvl's reply post-processing cannot parse the native RESP3 reply
     # shapes (``'dict' object has no attribute 'docs'``), which only an
-    # explicit ``protocol=3`` connection produces. Default connections —
-    # including redis-py >= 8 defaults that speak RESP3 on the wire — are
-    # passed through untouched; explicit protocol=3 connections are handed
-    # a RESP2 clone instead.
-    from aredis_om.ai._connection import _redisvl_compatible_client
+    # explicit ``protocol=3`` connection with legacy responses produces.
+    # Default connections — including redis-py >= 8 defaults that speak
+    # RESP3 on the wire — are passed through untouched.
+    from aredis_om.ai._connection import (
+        _redisvl_compatible_client,
+        _standalone_sync_twin,
+        is_async_client,
+    )
 
     if async_client:
         from redisvl.index import AsyncSearchIndex
@@ -430,12 +433,15 @@ def get_redisvl_index(
     else:
         from redisvl.index import SearchIndex
 
-        # Pass the client through (cluster clients included) with RESP2
-        # pinning for standalone RESP3 connections only — historically
-        # this is a pass-through call site.
-        return SearchIndex(
-            schema=schema, redis_client=_redisvl_compatible_client(redis_client)
-        )
+        if is_async_client(redis_client):
+            # redisvl 0.28+ validates the client flavour and rejects async
+            # clients on a sync ``SearchIndex``. Derive the sync twin from
+            # the same connection kwargs (this also applies the RESP3
+            # reply-shape adaptation, via the twin builder).
+            redis_client = _standalone_sync_twin(redis_client)
+        else:
+            redis_client = _redisvl_compatible_client(redis_client)
+        return SearchIndex(schema=schema, redis_client=redis_client)
 
 
 async def hybrid_search(
@@ -473,18 +479,17 @@ async def hybrid_search(
         # Default connections are passed straight through: redis-py >= 8
         # defaults speak RESP3 on the wire while preserving the legacy
         # response shapes redisvl parses. Only an *explicit* ``protocol=3``
-        # connection opts into native RESP3 shapes, which redisvl cannot
-        # parse (``'dict' object has no attribute 'docs'``) — for those,
-        # query through a lightweight index over an adapted (RESP2) client.
+        # connection with legacy responses opts into the native RESP3
+        # shapes redisvl cannot parse (``'dict' object has no attribute
+        # 'docs'``) — for those, query through a lightweight index over an
+        # adapted (default-protocol) client.
         from aredis_om.ai._connection import (
-            _explicit_native_resp3,
             _redisvl_compatible_client,
+            _redisvl_native_resp3_shapes,
         )
 
-        if _explicit_native_resp3(client):
-            from redisvl.index import AsyncSearchIndex
-
-            adapted = AsyncSearchIndex(
+        if _redisvl_native_resp3_shapes(client):
+            adapted = type(index)(
                 schema=index.schema,
                 redis_client=_redisvl_compatible_client(client),
             )
