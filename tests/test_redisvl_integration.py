@@ -10,6 +10,7 @@ OM-created index.
 """
 
 import abc
+import asyncio
 import importlib
 import re
 import sys
@@ -39,6 +40,7 @@ from aredis_om import (
     get_redis_connection,
 )
 from aredis_om.redisvl import get_redisvl_index, hybrid_search, to_redisvl_schema
+from aredis_om.util import ASYNC_MODE
 
 from ._sync_redis import has_redis_json
 from .conftest import REDIS_PY_LT_8, py_test_mark_asyncio, redis_url
@@ -600,6 +602,22 @@ class TestResp3ReplyShapeMatrix:
         assert isinstance(results, list)
 
 
+_SYNC_LOOP = None
+
+
+def _sync_loop():
+    """A long-lived event loop for the generated sync mirror.
+
+    ``asyncio.run()`` closes its loop on exit, which would break the async
+    twin's connection between the ping and the close. One shared loop keeps
+    the connection bound to a live loop for the whole test.
+    """
+    global _SYNC_LOOP
+    if _SYNC_LOOP is None or _SYNC_LOOP.is_closed():
+        _SYNC_LOOP = asyncio.new_event_loop()
+    return _SYNC_LOOP
+
+
 class TestRedisvlSyncToAsyncTwinCompatibility:
     """RedisVL derives an async client from a sync one by copying the pool's
     ``connection_kwargs`` verbatim
@@ -618,6 +636,33 @@ class TestRedisvlSyncToAsyncTwinCompatibility:
     @staticmethod
     def _sync_client(**extra):
         return get_redis_connection(url=redis_url(protocol=None), **extra)
+
+    @staticmethod
+    async def _ping(client):
+        """Ping the async twin.
+
+        In the async source this is a plain ``await``. The generated sync
+        mirror strips the ``await`` (unasync), so the coroutine has to be
+        driven explicitly there — ``ASYNC_MODE`` tells the two apart.
+        """
+        result = client.ping()
+        if ASYNC_MODE:
+            result = await result
+        else:
+            result = _sync_loop().run_until_complete(result)
+        return result
+
+    @staticmethod
+    async def _close(client):
+        """Close the async twin (no-op if it has no async close)."""
+        close = getattr(client, "aclose", None)
+        if close is None:
+            return
+        result = close()
+        if ASYNC_MODE:
+            await result
+        else:
+            _sync_loop().run_until_complete(result)
 
     @py_test_mark_asyncio
     async def test_sync_client_has_redisvl_compatible_pool_kwargs(self):
@@ -655,9 +700,9 @@ class TestRedisvlSyncToAsyncTwinCompatibility:
             twin = sync_client_for_model(client=sync_client)
             async_twin = RedisConnectionFactory.sync_to_async_redis(twin)
             try:
-                assert await async_twin.ping() is True
+                assert await self._ping(async_twin) is True
             finally:
-                await async_twin.aclose()
+                await self._close(async_twin)
         finally:
             twin.close()
 
@@ -673,9 +718,9 @@ class TestRedisvlSyncToAsyncTwinCompatibility:
             twin = sync_client_for_model(client=sync_client)
             async_twin = RedisConnectionFactory.sync_to_async_redis(twin)
             try:
-                assert await async_twin.ping() is True
+                assert await self._ping(async_twin) is True
             finally:
-                await async_twin.aclose()
+                await self._close(async_twin)
         finally:
             twin.close()
 

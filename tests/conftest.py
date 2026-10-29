@@ -108,6 +108,40 @@ def _delete_test_keys(prefix: str, conn):
         conn.delete(*keys)
 
 
+def _drop_test_indexes(prefix: str, conn):
+    """Drop every RediSearch index this suite created.
+
+    ``_delete_test_keys`` only removes *keys* from the keyspace, but search
+    index definitions are separate server-side objects: they survive
+    ``FLUSHALL``-free key cleanup and accumulate across runs. Each test run
+    creates indexes under a freshly randomised ``redis-om:testing:<rand>``
+    prefix, so without this the server ends up holding tens of thousands of
+    stale indexes. Beyond the memory cost, a bloated index catalogue slows
+    down ``FT.CREATE``/``FT.INFO`` enough that
+    ``_wait_for_index``'s seven-second budget expires before a freshly
+    created index finishes its initial scan — which surfaces as spurious
+    ``NotFoundError`` / ``SEARCH_INDEX_NOT_FOUND`` failures in tests that
+    are perfectly healthy on a clean server.
+
+    Only indexes owned by this suite (matching ``prefix``) are dropped;
+    models with fixed index names (e.g. ``alias_person_test``) are left to
+    the fixtures that manage them.
+    """
+    try:
+        names = conn.execute_command("FT._LIST")
+    except Exception:
+        # Search module unavailable (plain OSS Redis/Valkey): nothing to drop.
+        return
+    for name in names:
+        text = name.decode("utf-8") if isinstance(name, bytes) else str(name)
+        if not text.startswith(prefix):
+            continue
+        try:
+            conn.ft(text).dropindex(delete_documents=False)
+        except Exception:
+            pass
+
+
 @pytest.fixture
 def key_prefix(request, redis):
     key_prefix = f"{TEST_PREFIX}:{random.random()}"
@@ -123,9 +157,10 @@ def cleanup_keys(request):
 
     yield
 
-    # Delete keys only once
+    # Delete keys and search indexes only once
     if conn.decr(once_key) == 0:
         _delete_test_keys(TEST_PREFIX, conn)
+        _drop_test_indexes(TEST_PREFIX, conn)
 
 
 @pytest.fixture(autouse=True)
@@ -150,8 +185,20 @@ def cleanup_model_registry():
             # them up and try to manage their indexes against the test's
             # single-node Redis. The fixtures that need them re-register the
             # class via ``_isolate_registry`` before each test runs.
+            #
+            # NOTE: match on the *module name* rather than a hardcoded
+            # ``tests.`` prefix. The generated sync mirror lives under
+            # ``tests_sync.``, so a literal ``tests.`` prefix would never
+            # match there and the sync-mirror models would leak into the
+            # global registry. A leaked ``tests_sync.test_migrator_alias._PersonV1``
+            # shares the fixed index name ``alias_person_test`` with the async
+            # module, so a bare ``Migrator().run()`` in another file (e.g.
+            # ``test_migrator_index_flakiness.py``) would migrate it and race
+            # the async alias tests on the same index — surfacing as
+            # intermittent ``NotFoundError`` / ``SEARCH_INDEX_NOT_FOUND``.
             str_key = str(key)
-            if str_key.startswith("tests.test_migrator_alias.") or str_key.startswith(
-                "tests.test_cluster_migrator_alias."
+            module_name = str_key.rsplit(".", 1)[0] if "." in str_key else str_key
+            if module_name.endswith("test_migrator_alias") or module_name.endswith(
+                "test_cluster_migrator_alias"
             ):
                 model_registry.pop(key, None)
