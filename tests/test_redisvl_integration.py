@@ -413,7 +413,12 @@ class TestToRedisvlSchemaFieldMapping:
             info = await redis.ft(index.schema.index.name).info()
             vector_attrs = None
             for entry in info["attributes"]:
-                pairs = dict(zip(entry[0::2], entry[1::2]))
+                # RESP2 returns flat [k, v, k, v, ...] lists; RESP3 (and
+                # redis-py >= 8 unified responses) return dicts already.
+                if isinstance(entry, dict):
+                    pairs = entry
+                else:
+                    pairs = dict(zip(entry[0::2], entry[1::2]))
                 if pairs.get("attribute") == "vec_hnsw":
                     vector_attrs = pairs
                     break

@@ -41,19 +41,132 @@ def is_async_client(client: Any) -> bool:
     return mod.startswith("redis.asyncio")
 
 
-def _standalone_sync_twin(async_client: Any) -> redis.Redis:
-    """Build a sync ``redis.Redis`` sharing an async client's connection kwargs."""
-    kwargs = dict(async_client.connection_pool.connection_kwargs)
-    # Intersect with the sync constructor's accepted parameters — async
-    # pools may carry keys the sync client rejects (e.g. some credential or
-    # pool bookkeeping entries).
+def _redisvl_clone_kwargs(kwargs: dict) -> dict:
+    """Sanitize connection kwargs for a clone handed to redisvl.
+
+    Only clients built with an *explicit* ``protocol=3`` produce the
+    native/unified RESP3 response shapes redisvl cannot parse — those are
+    cloned down to ``protocol=2``. Default (``protocol=None``) redis-py
+    >= 8 connections speak RESP3 on the wire but keep legacy response
+    shapes, which redisvl handles fine, so their protocol is preserved.
+
+    Also drops RESP3-only options (``maint_notification*`` handlers/
+    config, which redis-py rejects with "Maintenance notifications
+    handlers on connection are only supported with RESP version 3").
+    """
     accepted = inspect.signature(redis.Redis.__init__).parameters
     cleaned = {
         k: v
         for k, v in kwargs.items()
-        if k in accepted and v is not None and k not in ("self",)
+        if k in accepted
+        and v is not None
+        and k != "self"
+        and not k.startswith("maint_notification")
     }
-    return redis.Redis(**cleaned)
+    if str(kwargs.get("protocol")) == "3":
+        cleaned["protocol"] = REDISVL_CLIENT_PROTOCOL
+    return cleaned
+
+
+def _explicit_native_resp3(client: Any) -> bool:
+    """True when *client* was built with an explicit ``protocol=3``.
+
+    That is the one connection mode producing native/unified RESP3
+    response shapes, which redisvl (0.27.x) cannot parse — its reply
+    post-processing reads e.g. ``results.docs`` off redis-py's legacy
+    ``FT.SEARCH`` result objects and fails with
+    ``AttributeError: 'dict' object has no attribute 'docs'``.
+
+    Everything else is left alone: RESP2 connections obviously, and the
+    redis-py >= 8 *default* (``protocol=None``) connections that speak
+    RESP3 on the wire but preserve legacy response shapes — redisvl
+    works with those as-is.
+    """
+    try:
+        pool = getattr(client, "connection_pool", None)
+        kwargs = (
+            getattr(pool, "connection_kwargs", None)
+            or getattr(client, "connection_kwargs", None)
+            or {}
+        )
+        return str(kwargs.get("protocol")) == "3"
+    except Exception:
+        return False
+
+
+def _standalone_sync_twin(async_client: Any) -> redis.Redis:
+    """Build a sync ``redis.Redis`` sharing an async client's connection kwargs.
+
+    Connections built with an explicit ``protocol=3`` (native/unified
+    RESP3 shapes) are cloned down to RESP2 — redisvl cannot parse those
+    shapes. Everything else keeps its protocol: redis-py >= 8 default
+    connections (``protocol=None``) speak RESP3 on the wire with legacy
+    response shapes, which redisvl handles fine.
+    """
+    kwargs = dict(async_client.connection_pool.connection_kwargs)
+    return redis.Redis(**_redisvl_clone_kwargs(kwargs))
+
+
+# Protocol used when a native-RESP3 client must be adapted for redisvl.
+# See ``_explicit_native_resp3`` — only explicit ``protocol=3`` clients
+# need it.
+REDISVL_CLIENT_PROTOCOL = 2
+
+
+def _redisvl_compatible_client(client: Any) -> Any:
+    """Return *client* unchanged unless it was built with an explicit
+    ``protocol=3``, in which case return a same-flavour (sync/async)
+    clone speaking RESP2.
+
+    Explicit ``protocol=3`` selects native/unified RESP3 response shapes
+    (on every redis-py version tested, 7.4 and 8.1) — the one mode
+    redisvl's reply post-processing cannot handle. redis-py >= 8 default
+    connections (RESP3 on the wire, legacy shapes) are returned
+    untouched: redisvl works with those directly.
+
+    Cluster clients and anything exotic (including test doubles) are
+    passed through untouched — cloning them from connection kwargs
+    alone is not possible, and the historical behaviour was to hand
+    them to redisvl as-is.
+    """
+    if not _explicit_native_resp3(client):
+        return client
+    if isinstance(client, redis.cluster.RedisCluster):
+        return client
+    if isinstance(client, AsyncRedisCluster):
+        return client
+    try:
+        if is_async_client(client):
+            import redis.asyncio as aredis
+
+            kwargs = _redisvl_clone_kwargs_async(
+                client.connection_pool.connection_kwargs
+            )
+            return aredis.Redis(**kwargs)
+        return _standalone_sync_twin(client)
+    except Exception:
+        return client
+
+
+def _redisvl_clone_kwargs_async(kwargs: dict) -> dict:
+    """Async twin of :func:`_redisvl_clone_kwargs` (same sanitization, async
+    constructor signature)."""
+    import inspect as _inspect
+
+    import redis.asyncio as aredis
+
+    accepted = _inspect.signature(aredis.Redis.__init__).parameters
+    cleaned = {
+        k: v
+        for k, v in kwargs.items()
+        if k in accepted
+        and v is not None
+        and k != "self"
+        and not k.startswith("maint_notification")
+    }
+    if str(kwargs.get("protocol")) == "3":
+        cleaned["protocol"] = REDISVL_CLIENT_PROTOCOL
+    return cleaned
 
 
 def sync_client_for_model(
@@ -90,7 +203,9 @@ def sync_client_for_model(
         else:
             client = model_cls.db()
     if not is_async_client(client):
-        return client
+        # Explicit protocol=3 sync clients get a RESP2 clone for redisvl;
+        # everything else (defaults included) is returned unchanged.
+        return _redisvl_compatible_client(client)
     if isinstance(client, AsyncRedisCluster):
         from aredis_om.model.model import RedisModelError
 

@@ -24,7 +24,6 @@ skipped automatically when RediSearch / RedisJSON is unavailable.
 import abc
 import base64
 import os
-import re
 from typing import List, Optional
 from unittest import mock
 
@@ -318,12 +317,16 @@ async def test_integration_bytes_in_query(int_model):
 
 
 def _bytes_only_redis():
-    """Return a connection with ``decode_responses=False`` from REDIS_OM_URL."""
-    base = os.environ.get("REDIS_OM_URL", "")
-    # Strip an existing decode_responses=... param, then re-add ours.
-    cleaned = re.sub(r"[?&]decode_responses=[A-Za-z]+", "", base)
-    sep = "&" if "?" in cleaned else "?"
-    return get_redis_connection(url=f"{cleaned}{sep}decode_responses=False")
+    """Return a connection with ``decode_responses=False`` from REDIS_OM_URL.
+
+    ``decode_responses`` is passed as an explicit kwarg (not a URL query
+    parameter): query values arrive as strings — ``"False"`` would parse
+    as truthy — and ``get_redis_connection`` strips explicit kwargs from
+    the URL so the kwarg wins. Other URL parameters (``protocol``, …)
+    are preserved.
+    """
+    base = os.environ.get("REDIS_OM_URL") or "redis://localhost:6379"
+    return get_redis_connection(url=base, decode_responses=False)
 
 
 @pytest_asyncio.fixture

@@ -413,14 +413,29 @@ def get_redisvl_index(
     schema = to_redisvl_schema(model_cls)
     redis_client = model_cls.db()
 
+    # redisvl's reply post-processing cannot parse native/unified RESP3
+    # shapes (``'dict' object has no attribute 'docs'``), which only an
+    # explicit ``protocol=3`` connection produces. Default connections —
+    # including redis-py >= 8 defaults that speak RESP3 on the wire — are
+    # passed through untouched; explicit protocol=3 connections are handed
+    # a RESP2 clone instead.
+    from aredis_om.ai._connection import _redisvl_compatible_client
+
     if async_client:
         from redisvl.index import AsyncSearchIndex
 
-        return AsyncSearchIndex(schema=schema, redis_client=redis_client)
+        return AsyncSearchIndex(
+            schema=schema, redis_client=_redisvl_compatible_client(redis_client)
+        )
     else:
         from redisvl.index import SearchIndex
 
-        return SearchIndex(schema=schema, redis_client=redis_client)
+        # Pass the client through (cluster clients included) with RESP2
+        # pinning for standalone RESP3 connections only — historically
+        # this is a pass-through call site.
+        return SearchIndex(
+            schema=schema, redis_client=_redisvl_compatible_client(redis_client)
+        )
 
 
 async def hybrid_search(
@@ -455,9 +470,28 @@ async def hybrid_search(
     client = getattr(index, "_redis_client", None) or await index._get_client()
 
     if not _is_cluster_client(client):
-        # redisvl's ``query()`` takes no timeout parameter, so the timeout
-        # can only be honored on the cluster path below, where we build
-        # the FT.HYBRID command ourselves.
+        # Default connections are passed straight through: redis-py >= 8
+        # defaults speak RESP3 on the wire while preserving the legacy
+        # response shapes redisvl parses. Only an *explicit* ``protocol=3``
+        # connection opts into native RESP3 shapes, which redisvl cannot
+        # parse (``'dict' object has no attribute 'docs'``) — for those,
+        # query through a lightweight index over an adapted (RESP2) client.
+        from aredis_om.ai._connection import (
+            _explicit_native_resp3,
+            _redisvl_compatible_client,
+        )
+
+        if _explicit_native_resp3(client):
+            from redisvl.index import AsyncSearchIndex
+
+            adapted = AsyncSearchIndex(
+                schema=index.schema,
+                redis_client=_redisvl_compatible_client(client),
+            )
+            # redisvl's ``query()`` takes no timeout parameter, so the
+            # timeout can only be honored on the cluster path below, where
+            # we build the FT.HYBRID command ourselves.
+            return await adapted.query(query)
         return await index.query(query)
 
     # Cluster path: build the FT.HYBRID command exactly the way redis-py's
