@@ -108,6 +108,27 @@ POST_SYNC_FIXES = {
     "tests_sync/test_protocol_negotiation.py": {
         "conn.aclose()": "conn.close()",
     },
+    # Migrator edge-case tests build their own ``redis.asyncio`` client in
+    # the ``conn`` fixture.  The sync mirror must use the sync client so
+    # that ``conn.ft(...).info`` and ``execute_command`` mocks are called
+    # synchronously (otherwise every await-free call returns a coroutine).
+    "tests_sync/test_migration_edge_cases.py": {
+        "import redis.asyncio as redis": "import redis",
+        "client.aclose()": "client.close()",
+        # ``AsyncMock`` is token-mapped to ``MagicMock`` globally, which
+        # leaves a duplicated name in the import list.
+        "from unittest.mock import MagicMock, MagicMock, patch": (
+            "from unittest.mock import MagicMock, patch"
+        ),
+        # unasync only rewrites whole NAME/STRING tokens, so dotted patch
+        # targets keep the async package name and end up patching the
+        # wrong module's logger.
+        "aredis_om.model.migrations.migrator": (
+            "redis_om.model.migrations.migrator"
+        ),
+        # ``AsyncMock``-only assertions have sync equivalents.
+        ".assert_awaited_once()": ".assert_called_once()",
+    },
     # Convert asyncio sleep to time.sleep for hotkey snapshots.
     "redis_om/hotkeys.py": {
         "import asyncio": "import time",
