@@ -31,7 +31,7 @@ from .conftest import py_test_mark_asyncio
 DIMENSIONS = 8
 
 
-async def _eventually(fn, predicate, timeout: float = 10.0, delay: float = 0.05):
+async def _eventually(fn, predicate, timeout: float = 7.0, delay: float = 0.1):
     """Poll ``fn()`` until ``predicate`` holds (or the timeout expires).
 
     Redis Search indexes writes asynchronously, so a read immediately after
@@ -43,7 +43,7 @@ async def _eventually(fn, predicate, timeout: float = 10.0, delay: float = 0.05)
     The budget is a wall-clock timeout rather than a fixed attempt count:
     under ``pytest -n auto`` the whole suite contends for one Redis, and an
     index write can take noticeably longer to become visible than it does
-    when the test runs alone. The default of 10s keeps a genuinely broken
+    when the test runs alone. The default of 7s keeps a genuinely broken
     test failing reasonably fast while removing the load-dependent flake.
     """
     result = None
@@ -257,7 +257,14 @@ async def test_router_routes_statement(emb_model, key_prefix):
         )
         assert match.name == "goodbye"
 
-        matches = router.route_many("hi", max_k=2)
+        # Same async-indexing race as the two polls above: under load a
+        # KNN query can briefly see a partial index (e.g. only goodbye's
+        # reference vectors) before greet's become searchable. Poll until
+        # the top match is stable.
+        matches = await _eventually(
+            lambda: router.route_many("hi", max_k=2),
+            lambda ms: bool(ms) and ms[0].name == "greet",
+        )
         assert matches and matches[0].name == "greet"
     finally:
         router.delete()
